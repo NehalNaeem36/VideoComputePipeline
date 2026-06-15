@@ -1,0 +1,71 @@
+# Build artifacts
+build/
+out/
+dist/
+
+# Object and library files
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# Executable files
+*.exe
+*.out
+*.app
+
+# Debug symbols
+*.pdb
+*.dSYM/
+*.su
+*.gch
+*.pch
+
+# Dependency files
+*.d
+*.D
+Makefile.in
+*.m4
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.user
+*.cbp
+*.layout
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Test outputs
+*.gcda
+*.gcno
+coverage/
+
+# Data and benchmarks
+data/output/
+benchmarks/*.csv
+benchmarks/*.md
+
+# Python related
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
