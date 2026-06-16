@@ -90,6 +90,23 @@ Threaded GPU run with explicit worker settings:
 
 GPU mode uses one OpenCL processor worker internally even if a higher `--processor-workers` value is requested, because the current GPU implementation owns one OpenCL context and command queue. CPU mode uses `--processor-workers` worker threads.
 
+Recommended lower-contention GPU settings for full 4K blur benchmarks:
+
+```powershell
+.\build-win\bin\VideoComputePipeline.exe `
+  --input data\input\15592600_3840_2160_60fps.mp4 `
+  --output data\output\threaded_gpu_blur5x5.mp4 `
+  --benchmark benchmarks\threaded_gpu_blur5x5.csv `
+  --mode gpu `
+  --filter blur5x5 `
+  --frame-slots 3 `
+  --decoder-threads 2 `
+  --encoder-threads 2 `
+  --processor-workers 1
+```
+
+These settings reduce contention between FFmpeg decode/encode, CPU memory bandwidth, and OpenCL upload/download. On the 4K high-quality input video, consistent average total frame times below 60 ms/frame for `blur5x5` are a good result for the current RGB24 pipeline. That is roughly 16+ processed frames per second end-to-end, including decode, GPU upload, kernel execution, download, encode, and benchmark recording.
+
 For a quick smoke run:
 
 ```bash
