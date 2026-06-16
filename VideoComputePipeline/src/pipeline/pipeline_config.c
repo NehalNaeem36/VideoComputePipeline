@@ -27,6 +27,8 @@ static const char *filter_to_string(FilterType filter) {
             return "blur5x5";
         case FILTER_BLUR_9X9:
             return "blur9x9";
+        case FILTER_BLUR_13X13:
+            return "blur13x13";
         default:
             return "unknown";
     }
@@ -67,6 +69,11 @@ static int parse_filter(const char *value, FilterType *filter) {
         return 0;
     }
 
+    if (strcmp(value, "blur13x13") == 0) {
+        *filter = FILTER_BLUR_13X13;
+        return 0;
+    }
+
     return -1;
 }
 
@@ -78,10 +85,12 @@ void pipeline_config_default(PipelineConfig *config) {
     copy_path(config->input_path, sizeof(config->input_path), DEFAULT_INPUT_PATH);
     copy_path(config->output_path, sizeof(config->output_path), DEFAULT_OUTPUT_PATH);
     copy_path(config->benchmark_path, sizeof(config->benchmark_path), DEFAULT_BENCHMARK_PATH);
+    copy_path(config->encoder_name, sizeof(config->encoder_name), DEFAULT_ENCODER_NAME);
     config->mode = PROCESS_CPU;
     config->filter = FILTER_GRAYSCALE;
     config->max_frames = DEFAULT_MAX_FRAMES;
     config->enable_benchmark = DEFAULT_ENABLE_BENCHMARK;
+    config->lossless_output = DEFAULT_LOSSLESS_OUTPUT;
     config->frame_slots = DEFAULT_FRAME_SLOTS;
     config->decoder_threads = DEFAULT_DECODER_THREADS;
     config->encoder_threads = DEFAULT_ENCODER_THREADS;
@@ -106,6 +115,17 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
             }
         } else if (strcmp(arg, "--benchmark") == 0 && i + 1 < argc) {
             if (copy_path(config->benchmark_path, sizeof(config->benchmark_path), argv[++i]) != 0) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--encoder") == 0 && i + 1 < argc) {
+            const char *encoder = argv[++i];
+            if (strcmp(encoder, "libx264") != 0 &&
+                strcmp(encoder, "libx264rgb") != 0 &&
+                strcmp(encoder, "h264_nvenc") != 0 &&
+                strcmp(encoder, "mpeg4") != 0) {
+                return -1;
+            }
+            if (copy_path(config->encoder_name, sizeof(config->encoder_name), encoder) != 0) {
                 return -1;
             }
         } else if (strcmp(arg, "--mode") == 0 && i + 1 < argc) {
@@ -143,6 +163,10 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
             }
         } else if (strcmp(arg, "--no-benchmark") == 0) {
             config->enable_benchmark = 0;
+        } else if (strcmp(arg, "--lossless") == 0) {
+            config->lossless_output = 1;
+        } else if (strcmp(arg, "--lossy") == 0) {
+            config->lossless_output = 0;
         } else {
             return -1;
         }
@@ -159,10 +183,12 @@ void pipeline_config_print(const PipelineConfig *config) {
     printf("input_path: %s\n", config->input_path);
     printf("output_path: %s\n", config->output_path);
     printf("benchmark_path: %s\n", config->benchmark_path);
+    printf("encoder: %s\n", config->encoder_name);
     printf("mode: %s\n", mode_to_string(config->mode));
     printf("filter: %s\n", filter_to_string(config->filter));
     printf("max_frames: %d\n", config->max_frames);
     printf("enable_benchmark: %s\n", config->enable_benchmark ? "true" : "false");
+    printf("lossless_output: %s\n", config->lossless_output ? "true" : "false");
     printf("frame_slots: %d\n", config->frame_slots);
     printf("decoder_threads: %d\n", config->decoder_threads);
     printf("encoder_threads: %d\n", config->encoder_threads);

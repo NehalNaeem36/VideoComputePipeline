@@ -7,5 +7,6 @@ int cpu_grayscale(const Frame *input, Frame *output);
 int cpu_blur3x3(const Frame *input, Frame *output);
 int cpu_blur5x5(const Frame *input, Frame *output);
 int cpu_blur9x9(const Frame *input, Frame *output);
+int cpu_blur13x13(const Frame *input, Frame *output);
 
 #endif

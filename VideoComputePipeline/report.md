@@ -67,6 +67,27 @@ CPU RGB24 -> GPU upload -> OpenCL kernel -> CPU RGB24 download
 
 This means upload/download bandwidth is a major part of total frame time.
 
+## Output Quality
+
+The writer preserves the decoded input width, height, and frame rate for the output video.
+
+Normal output is compressed H.264/MPEG-4 video. Lossless output is enabled with:
+
+```text
+--lossless
+```
+
+Current lossless behavior:
+
+```text
+libx264 + --lossless -> libx264rgb, RGB24, QP/CRF 0
+h264_nvenc + --lossless -> NVENC lossless constant QP, YUV420P
+```
+
+This avoids the default `YUV420P` chroma subsampling path for lossless x264 output. NVENC lossless output still requires an RGB-to-YUV conversion in the current pipeline. A 4:4:4 NVENC lossless path was tested, but it caused OpenCL/NVENC resource failures during 4K blur processing on the RTX 3050 Laptop GPU, so the stable NVENC lossless path uses `YUV420P`.
+
+MP4 output is still encoded video. Literal raw uncompressed video is not the intended output format for this project.
+
 ## Implemented Filters
 
 CPU and GPU modes support:
@@ -76,6 +97,7 @@ grayscale
 blur3x3
 blur5x5
 blur9x9
+blur13x13
 ```
 
 Blur filters use box blur with edge clamping. Edge clamping repeats the nearest valid edge pixel when a kernel reads outside the image boundary.
@@ -119,6 +141,7 @@ The best observed full-quality 4K `blur5x5` settings so far are lower-contention
   --input data\input\15592600_3840_2160_60fps.mp4 `
   --output data\output\threaded_gpu_blur5x5.mp4 `
   --benchmark benchmarks\threaded_gpu_blur5x5.csv `
+  --encoder h264_nvenc `
   --mode gpu `
   --filter blur5x5 `
   --frame-slots 3 `
@@ -178,14 +201,19 @@ Practical next steps:
 
 ```text
 1. Add configurable bitrate, e.g. --bitrate-mbps 50
-2. Add NVENC encoder mode for GPU-assisted encoding
-3. Consider NVDEC hardware decoding
-4. Reduce RGB24 round-trips by using NV12/YUV420P internally
-5. Explore keeping frames GPU-side longer
-6. Add wall-clock whole-run throughput reporting
+2. Consider NVDEC hardware decoding
+3. Reduce RGB24 round-trips by using NV12/YUV420P internally
+4. Explore keeping frames GPU-side longer
+5. Add wall-clock whole-run throughput reporting
 ```
 
-The biggest architectural improvement would be:
+NVENC encoding is available through:
+
+```text
+--encoder h264_nvenc
+```
+
+The biggest remaining architectural improvement would be:
 
 ```text
 NVDEC decode -> GPU processing -> NVENC encode

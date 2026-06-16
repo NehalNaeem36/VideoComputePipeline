@@ -8,7 +8,24 @@
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 
+#include <stdint.h>
 #include <string.h>
+
+static int is_h264_encoder(const char *name) {
+    return name &&
+           (strcmp(name, "libx264") == 0 ||
+            strcmp(name, "libx264rgb") == 0 ||
+            strcmp(name, "h264") == 0 ||
+            strcmp(name, "h264_nvenc") == 0);
+}
+
+static int is_rgb_encoder(const char *name) {
+    return name && strcmp(name, "libx264rgb") == 0;
+}
+
+static int is_nvenc_encoder(const char *name) {
+    return name && strcmp(name, "h264_nvenc") == 0;
+}
 
 static AVRational fps_to_time_base(double fps) {
     if (fps <= 0.0) {
@@ -49,8 +66,26 @@ int video_writer_open(VideoWriter *writer, const char *output_path, int width, i
 }
 
 int video_writer_open_with_threads(VideoWriter *writer, const char *output_path, int width, int height, double fps, int encoder_threads) {
+    return video_writer_open_with_options(writer, output_path, width, height, fps, encoder_threads, "libx264", 0);
+}
+
+int video_writer_open_with_options(VideoWriter *writer, const char *output_path, int width, int height, double fps, int encoder_threads, const char *encoder_name, int lossless) {
     if (!writer || !output_path || width <= 0 || height <= 0) {
         return -1;
+    }
+
+    if (!encoder_name || encoder_name[0] == '\0') {
+        encoder_name = "libx264";
+    }
+    if (lossless && strcmp(encoder_name, "libx264") == 0) {
+        encoder_name = "libx264rgb";
+    }
+    if (lossless && strcmp(encoder_name, "mpeg4") == 0) {
+        log_error("mpeg4 output is not supported for lossless mode; use libx264 or h264_nvenc");
+        return -1;
+    }
+    if (lossless && is_nvenc_encoder(encoder_name)) {
+        log_warn("h264_nvenc lossless uses YUV420P to avoid OpenCL/NVENC 4:4:4 resource pressure; use --encoder libx264 for RGB lossless output");
     }
 
     memset(writer, 0, sizeof(*writer));
@@ -63,11 +98,17 @@ int video_writer_open_with_threads(VideoWriter *writer, const char *output_path,
         return -1;
     }
 
-    const AVCodec *encoder = avcodec_find_encoder_by_name("libx264");
-    if (!encoder) {
+    const AVCodec *encoder = avcodec_find_encoder_by_name(encoder_name);
+    if (!encoder && strcmp(encoder_name, "libx264") == 0) {
         encoder = avcodec_find_encoder(AV_CODEC_ID_H264);
     }
     if (!encoder) {
+        log_error("requested encoder is not available: %s", encoder_name);
+        avformat_free_context(format_ctx);
+        return -1;
+    }
+
+    if (strcmp(encoder_name, "mpeg4") == 0 && encoder->id != AV_CODEC_ID_MPEG4) {
         encoder = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
     }
     if (!encoder) {
@@ -93,10 +134,23 @@ int video_writer_open_with_threads(VideoWriter *writer, const char *output_path,
     codec_ctx->codec_type = AVMEDIA_TYPE_VIDEO;
     codec_ctx->width = width;
     codec_ctx->height = height;
-    codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+    enum AVPixelFormat output_pix_fmt = AV_PIX_FMT_YUV420P;
+    if (is_rgb_encoder(encoder_name)) {
+        output_pix_fmt = AV_PIX_FMT_RGB24;
+    } else if (lossless && is_nvenc_encoder(encoder_name)) {
+        output_pix_fmt = AV_PIX_FMT_YUV420P;
+    }
+
+    const int nvenc_lossless = lossless && is_nvenc_encoder(encoder_name);
+
+    codec_ctx->pix_fmt = output_pix_fmt;
     codec_ctx->time_base = fps_to_time_base(fps);
     codec_ctx->framerate = av_inv_q(codec_ctx->time_base);
-    codec_ctx->bit_rate = 4000000;
+    codec_ctx->bit_rate = nvenc_lossless ? 1000000000LL : (lossless ? 0 : 4000000);
+    if (nvenc_lossless) {
+        codec_ctx->rc_max_rate = 1000000000LL;
+        codec_ctx->rc_buffer_size = 1000000000;
+    }
     codec_ctx->gop_size = 30;
     codec_ctx->max_b_frames = 0;
     codec_ctx->thread_count = encoder_threads > 0 ? encoder_threads : 4;
@@ -106,12 +160,31 @@ int video_writer_open_with_threads(VideoWriter *writer, const char *output_path,
         codec_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
 
-    if (encoder->id == AV_CODEC_ID_H264) {
+    if (is_nvenc_encoder(encoder_name)) {
+        av_opt_set(codec_ctx->priv_data, "preset", "p1", 0);
+        av_opt_set(codec_ctx->priv_data, "tune", lossless ? "lossless" : "ull", 0);
+        av_opt_set(codec_ctx->priv_data, "rc", lossless ? "constqp" : "cbr", 0);
+        av_opt_set(codec_ctx->priv_data, "zerolatency", "1", 0);
+        av_opt_set(codec_ctx->priv_data, "delay", "0", 0);
+        av_opt_set(codec_ctx->priv_data, "bf", "0", 0);
+        if (lossless) {
+            av_opt_set(codec_ctx->priv_data, "qp", "0", 0);
+            av_opt_set(codec_ctx->priv_data, "init_qpI", "0", 0);
+            av_opt_set(codec_ctx->priv_data, "init_qpP", "0", 0);
+            av_opt_set(codec_ctx->priv_data, "init_qpB", "0", 0);
+            av_opt_set(codec_ctx->priv_data, "rgb_mode", "yuv444", 0);
+            av_opt_set(codec_ctx->priv_data, "surfaces", "4", 0);
+        }
+    } else if (is_h264_encoder(encoder_name) || encoder->id == AV_CODEC_ID_H264) {
         av_opt_set(codec_ctx->priv_data, "preset", "ultrafast", 0);
         av_opt_set(codec_ctx->priv_data, "tune", "zerolatency", 0);
         av_opt_set(codec_ctx->priv_data, "rc-lookahead", "0", 0);
         av_opt_set(codec_ctx->priv_data, "sync-lookahead", "0", 0);
         av_opt_set(codec_ctx->priv_data, "bframes", "0", 0);
+        if (lossless) {
+            av_opt_set(codec_ctx->priv_data, "qp", "0", 0);
+            av_opt_set(codec_ctx->priv_data, "crf", "0", 0);
+        }
     }
 
     if (avcodec_open2(codec_ctx, encoder, NULL) < 0 ||
@@ -138,23 +211,26 @@ int video_writer_open_with_threads(VideoWriter *writer, const char *output_path,
         return -1;
     }
 
-    struct SwsContext *sws = sws_getContext(width,
-                                           height,
-                                           AV_PIX_FMT_RGB24,
-                                           width,
-                                           height,
-                                           AV_PIX_FMT_YUV420P,
-                                           SWS_BILINEAR,
-                                           NULL,
-                                           NULL,
-                                           NULL);
-    if (!sws) {
-        av_packet_free(&packet);
-        av_frame_free(&rgb);
-        av_frame_free(&yuv);
-        avcodec_free_context(&codec_ctx);
-        avformat_free_context(format_ctx);
-        return -1;
+    struct SwsContext *sws = NULL;
+    if (codec_ctx->pix_fmt != AV_PIX_FMT_RGB24) {
+        sws = sws_getContext(width,
+                             height,
+                             AV_PIX_FMT_RGB24,
+                             width,
+                             height,
+                             codec_ctx->pix_fmt,
+                             SWS_BILINEAR,
+                             NULL,
+                             NULL,
+                             NULL);
+        if (!sws) {
+            av_packet_free(&packet);
+            av_frame_free(&rgb);
+            av_frame_free(&yuv);
+            avcodec_free_context(&codec_ctx);
+            avformat_free_context(format_ctx);
+            return -1;
+        }
     }
 
     if (!(format_ctx->oformat->flags & AVFMT_NOFILE)) {
@@ -194,6 +270,7 @@ int video_writer_open_with_threads(VideoWriter *writer, const char *output_path,
     writer->fps = fps;
     writer->next_pts = 0;
     writer->is_open = 1;
+    snprintf(writer->encoder_name, sizeof(writer->encoder_name), "%s", encoder_name);
     return 0;
 }
 
@@ -216,7 +293,14 @@ int video_writer_write_frame(VideoWriter *writer, const Frame *frame) {
 
     const uint8_t *src_data[4] = { frame->data, NULL, NULL, NULL };
     int src_linesize[4] = { (int)frame->stride, 0, 0, 0 };
-    sws_scale(sws, src_data, src_linesize, 0, writer->height, yuv->data, yuv->linesize);
+    if (codec_ctx->pix_fmt == AV_PIX_FMT_RGB24) {
+        const int row_bytes = writer->width * 3;
+        for (int y = 0; y < writer->height; ++y) {
+            memcpy(yuv->data[0] + y * yuv->linesize[0], frame->data + (size_t)y * frame->stride, (size_t)row_bytes);
+        }
+    } else {
+        sws_scale(sws, src_data, src_linesize, 0, writer->height, yuv->data, yuv->linesize);
+    }
     yuv->pts = writer->next_pts++;
 
     if (avcodec_send_frame(codec_ctx, yuv) < 0) {

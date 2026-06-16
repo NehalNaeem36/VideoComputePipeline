@@ -19,6 +19,7 @@ int main(void) {
     input.data[0] = 255;
     TEST_ASSERT(gpu_grayscale(&gpu, &input, &output) == 0);
     TEST_ASSERT(frame_is_valid(&output));
+    TEST_ASSERT(gpu_blur13x13(&gpu, &input, &output) == 0);
     frame_free(&input);
     frame_free(&output);
     gpu_filters_release(&gpu);

@@ -18,10 +18,12 @@ static int pipeline_config_test_defaults(void) {
     TEST_ASSERT(strcmp(config.input_path, DEFAULT_INPUT_PATH) == 0);
     TEST_ASSERT(strcmp(config.output_path, DEFAULT_OUTPUT_PATH) == 0);
     TEST_ASSERT(strcmp(config.benchmark_path, DEFAULT_BENCHMARK_PATH) == 0);
+    TEST_ASSERT(strcmp(config.encoder_name, DEFAULT_ENCODER_NAME) == 0);
     TEST_ASSERT(config.mode == PROCESS_CPU);
     TEST_ASSERT(config.filter == FILTER_GRAYSCALE);
     TEST_ASSERT(config.max_frames == DEFAULT_MAX_FRAMES);
     TEST_ASSERT(config.enable_benchmark == DEFAULT_ENABLE_BENCHMARK);
+    TEST_ASSERT(config.lossless_output == DEFAULT_LOSSLESS_OUTPUT);
     TEST_ASSERT(config.frame_slots == DEFAULT_FRAME_SLOTS);
     TEST_ASSERT(config.decoder_threads == DEFAULT_DECODER_THREADS);
     TEST_ASSERT(config.encoder_threads == DEFAULT_ENCODER_THREADS);
@@ -35,8 +37,10 @@ static int pipeline_config_test_parse_args(void) {
         "--input", "input.mp4",
         "--output", "output.mp4",
         "--benchmark", "bench.csv",
+        "--encoder", "h264_nvenc",
+        "--lossless",
         "--mode", "gpu",
-        "--filter", "blur9x9",
+        "--filter", "blur13x13",
         "--max-frames", "12",
         "--frame-slots", "8",
         "--decoder-threads", "3",
@@ -53,9 +57,11 @@ static int pipeline_config_test_parse_args(void) {
     TEST_ASSERT(strcmp(config.input_path, "input.mp4") == 0);
     TEST_ASSERT(strcmp(config.output_path, "output.mp4") == 0);
     TEST_ASSERT(strcmp(config.benchmark_path, "bench.csv") == 0);
+    TEST_ASSERT(strcmp(config.encoder_name, "h264_nvenc") == 0);
     TEST_ASSERT(config.mode == PROCESS_GPU);
-    TEST_ASSERT(config.filter == FILTER_BLUR_9X9);
+    TEST_ASSERT(config.filter == FILTER_BLUR_13X13);
     TEST_ASSERT(config.max_frames == 12);
+    TEST_ASSERT(config.lossless_output == 1);
     TEST_ASSERT(config.frame_slots == 8);
     TEST_ASSERT(config.decoder_threads == 3);
     TEST_ASSERT(config.encoder_threads == 5);

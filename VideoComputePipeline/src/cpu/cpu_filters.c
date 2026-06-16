@@ -53,13 +53,18 @@ int cpu_grayscale(const Frame *input, Frame *output) {
     return 0;
 }
 
-static int cpu_box_blur(const Frame *input, Frame *output, int radius) {
+static int cpu_box_blur(const Frame *input, Frame *output, int kernel_size) {
     if (ensure_rgb_output(input, output) != 0) {
         return -1;
     }
 
-    const int diameter = radius * 2 + 1;
-    const int area = diameter * diameter;
+    if (kernel_size <= 0) {
+        return -1;
+    }
+
+    const int start = -(kernel_size / 2);
+    const int end = start + kernel_size;
+    const int area = kernel_size * kernel_size;
 
     for (int y = 0; y < input->height; ++y) {
         unsigned char *dst_row = output->data + (size_t)y * output->stride;
@@ -69,11 +74,11 @@ static int cpu_box_blur(const Frame *input, Frame *output, int radius) {
             int sum_g = 0;
             int sum_b = 0;
 
-            for (int ky = -radius; ky <= radius; ++ky) {
+            for (int ky = start; ky < end; ++ky) {
                 const int sy = clamp_int(y + ky, 0, input->height - 1);
                 const unsigned char *src_row = input->data + (size_t)sy * input->stride;
 
-                for (int kx = -radius; kx <= radius; ++kx) {
+                for (int kx = start; kx < end; ++kx) {
                     const int sx = clamp_int(x + kx, 0, input->width - 1);
                     const unsigned char *pixel = src_row + sx * 3;
                     sum_r += pixel[0];
@@ -92,13 +97,17 @@ static int cpu_box_blur(const Frame *input, Frame *output, int radius) {
 }
 
 int cpu_blur3x3(const Frame *input, Frame *output) {
-    return cpu_box_blur(input, output, 1);
+    return cpu_box_blur(input, output, 3);
 }
 
 int cpu_blur5x5(const Frame *input, Frame *output) {
-    return cpu_box_blur(input, output, 2);
+    return cpu_box_blur(input, output, 5);
 }
 
 int cpu_blur9x9(const Frame *input, Frame *output) {
-    return cpu_box_blur(input, output, 4);
+    return cpu_box_blur(input, output, 9);
+}
+
+int cpu_blur13x13(const Frame *input, Frame *output) {
+    return cpu_box_blur(input, output, 13);
 }

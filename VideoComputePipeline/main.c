@@ -13,13 +13,15 @@ static void print_usage(const char *program_name) {
     printf("  --input path              Input MP4 path\n");
     printf("  --output path             Output MP4 path\n");
     printf("  --benchmark path          Benchmark CSV path\n");
+    printf("  --encoder name            libx264, libx264rgb, h264_nvenc, or mpeg4\n");
     printf("  --mode cpu|gpu            Processing mode\n");
-    printf("  --filter grayscale|blur3x3|blur5x5|blur9x9\n");
+    printf("  --filter grayscale|blur3x3|blur5x5|blur9x9|blur13x13\n");
     printf("  --max-frames N            Stop after N frames, 0 means no limit\n");
     printf("  --frame-slots N           Frames buffered between pipeline stages\n");
     printf("  --decoder-threads N       FFmpeg decoder worker threads\n");
     printf("  --encoder-threads N       FFmpeg encoder worker threads\n");
     printf("  --processor-workers N     CPU processor workers, GPU mode uses one worker\n");
+    printf("  --lossless                Use lossless encoder settings when supported\n");
     printf("  --no-benchmark            Disable benchmark output\n");
     printf("  --help                    Show this help message\n");
     printf("  --version                 Show version information\n");

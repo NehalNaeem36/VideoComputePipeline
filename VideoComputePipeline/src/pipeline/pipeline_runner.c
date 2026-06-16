@@ -266,6 +266,8 @@ static int process_cpu(FilterType filter, const Frame *input, Frame *output) {
             return cpu_blur5x5(input, output);
         case FILTER_BLUR_9X9:
             return cpu_blur9x9(input, output);
+        case FILTER_BLUR_13X13:
+            return cpu_blur13x13(input, output);
         default:
             return -1;
     }
@@ -281,6 +283,8 @@ static int process_gpu(FilterType filter, GPUFilterContext *gpu, const Frame *in
             return gpu_blur5x5(gpu, input, output);
         case FILTER_BLUR_9X9:
             return gpu_blur9x9(gpu, input, output);
+        case FILTER_BLUR_13X13:
+            return gpu_blur13x13(gpu, input, output);
         default:
             return -1;
     }
@@ -328,10 +332,14 @@ static void *decoder_thread_main(void *arg)
             packet_free(&packet);
             break;
         }
-        if (read_result < 0 || ctx->failed) {
+        if (read_result < 0) {
             packet_free(&packet);
             log_error("decoder worker failed");
             pipeline_fail(ctx);
+            break;
+        }
+        if (ctx->failed) {
+            packet_free(&packet);
             break;
         }
 
@@ -590,7 +598,26 @@ int pipeline_run(const PipelineConfig *config) {
     pthread_mutex_init(&ctx.active_lock, NULL);
 #endif
 
-    const int processor_workers = config->mode == PROCESS_GPU ? 1 : config->processor_workers;
+    int effective_frame_slots = config->frame_slots;
+    int effective_decoder_threads = config->decoder_threads;
+    int effective_encoder_threads = config->encoder_threads;
+    int effective_processor_workers = config->processor_workers;
+    if (config->lossless_output) {
+        if (effective_frame_slots > 1) {
+            effective_frame_slots = 1;
+        }
+        if (effective_decoder_threads > 2) {
+            effective_decoder_threads = 2;
+        }
+        if (effective_encoder_threads > 2) {
+            effective_encoder_threads = 2;
+        }
+        if (config->mode == PROCESS_CPU && effective_processor_workers > 1) {
+            effective_processor_workers = 1;
+        }
+    }
+
+    const int processor_workers = config->mode == PROCESS_GPU ? 1 : effective_processor_workers;
     ctx.processor_workers = processor_workers > 0 ? processor_workers : 1;
 #ifdef _WIN32
     ctx.active_processors = ctx.processor_workers;
@@ -598,15 +625,15 @@ int pipeline_run(const PipelineConfig *config) {
     ctx.active_processors = ctx.processor_workers;
 #endif
 
-    if (packet_queue_init(&ctx.raw_queue, (size_t)config->frame_slots) != 0 ||
-        packet_queue_init(&ctx.processed_queue, (size_t)config->frame_slots) != 0) {
+    if (packet_queue_init(&ctx.raw_queue, (size_t)effective_frame_slots) != 0 ||
+        packet_queue_init(&ctx.processed_queue, (size_t)effective_frame_slots) != 0) {
         log_error("failed to initialize pipeline queues");
         packet_queue_free(&ctx.raw_queue);
         packet_queue_free(&ctx.processed_queue);
         return -1;
     }
 
-    if (video_reader_open_with_threads(&ctx.reader, config->input_path, config->decoder_threads) != 0) {
+    if (video_reader_open_with_threads(&ctx.reader, config->input_path, effective_decoder_threads) != 0) {
         log_error("failed to open input video: %s", config->input_path);
         packet_queue_free(&ctx.raw_queue);
         packet_queue_free(&ctx.processed_queue);
@@ -622,12 +649,14 @@ int pipeline_run(const PipelineConfig *config) {
         return -1;
     }
 
-    if (video_writer_open_with_threads(&ctx.writer,
+    if (video_writer_open_with_options(&ctx.writer,
                                        config->output_path,
                                        info->width,
                                        info->height,
                                        info->fps,
-                                       config->encoder_threads) != 0) {
+                                       effective_encoder_threads,
+                                       config->encoder_name,
+                                       config->lossless_output) != 0) {
         log_error("failed to open output video: %s", config->output_path);
         video_reader_close(&ctx.reader);
         packet_queue_free(&ctx.raw_queue);
@@ -648,10 +677,22 @@ int pipeline_run(const PipelineConfig *config) {
         opencl_context_print_info(&ctx.gpu.ctx);
     }
 
+    if (config->lossless_output &&
+        (effective_frame_slots != config->frame_slots ||
+         effective_decoder_threads != config->decoder_threads ||
+         effective_encoder_threads != config->encoder_threads ||
+         effective_processor_workers != config->processor_workers)) {
+        log_info("lossless memory profile: frame_slots=%d decoder_threads=%d encoder_threads=%d processor_workers=%d",
+                 effective_frame_slots,
+                 effective_decoder_threads,
+                 effective_encoder_threads,
+                 ctx.processor_workers);
+    }
+
     log_info("pipeline workers: decoder_stage=1 ffmpeg_decoder_threads=%d processor_workers=%d encoder_stage=1 ffmpeg_encoder_threads=%d",
-             config->decoder_threads,
+             effective_decoder_threads,
              ctx.processor_workers,
-             config->encoder_threads);
+             effective_encoder_threads);
 
 #ifdef _WIN32
     HANDLE decoder_thread = CreateThread(NULL, 0, decoder_thread_main, &ctx, 0, NULL);

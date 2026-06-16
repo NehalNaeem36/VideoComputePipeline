@@ -4,6 +4,7 @@
 #include "core/frame.h"
 
 typedef struct {
+    char encoder_name[64];
     void *format_ctx;
     void *codec_ctx;
     void *stream;
@@ -20,6 +21,7 @@ typedef struct {
 
 int video_writer_open(VideoWriter *writer, const char *output_path, int width, int height, double fps);
 int video_writer_open_with_threads(VideoWriter *writer, const char *output_path, int width, int height, double fps, int encoder_threads);
+int video_writer_open_with_options(VideoWriter *writer, const char *output_path, int width, int height, double fps, int encoder_threads, const char *encoder_name, int lossless);
 int video_writer_write_frame(VideoWriter *writer, const Frame *frame);
 int video_writer_flush(VideoWriter *writer);
 void video_writer_close(VideoWriter *writer);

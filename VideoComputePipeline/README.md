@@ -80,6 +80,7 @@ Threaded GPU run with explicit worker settings:
   --input data/input/15592600_3840_2160_60fps.mp4 \
   --output data/output/gpu_threaded_grayscale.mp4 \
   --benchmark benchmarks/gpu_threaded_grayscale.csv \
+  --encoder h264_nvenc \
   --mode gpu \
   --filter grayscale \
   --frame-slots 8 \
@@ -97,6 +98,7 @@ Recommended lower-contention GPU settings for full 4K blur benchmarks:
   --input data\input\15592600_3840_2160_60fps.mp4 `
   --output data\output\threaded_gpu_blur5x5.mp4 `
   --benchmark benchmarks\threaded_gpu_blur5x5.csv `
+  --encoder h264_nvenc `
   --mode gpu `
   --filter blur5x5 `
   --frame-slots 3 `
@@ -106,6 +108,25 @@ Recommended lower-contention GPU settings for full 4K blur benchmarks:
 ```
 
 These settings reduce contention between FFmpeg decode/encode, CPU memory bandwidth, and OpenCL upload/download. On the 4K high-quality input video, consistent average total frame times below 60 ms/frame for `blur5x5` are a good result for the current RGB24 pipeline. That is roughly 16+ processed frames per second end-to-end, including decode, GPU upload, kernel execution, download, encode, and benchmark recording.
+
+Lossless output mode:
+
+```powershell
+.\build-win\bin\VideoComputePipeline.exe `
+  --input data\input\15592600_3840_2160_60fps.mp4 `
+  --output data\output\lossless_gpu_blur5x5.mp4 `
+  --benchmark benchmarks\lossless_gpu_blur5x5.csv `
+  --encoder h264_nvenc `
+  --lossless `
+  --mode gpu `
+  --filter blur5x5 `
+  --frame-slots 3 `
+  --decoder-threads 2 `
+  --encoder-threads 2 `
+  --processor-workers 1
+```
+
+`--lossless` preserves the decoded input frame dimensions and frame rate in the output and uses lossless encoder settings where supported. With `--encoder libx264`, the writer switches to `libx264rgb` so RGB24 frames are not converted to `YUV420P`. With `--encoder h264_nvenc`, the writer uses NVENC lossless constant-QP settings with `YUV420P`; this is the stable lower-resource path for OpenCL processing plus NVENC on the RTX 3050 Laptop GPU. MP4 output is still an encoded video stream, not literal raw uncompressed video.
 
 For a quick smoke run:
 
@@ -119,13 +140,15 @@ For a quick smoke run:
 --input path
 --output path
 --benchmark path
+--encoder libx264|libx264rgb|h264_nvenc|mpeg4
 --mode cpu|gpu
---filter grayscale|blur3x3|blur5x5|blur9x9
+--filter grayscale|blur3x3|blur5x5|blur9x9|blur13x13
 --max-frames N
 --frame-slots N
 --decoder-threads N
 --encoder-threads N
 --processor-workers N
+--lossless
 --no-benchmark
 --help
 --version
@@ -144,6 +167,8 @@ frame_index,decode_ms,process_ms,upload_ms,kernel_ms,download_ms,encode_ms,total
 ```
 
 For CPU mode, upload/kernel/download columns remain zero. For GPU mode, process time includes upload, kernel execution, and download.
+
+`--encoder h264_nvenc` uses NVIDIA NVENC for H.264 output when the installed FFmpeg build exposes that encoder. `--encoder libx264` uses CPU x264, `--encoder libx264rgb` uses RGB x264, and `--encoder mpeg4` uses FFmpeg's MPEG-4 fallback encoder. Use `--encoder libx264 --lossless` for RGB lossless output, or `--encoder h264_nvenc --lossless` for faster GPU-assisted lossless-quantized H.264 output.
 
 ## Module Layout
 

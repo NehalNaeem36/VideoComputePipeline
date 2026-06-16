@@ -21,6 +21,7 @@ int main(void) {
     TEST_ASSERT(cpu_blur3x3(&input, &output) == 0);
     TEST_ASSERT(cpu_blur5x5(&input, &output) == 0);
     TEST_ASSERT(cpu_blur9x9(&input, &output) == 0);
+    TEST_ASSERT(cpu_blur13x13(&input, &output) == 0);
 
     frame_free(&input);
     frame_free(&output);

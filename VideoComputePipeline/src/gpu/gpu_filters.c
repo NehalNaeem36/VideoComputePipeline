@@ -14,6 +14,111 @@ static int build_kernel_path(char *dest, size_t dest_size, const char *filename)
     return written < 0 || (size_t)written >= dest_size ? -1 : 0;
 }
 
+static const char *opencl_error_name(cl_int err) {
+    switch (err) {
+        case CL_SUCCESS:
+            return "CL_SUCCESS";
+        case CL_DEVICE_NOT_FOUND:
+            return "CL_DEVICE_NOT_FOUND";
+        case CL_DEVICE_NOT_AVAILABLE:
+            return "CL_DEVICE_NOT_AVAILABLE";
+        case CL_COMPILER_NOT_AVAILABLE:
+            return "CL_COMPILER_NOT_AVAILABLE";
+        case CL_MEM_OBJECT_ALLOCATION_FAILURE:
+            return "CL_MEM_OBJECT_ALLOCATION_FAILURE";
+        case CL_OUT_OF_RESOURCES:
+            return "CL_OUT_OF_RESOURCES";
+        case CL_OUT_OF_HOST_MEMORY:
+            return "CL_OUT_OF_HOST_MEMORY";
+        case CL_PROFILING_INFO_NOT_AVAILABLE:
+            return "CL_PROFILING_INFO_NOT_AVAILABLE";
+        case CL_MEM_COPY_OVERLAP:
+            return "CL_MEM_COPY_OVERLAP";
+        case CL_IMAGE_FORMAT_MISMATCH:
+            return "CL_IMAGE_FORMAT_MISMATCH";
+        case CL_IMAGE_FORMAT_NOT_SUPPORTED:
+            return "CL_IMAGE_FORMAT_NOT_SUPPORTED";
+        case CL_BUILD_PROGRAM_FAILURE:
+            return "CL_BUILD_PROGRAM_FAILURE";
+        case CL_MAP_FAILURE:
+            return "CL_MAP_FAILURE";
+        case CL_INVALID_VALUE:
+            return "CL_INVALID_VALUE";
+        case CL_INVALID_DEVICE_TYPE:
+            return "CL_INVALID_DEVICE_TYPE";
+        case CL_INVALID_PLATFORM:
+            return "CL_INVALID_PLATFORM";
+        case CL_INVALID_DEVICE:
+            return "CL_INVALID_DEVICE";
+        case CL_INVALID_CONTEXT:
+            return "CL_INVALID_CONTEXT";
+        case CL_INVALID_QUEUE_PROPERTIES:
+            return "CL_INVALID_QUEUE_PROPERTIES";
+        case CL_INVALID_COMMAND_QUEUE:
+            return "CL_INVALID_COMMAND_QUEUE";
+        case CL_INVALID_HOST_PTR:
+            return "CL_INVALID_HOST_PTR";
+        case CL_INVALID_MEM_OBJECT:
+            return "CL_INVALID_MEM_OBJECT";
+        case CL_INVALID_IMAGE_FORMAT_DESCRIPTOR:
+            return "CL_INVALID_IMAGE_FORMAT_DESCRIPTOR";
+        case CL_INVALID_IMAGE_SIZE:
+            return "CL_INVALID_IMAGE_SIZE";
+        case CL_INVALID_SAMPLER:
+            return "CL_INVALID_SAMPLER";
+        case CL_INVALID_BINARY:
+            return "CL_INVALID_BINARY";
+        case CL_INVALID_BUILD_OPTIONS:
+            return "CL_INVALID_BUILD_OPTIONS";
+        case CL_INVALID_PROGRAM:
+            return "CL_INVALID_PROGRAM";
+        case CL_INVALID_PROGRAM_EXECUTABLE:
+            return "CL_INVALID_PROGRAM_EXECUTABLE";
+        case CL_INVALID_KERNEL_NAME:
+            return "CL_INVALID_KERNEL_NAME";
+        case CL_INVALID_KERNEL_DEFINITION:
+            return "CL_INVALID_KERNEL_DEFINITION";
+        case CL_INVALID_KERNEL:
+            return "CL_INVALID_KERNEL";
+        case CL_INVALID_ARG_INDEX:
+            return "CL_INVALID_ARG_INDEX";
+        case CL_INVALID_ARG_VALUE:
+            return "CL_INVALID_ARG_VALUE";
+        case CL_INVALID_ARG_SIZE:
+            return "CL_INVALID_ARG_SIZE";
+        case CL_INVALID_KERNEL_ARGS:
+            return "CL_INVALID_KERNEL_ARGS";
+        case CL_INVALID_WORK_DIMENSION:
+            return "CL_INVALID_WORK_DIMENSION";
+        case CL_INVALID_WORK_GROUP_SIZE:
+            return "CL_INVALID_WORK_GROUP_SIZE";
+        case CL_INVALID_WORK_ITEM_SIZE:
+            return "CL_INVALID_WORK_ITEM_SIZE";
+        case CL_INVALID_GLOBAL_OFFSET:
+            return "CL_INVALID_GLOBAL_OFFSET";
+        case CL_INVALID_EVENT_WAIT_LIST:
+            return "CL_INVALID_EVENT_WAIT_LIST";
+        case CL_INVALID_EVENT:
+            return "CL_INVALID_EVENT";
+        case CL_INVALID_OPERATION:
+            return "CL_INVALID_OPERATION";
+        case CL_INVALID_GL_OBJECT:
+            return "CL_INVALID_GL_OBJECT";
+        case CL_INVALID_BUFFER_SIZE:
+            return "CL_INVALID_BUFFER_SIZE";
+        case CL_INVALID_MIP_LEVEL:
+            return "CL_INVALID_MIP_LEVEL";
+        case CL_INVALID_GLOBAL_WORK_SIZE:
+            return "CL_INVALID_GLOBAL_WORK_SIZE";
+        default:
+            return "CL_UNKNOWN_ERROR";
+    }
+}
+
+static void log_opencl_error(const char *operation, cl_int err) {
+    log_error("%s failed: %s (%d)", operation, opencl_error_name(err), (int)err);
+}
+
 static int create_kernel(OpenCLProgram *program, const char *name, cl_kernel *kernel) {
     cl_int err = CL_SUCCESS;
     *kernel = clCreateKernel(program->program, name, &err);
@@ -34,10 +139,12 @@ int gpu_filters_init(GPUFilterContext *gpu) {
     char blur3x3_path[1024];
     char blur5x5_path[1024];
     char blur9x9_path[1024];
+    char blur13x13_path[1024];
     if (build_kernel_path(grayscale_path, sizeof(grayscale_path), "grayscale.cl") != 0 ||
         build_kernel_path(blur3x3_path, sizeof(blur3x3_path), "blur3x3.cl") != 0 ||
         build_kernel_path(blur5x5_path, sizeof(blur5x5_path), "blur5x5.cl") != 0 ||
-        build_kernel_path(blur9x9_path, sizeof(blur9x9_path), "blur9x9.cl") != 0) {
+        build_kernel_path(blur9x9_path, sizeof(blur9x9_path), "blur9x9.cl") != 0 ||
+        build_kernel_path(blur13x13_path, sizeof(blur13x13_path), "blur13x13.cl") != 0) {
         gpu_filters_release(gpu);
         return -1;
     }
@@ -46,10 +153,12 @@ int gpu_filters_init(GPUFilterContext *gpu) {
         opencl_program_build(&gpu->blur3x3_program, &gpu->ctx, blur3x3_path) != 0 ||
         opencl_program_build(&gpu->blur5x5_program, &gpu->ctx, blur5x5_path) != 0 ||
         opencl_program_build(&gpu->blur9x9_program, &gpu->ctx, blur9x9_path) != 0 ||
+        opencl_program_build(&gpu->blur13x13_program, &gpu->ctx, blur13x13_path) != 0 ||
         create_kernel(&gpu->grayscale_program, "grayscale_rgb24", &gpu->grayscale_kernel) != 0 ||
         create_kernel(&gpu->blur3x3_program, "blur3x3_rgb24", &gpu->blur3x3_kernel) != 0 ||
         create_kernel(&gpu->blur5x5_program, "blur5x5_rgb24", &gpu->blur5x5_kernel) != 0 ||
-        create_kernel(&gpu->blur9x9_program, "blur9x9_rgb24", &gpu->blur9x9_kernel) != 0) {
+        create_kernel(&gpu->blur9x9_program, "blur9x9_rgb24", &gpu->blur9x9_kernel) != 0 ||
+        create_kernel(&gpu->blur13x13_program, "blur13x13_rgb24", &gpu->blur13x13_kernel) != 0) {
         gpu_filters_release(gpu);
         return -1;
     }
@@ -80,10 +189,14 @@ void gpu_filters_release(GPUFilterContext *gpu) {
     if (gpu->blur9x9_kernel) {
         clReleaseKernel(gpu->blur9x9_kernel);
     }
+    if (gpu->blur13x13_kernel) {
+        clReleaseKernel(gpu->blur13x13_kernel);
+    }
     opencl_program_release(&gpu->grayscale_program);
     opencl_program_release(&gpu->blur3x3_program);
     opencl_program_release(&gpu->blur5x5_program);
     opencl_program_release(&gpu->blur9x9_program);
+    opencl_program_release(&gpu->blur13x13_program);
     opencl_context_release(&gpu->ctx);
     memset(gpu, 0, sizeof(*gpu));
 }
@@ -106,10 +219,12 @@ static int ensure_buffers(GPUFilterContext *gpu, size_t size) {
     cl_int err = CL_SUCCESS;
     gpu->input_buffer = clCreateBuffer(gpu->ctx.context, CL_MEM_READ_ONLY, size, NULL, &err);
     if (err != CL_SUCCESS) {
+        log_opencl_error("clCreateBuffer input", err);
         return -1;
     }
     gpu->output_buffer = clCreateBuffer(gpu->ctx.context, CL_MEM_WRITE_ONLY, size, NULL, &err);
     if (err != CL_SUCCESS) {
+        log_opencl_error("clCreateBuffer output", err);
         return -1;
     }
     gpu->buffer_size = size;
@@ -126,6 +241,10 @@ static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, const Frame *inpu
         output->height != input->height ||
         output->format != FRAME_FORMAT_RGB24) {
         if (frame_alloc(output, input->width, input->height, FRAME_FORMAT_RGB24) != 0) {
+            log_error("failed to allocate GPU filter output frame: %dx%d, %zu bytes",
+                      input->width,
+                      input->height,
+                      input->size);
             return -1;
         }
     }
@@ -140,6 +259,7 @@ static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, const Frame *inpu
     cl_int err = clEnqueueWriteBuffer(gpu->ctx.queue, gpu->input_buffer, CL_TRUE, 0, input->size, input->data, 0, NULL, NULL);
     gpu->last_upload_ms = timer_stop_ms(&timer);
     if (err != CL_SUCCESS) {
+        log_opencl_error("clEnqueueWriteBuffer", err);
         return -1;
     }
 
@@ -153,6 +273,7 @@ static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, const Frame *inpu
     err |= clSetKernelArg(kernel, 3, sizeof(cl_uint), &height);
     err |= clSetKernelArg(kernel, 4, sizeof(cl_uint), &stride);
     if (err != CL_SUCCESS) {
+        log_opencl_error("clSetKernelArg", err);
         return -1;
     }
 
@@ -164,13 +285,18 @@ static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, const Frame *inpu
     }
     gpu->last_kernel_ms = timer_stop_ms(&timer);
     if (err != CL_SUCCESS) {
+        log_opencl_error("clEnqueueNDRangeKernel/clFinish", err);
         return -1;
     }
 
     timer_start(&timer);
     err = clEnqueueReadBuffer(gpu->ctx.queue, gpu->output_buffer, CL_TRUE, 0, output->size, output->data, 0, NULL, NULL);
     gpu->last_download_ms = timer_stop_ms(&timer);
-    return err == CL_SUCCESS ? 0 : -1;
+    if (err != CL_SUCCESS) {
+        log_opencl_error("clEnqueueReadBuffer", err);
+        return -1;
+    }
+    return 0;
 }
 
 int gpu_grayscale(GPUFilterContext *gpu, const Frame *input, Frame *output) {
@@ -187,4 +313,8 @@ int gpu_blur5x5(GPUFilterContext *gpu, const Frame *input, Frame *output) {
 
 int gpu_blur9x9(GPUFilterContext *gpu, const Frame *input, Frame *output) {
     return run_kernel(gpu, gpu ? gpu->blur9x9_kernel : NULL, input, output);
+}
+
+int gpu_blur13x13(GPUFilterContext *gpu, const Frame *input, Frame *output) {
+    return run_kernel(gpu, gpu ? gpu->blur13x13_kernel : NULL, input, output);
 }
