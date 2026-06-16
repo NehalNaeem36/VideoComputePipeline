@@ -45,6 +45,10 @@ static int write_available_packets(VideoWriter *writer) {
 }
 
 int video_writer_open(VideoWriter *writer, const char *output_path, int width, int height, double fps) {
+    return video_writer_open_with_threads(writer, output_path, width, height, fps, 4);
+}
+
+int video_writer_open_with_threads(VideoWriter *writer, const char *output_path, int width, int height, double fps, int encoder_threads) {
     if (!writer || !output_path || width <= 0 || height <= 0) {
         return -1;
     }
@@ -95,7 +99,7 @@ int video_writer_open(VideoWriter *writer, const char *output_path, int width, i
     codec_ctx->bit_rate = 4000000;
     codec_ctx->gop_size = 30;
     codec_ctx->max_b_frames = 0;
-    codec_ctx->thread_count = 4;
+    codec_ctx->thread_count = encoder_threads > 0 ? encoder_threads : 4;
     codec_ctx->thread_type = FF_THREAD_SLICE;
 
     if (format_ctx->oformat->flags & AVFMT_GLOBALHEADER) {

@@ -23,6 +23,9 @@ static int pipeline_config_test_defaults(void) {
     TEST_ASSERT(config.max_frames == DEFAULT_MAX_FRAMES);
     TEST_ASSERT(config.enable_benchmark == DEFAULT_ENABLE_BENCHMARK);
     TEST_ASSERT(config.frame_slots == DEFAULT_FRAME_SLOTS);
+    TEST_ASSERT(config.decoder_threads == DEFAULT_DECODER_THREADS);
+    TEST_ASSERT(config.encoder_threads == DEFAULT_ENCODER_THREADS);
+    TEST_ASSERT(config.processor_workers == DEFAULT_PROCESSOR_WORKERS);
     return 0;
 }
 
@@ -35,6 +38,10 @@ static int pipeline_config_test_parse_args(void) {
         "--mode", "gpu",
         "--filter", "blur9x9",
         "--max-frames", "12",
+        "--frame-slots", "8",
+        "--decoder-threads", "3",
+        "--encoder-threads", "5",
+        "--processor-workers", "6",
         "--no-benchmark"
     };
     const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
@@ -49,6 +56,10 @@ static int pipeline_config_test_parse_args(void) {
     TEST_ASSERT(config.mode == PROCESS_GPU);
     TEST_ASSERT(config.filter == FILTER_BLUR_9X9);
     TEST_ASSERT(config.max_frames == 12);
+    TEST_ASSERT(config.frame_slots == 8);
+    TEST_ASSERT(config.decoder_threads == 3);
+    TEST_ASSERT(config.encoder_threads == 5);
+    TEST_ASSERT(config.processor_workers == 6);
     TEST_ASSERT(config.enable_benchmark == 0);
     return 0;
 }

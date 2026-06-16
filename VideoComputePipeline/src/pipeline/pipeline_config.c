@@ -83,6 +83,9 @@ void pipeline_config_default(PipelineConfig *config) {
     config->max_frames = DEFAULT_MAX_FRAMES;
     config->enable_benchmark = DEFAULT_ENABLE_BENCHMARK;
     config->frame_slots = DEFAULT_FRAME_SLOTS;
+    config->decoder_threads = DEFAULT_DECODER_THREADS;
+    config->encoder_threads = DEFAULT_ENCODER_THREADS;
+    config->processor_workers = DEFAULT_PROCESSOR_WORKERS;
 }
 
 int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
@@ -118,6 +121,26 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
             if (config->max_frames < 0) {
                 return -1;
             }
+        } else if (strcmp(arg, "--frame-slots") == 0 && i + 1 < argc) {
+            config->frame_slots = atoi(argv[++i]);
+            if (config->frame_slots <= 0) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--decoder-threads") == 0 && i + 1 < argc) {
+            config->decoder_threads = atoi(argv[++i]);
+            if (config->decoder_threads <= 0) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--encoder-threads") == 0 && i + 1 < argc) {
+            config->encoder_threads = atoi(argv[++i]);
+            if (config->encoder_threads <= 0) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--processor-workers") == 0 && i + 1 < argc) {
+            config->processor_workers = atoi(argv[++i]);
+            if (config->processor_workers <= 0) {
+                return -1;
+            }
         } else if (strcmp(arg, "--no-benchmark") == 0) {
             config->enable_benchmark = 0;
         } else {
@@ -141,4 +164,7 @@ void pipeline_config_print(const PipelineConfig *config) {
     printf("max_frames: %d\n", config->max_frames);
     printf("enable_benchmark: %s\n", config->enable_benchmark ? "true" : "false");
     printf("frame_slots: %d\n", config->frame_slots);
+    printf("decoder_threads: %d\n", config->decoder_threads);
+    printf("encoder_threads: %d\n", config->encoder_threads);
+    printf("processor_workers: %d\n", config->processor_workers);
 }

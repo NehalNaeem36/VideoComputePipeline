@@ -16,6 +16,10 @@ static void print_usage(const char *program_name) {
     printf("  --mode cpu|gpu            Processing mode\n");
     printf("  --filter grayscale|blur3x3|blur5x5|blur9x9\n");
     printf("  --max-frames N            Stop after N frames, 0 means no limit\n");
+    printf("  --frame-slots N           Frames buffered between pipeline stages\n");
+    printf("  --decoder-threads N       FFmpeg decoder worker threads\n");
+    printf("  --encoder-threads N       FFmpeg encoder worker threads\n");
+    printf("  --processor-workers N     CPU processor workers, GPU mode uses one worker\n");
     printf("  --no-benchmark            Disable benchmark output\n");
     printf("  --help                    Show this help message\n");
     printf("  --version                 Show version information\n");

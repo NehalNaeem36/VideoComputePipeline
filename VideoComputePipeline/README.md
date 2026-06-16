@@ -13,10 +13,10 @@ No FFmpeg CLI commands are used.
 - FFmpeg video writer: RGB24 frames to MP4
 - CPU filters: grayscale, 3x3 blur, 5x5 blur, 9x9 blur
 - OpenCL context, program build, kernels, and GPU filters
-- Sequential pipeline: decode -> process -> encode -> benchmark
+- Threaded pipeline: decoder stage -> raw FIFO queue -> processor worker(s) -> processed queue -> ordered writer stage
 - Benchmark CSV output and summary printing
 - Matrix report CSV summary helper
-- Frame slot and bounded frame queue support for later threaded pipeline work
+- Frame slot and bounded frame queue support
 - Tests for all modules
 
 ## Build On Windows MSYS2 UCRT64
@@ -73,6 +73,23 @@ GPU 5x5 blur:
   --filter blur5x5
 ```
 
+Threaded GPU run with explicit worker settings:
+
+```bash
+./build/bin/VideoComputePipeline.exe \
+  --input data/input/15592600_3840_2160_60fps.mp4 \
+  --output data/output/gpu_threaded_grayscale.mp4 \
+  --benchmark benchmarks/gpu_threaded_grayscale.csv \
+  --mode gpu \
+  --filter grayscale \
+  --frame-slots 8 \
+  --decoder-threads 4 \
+  --encoder-threads 4 \
+  --processor-workers 4
+```
+
+GPU mode uses one OpenCL processor worker internally even if a higher `--processor-workers` value is requested, because the current GPU implementation owns one OpenCL context and command queue. CPU mode uses `--processor-workers` worker threads.
+
 For a quick smoke run:
 
 ```bash
@@ -88,12 +105,18 @@ For a quick smoke run:
 --mode cpu|gpu
 --filter grayscale|blur3x3|blur5x5|blur9x9
 --max-frames N
+--frame-slots N
+--decoder-threads N
+--encoder-threads N
+--processor-workers N
 --no-benchmark
 --help
 --version
 ```
 
 `--max-frames 0` means process the full input.
+
+Frame IDs are assigned by the decoder stage before frames are placed into the raw FIFO queue. Processor workers may finish out of order, so the writer stage buffers processed frames and writes them in ascending frame ID order.
 
 ## Benchmark CSV
 

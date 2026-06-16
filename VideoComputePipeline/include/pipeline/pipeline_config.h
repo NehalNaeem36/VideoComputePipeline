@@ -24,6 +24,9 @@ typedef struct {
     int max_frames;
     int enable_benchmark;
     int frame_slots;
+    int decoder_threads;
+    int encoder_threads;
+    int processor_workers;
 } PipelineConfig;
 
 void pipeline_config_default(PipelineConfig *config);

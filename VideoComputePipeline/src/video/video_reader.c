@@ -14,6 +14,10 @@ static double rational_to_double(AVRational r) {
 }
 
 int video_reader_open(VideoReader *reader, const char *input_path) {
+    return video_reader_open_with_threads(reader, input_path, 0);
+}
+
+int video_reader_open_with_threads(VideoReader *reader, const char *input_path, int decoder_threads) {
     if (!reader || !input_path) {
         return -1;
     }
@@ -51,8 +55,18 @@ int video_reader_open(VideoReader *reader, const char *input_path) {
         return -1;
     }
 
-    if (avcodec_parameters_to_context(codec_ctx, stream->codecpar) < 0 ||
-        avcodec_open2(codec_ctx, decoder, NULL) < 0) {
+    if (avcodec_parameters_to_context(codec_ctx, stream->codecpar) < 0) {
+        avcodec_free_context(&codec_ctx);
+        avformat_close_input(&format_ctx);
+        return -1;
+    }
+
+    if (decoder_threads > 0) {
+        codec_ctx->thread_count = decoder_threads;
+        codec_ctx->thread_type = FF_THREAD_FRAME;
+    }
+
+    if (avcodec_open2(codec_ctx, decoder, NULL) < 0) {
         avcodec_free_context(&codec_ctx);
         avformat_close_input(&format_ctx);
         return -1;
