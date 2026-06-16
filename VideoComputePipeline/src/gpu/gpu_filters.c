@@ -236,27 +236,33 @@ static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, Frame *input, Fra
         return -1;
     }
 
+    const int input_width = input->width;
+    const int input_height = input->height;
+    const int input_index = input->index;
+    const size_t input_stride = input->stride;
+    const size_t input_size = input->size;
+
     if (!frame_is_valid(output) ||
-        output->width != input->width ||
-        output->height != input->height ||
+        output->width != input_width ||
+        output->height != input_height ||
         output->format != FRAME_FORMAT_RGB24) {
-        if (frame_alloc(output, input->width, input->height, FRAME_FORMAT_RGB24) != 0) {
+        if (frame_alloc(output, input_width, input_height, FRAME_FORMAT_RGB24) != 0) {
             log_error("failed to allocate GPU filter output frame: %dx%d, %zu bytes",
-                      input->width,
-                      input->height,
-                      input->size);
+                      input_width,
+                      input_height,
+                      input_size);
             return -1;
         }
     }
-    output->index = input->index;
+    output->index = input_index;
 
-    if (ensure_buffers(gpu, input->size) != 0) {
+    if (ensure_buffers(gpu, input_size) != 0) {
         return -1;
     }
 
     Timer timer;
     timer_start(&timer);
-    cl_int err = clEnqueueWriteBuffer(gpu->ctx.queue, gpu->input_buffer, CL_TRUE, 0, input->size, input->data, 0, NULL, NULL);
+    cl_int err = clEnqueueWriteBuffer(gpu->ctx.queue, gpu->input_buffer, CL_TRUE, 0, input_size, input->data, 0, NULL, NULL);
     gpu->last_upload_ms = timer_stop_ms(&timer);
     if (err != CL_SUCCESS) {
         log_opencl_error("clEnqueueWriteBuffer", err);
@@ -266,9 +272,9 @@ static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, Frame *input, Fra
         callback(user_data, input);
     }
 
-    const cl_uint width = (cl_uint)input->width;
-    const cl_uint height = (cl_uint)input->height;
-    const cl_uint stride = (cl_uint)input->stride;
+    const cl_uint width = (cl_uint)input_width;
+    const cl_uint height = (cl_uint)input_height;
+    const cl_uint stride = (cl_uint)input_stride;
 
     err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &gpu->input_buffer);
     err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &gpu->output_buffer);
@@ -280,7 +286,7 @@ static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, Frame *input, Fra
         return -1;
     }
 
-    const size_t global[2] = { (size_t)input->width, (size_t)input->height };
+    const size_t global[2] = { (size_t)input_width, (size_t)input_height };
     timer_start(&timer);
     err = clEnqueueNDRangeKernel(gpu->ctx.queue, kernel, 2, NULL, global, NULL, 0, NULL, NULL);
     if (err == CL_SUCCESS) {
