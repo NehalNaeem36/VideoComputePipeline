@@ -231,7 +231,7 @@ static int ensure_buffers(GPUFilterContext *gpu, size_t size) {
     return 0;
 }
 
-static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, const Frame *input, Frame *output) {
+static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, Frame *input, Frame *output, GPUFrameUploadedCallback callback, void *user_data) {
     if (!gpu || !kernel || !frame_is_valid(input) || input->format != FRAME_FORMAT_RGB24 || !output) {
         return -1;
     }
@@ -261,6 +261,9 @@ static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, const Frame *inpu
     if (err != CL_SUCCESS) {
         log_opencl_error("clEnqueueWriteBuffer", err);
         return -1;
+    }
+    if (callback) {
+        callback(user_data, input);
     }
 
     const cl_uint width = (cl_uint)input->width;
@@ -300,21 +303,41 @@ static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, const Frame *inpu
 }
 
 int gpu_grayscale(GPUFilterContext *gpu, const Frame *input, Frame *output) {
-    return run_kernel(gpu, gpu ? gpu->grayscale_kernel : NULL, input, output);
+    return run_kernel(gpu, gpu ? gpu->grayscale_kernel : NULL, (Frame *)input, output, NULL, NULL);
 }
 
 int gpu_blur3x3(GPUFilterContext *gpu, const Frame *input, Frame *output) {
-    return run_kernel(gpu, gpu ? gpu->blur3x3_kernel : NULL, input, output);
+    return run_kernel(gpu, gpu ? gpu->blur3x3_kernel : NULL, (Frame *)input, output, NULL, NULL);
 }
 
 int gpu_blur5x5(GPUFilterContext *gpu, const Frame *input, Frame *output) {
-    return run_kernel(gpu, gpu ? gpu->blur5x5_kernel : NULL, input, output);
+    return run_kernel(gpu, gpu ? gpu->blur5x5_kernel : NULL, (Frame *)input, output, NULL, NULL);
 }
 
 int gpu_blur9x9(GPUFilterContext *gpu, const Frame *input, Frame *output) {
-    return run_kernel(gpu, gpu ? gpu->blur9x9_kernel : NULL, input, output);
+    return run_kernel(gpu, gpu ? gpu->blur9x9_kernel : NULL, (Frame *)input, output, NULL, NULL);
 }
 
 int gpu_blur13x13(GPUFilterContext *gpu, const Frame *input, Frame *output) {
-    return run_kernel(gpu, gpu ? gpu->blur13x13_kernel : NULL, input, output);
+    return run_kernel(gpu, gpu ? gpu->blur13x13_kernel : NULL, (Frame *)input, output, NULL, NULL);
+}
+
+int gpu_grayscale_with_upload_callback(GPUFilterContext *gpu, Frame *input, Frame *output, GPUFrameUploadedCallback callback, void *user_data) {
+    return run_kernel(gpu, gpu ? gpu->grayscale_kernel : NULL, input, output, callback, user_data);
+}
+
+int gpu_blur3x3_with_upload_callback(GPUFilterContext *gpu, Frame *input, Frame *output, GPUFrameUploadedCallback callback, void *user_data) {
+    return run_kernel(gpu, gpu ? gpu->blur3x3_kernel : NULL, input, output, callback, user_data);
+}
+
+int gpu_blur5x5_with_upload_callback(GPUFilterContext *gpu, Frame *input, Frame *output, GPUFrameUploadedCallback callback, void *user_data) {
+    return run_kernel(gpu, gpu ? gpu->blur5x5_kernel : NULL, input, output, callback, user_data);
+}
+
+int gpu_blur9x9_with_upload_callback(GPUFilterContext *gpu, Frame *input, Frame *output, GPUFrameUploadedCallback callback, void *user_data) {
+    return run_kernel(gpu, gpu ? gpu->blur9x9_kernel : NULL, input, output, callback, user_data);
+}
+
+int gpu_blur13x13_with_upload_callback(GPUFilterContext *gpu, Frame *input, Frame *output, GPUFrameUploadedCallback callback, void *user_data) {
+    return run_kernel(gpu, gpu ? gpu->blur13x13_kernel : NULL, input, output, callback, user_data);
 }

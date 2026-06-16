@@ -149,6 +149,9 @@ For a quick smoke run:
 --encoder-threads N
 --processor-workers N
 --lossless
+--memory-profile auto|low|balanced|manual
+--memory-budget-mb N
+--matrix-report cpu.csv gpu.csv
 --no-benchmark
 --help
 --version
@@ -157,6 +160,23 @@ For a quick smoke run:
 `--max-frames 0` means process the full input.
 
 Frame IDs are assigned by the decoder stage before frames are placed into the raw FIFO queue. Processor workers may finish out of order, so the writer stage buffers processed frames and writes them in ascending frame ID order.
+
+## Memory Management
+
+The threaded pipeline uses bounded frame pools for decoded/raw frames and processed frames. Full-resolution frame buffers are reused instead of allocated and freed for every frame. For GPU mode, the CPU input frame is returned to the raw pool immediately after the blocking OpenCL upload completes.
+
+Memory profiles:
+
+```text
+auto      Default. Uses conservative settings for lossless output.
+low       Minimizes in-flight 4K RGB24 frames.
+balanced  Caps CPU workers for steadier memory use.
+manual    Uses the exact thread/slot values passed on the CLI.
+```
+
+`--memory-budget-mb N` can request a CPU frame-pool budget. If the requested budget is too low and the profile is not `manual`, the runner falls back to low-memory pools and prints a warning.
+
+Benchmark CSV output is streamed as frames are encoded and flushed periodically, so long runs do not keep all timing rows in heap memory.
 
 ## Benchmark CSV
 

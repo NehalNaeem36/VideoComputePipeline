@@ -77,6 +77,41 @@ static int parse_filter(const char *value, FilterType *filter) {
     return -1;
 }
 
+static const char *memory_profile_to_string(MemoryProfile profile) {
+    switch (profile) {
+        case MEMORY_PROFILE_AUTO:
+            return "auto";
+        case MEMORY_PROFILE_LOW:
+            return "low";
+        case MEMORY_PROFILE_BALANCED:
+            return "balanced";
+        case MEMORY_PROFILE_MANUAL:
+            return "manual";
+        default:
+            return "unknown";
+    }
+}
+
+static int parse_memory_profile(const char *value, MemoryProfile *profile) {
+    if (strcmp(value, "auto") == 0) {
+        *profile = MEMORY_PROFILE_AUTO;
+        return 0;
+    }
+    if (strcmp(value, "low") == 0) {
+        *profile = MEMORY_PROFILE_LOW;
+        return 0;
+    }
+    if (strcmp(value, "balanced") == 0) {
+        *profile = MEMORY_PROFILE_BALANCED;
+        return 0;
+    }
+    if (strcmp(value, "manual") == 0) {
+        *profile = MEMORY_PROFILE_MANUAL;
+        return 0;
+    }
+    return -1;
+}
+
 void pipeline_config_default(PipelineConfig *config) {
     if (!config) {
         return;
@@ -91,6 +126,8 @@ void pipeline_config_default(PipelineConfig *config) {
     config->max_frames = DEFAULT_MAX_FRAMES;
     config->enable_benchmark = DEFAULT_ENABLE_BENCHMARK;
     config->lossless_output = DEFAULT_LOSSLESS_OUTPUT;
+    config->memory_profile = MEMORY_PROFILE_AUTO;
+    config->memory_budget_mb = DEFAULT_MEMORY_BUDGET_MB;
     config->frame_slots = DEFAULT_FRAME_SLOTS;
     config->decoder_threads = DEFAULT_DECODER_THREADS;
     config->encoder_threads = DEFAULT_ENCODER_THREADS;
@@ -167,6 +204,15 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
             config->lossless_output = 1;
         } else if (strcmp(arg, "--lossy") == 0) {
             config->lossless_output = 0;
+        } else if (strcmp(arg, "--memory-profile") == 0 && i + 1 < argc) {
+            if (parse_memory_profile(argv[++i], &config->memory_profile) != 0) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--memory-budget-mb") == 0 && i + 1 < argc) {
+            config->memory_budget_mb = atoi(argv[++i]);
+            if (config->memory_budget_mb < 0) {
+                return -1;
+            }
         } else {
             return -1;
         }
@@ -189,6 +235,8 @@ void pipeline_config_print(const PipelineConfig *config) {
     printf("max_frames: %d\n", config->max_frames);
     printf("enable_benchmark: %s\n", config->enable_benchmark ? "true" : "false");
     printf("lossless_output: %s\n", config->lossless_output ? "true" : "false");
+    printf("memory_profile: %s\n", memory_profile_to_string(config->memory_profile));
+    printf("memory_budget_mb: %d\n", config->memory_budget_mb);
     printf("frame_slots: %d\n", config->frame_slots);
     printf("decoder_threads: %d\n", config->decoder_threads);
     printf("encoder_threads: %d\n", config->encoder_threads);

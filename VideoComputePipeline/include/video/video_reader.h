@@ -26,7 +26,6 @@ typedef struct {
     VideoInfo info;
 } VideoReader;
 
-int video_reader_open(VideoReader *reader, const char *input_path);
 int video_reader_open_with_threads(VideoReader *reader, const char *input_path, int decoder_threads);
 int video_reader_read_frame(VideoReader *reader, Frame *out_frame);
 void video_reader_close(VideoReader *reader);

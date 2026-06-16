@@ -15,7 +15,6 @@ static int is_h264_encoder(const char *name) {
     return name &&
            (strcmp(name, "libx264") == 0 ||
             strcmp(name, "libx264rgb") == 0 ||
-            strcmp(name, "h264") == 0 ||
             strcmp(name, "h264_nvenc") == 0);
 }
 
@@ -59,14 +58,6 @@ static int write_available_packets(VideoWriter *writer) {
             return -1;
         }
     }
-}
-
-int video_writer_open(VideoWriter *writer, const char *output_path, int width, int height, double fps) {
-    return video_writer_open_with_threads(writer, output_path, width, height, fps, 4);
-}
-
-int video_writer_open_with_threads(VideoWriter *writer, const char *output_path, int width, int height, double fps, int encoder_threads) {
-    return video_writer_open_with_options(writer, output_path, width, height, fps, encoder_threads, "libx264", 0);
 }
 
 int video_writer_open_with_options(VideoWriter *writer, const char *output_path, int width, int height, double fps, int encoder_threads, const char *encoder_name, int lossless) {

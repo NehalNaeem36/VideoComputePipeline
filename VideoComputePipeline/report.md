@@ -195,6 +195,36 @@ The OpenCL blur kernel itself is not the only cost. For 4K RGB24 frames, each GP
 
 That is roughly 50 MB of transfer per frame, before decode and encode costs.
 
+## Long-Run Memory Management
+
+The pipeline now bounds full-frame CPU memory with reusable frame pools:
+
+```text
+raw frame pool -> raw packet queue -> processor -> processed frame pool -> processed packet queue -> encoder
+```
+
+The decoder acquires RGB24 buffers from the raw pool. The processor returns raw buffers when it no longer needs them. In GPU mode, the raw CPU frame is returned immediately after the blocking OpenCL upload completes. The encoder returns processed frames to the processed pool immediately after writing each frame.
+
+For 4K RGB24:
+
+```text
+one frame = about 24.9 MB
+low profile = 3 raw frames + 3 processed frames = about 149 MB of pooled frame data
+```
+
+Benchmark rows are streamed to CSV during encoding and flushed periodically. The benchmark module keeps only summary totals in memory for CLI pipeline runs.
+
+Memory profiles:
+
+```text
+--memory-profile auto
+--memory-profile low
+--memory-profile balanced
+--memory-profile manual
+```
+
+`manual` preserves user-provided queue and thread settings. Other profiles may reduce frame slots or worker counts to keep heap usage bounded for long 1080p-to-4K videos.
+
 ## Recommended Next Optimizations
 
 Practical next steps:

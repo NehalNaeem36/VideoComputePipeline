@@ -24,6 +24,8 @@ static int pipeline_config_test_defaults(void) {
     TEST_ASSERT(config.max_frames == DEFAULT_MAX_FRAMES);
     TEST_ASSERT(config.enable_benchmark == DEFAULT_ENABLE_BENCHMARK);
     TEST_ASSERT(config.lossless_output == DEFAULT_LOSSLESS_OUTPUT);
+    TEST_ASSERT(config.memory_profile == MEMORY_PROFILE_AUTO);
+    TEST_ASSERT(config.memory_budget_mb == DEFAULT_MEMORY_BUDGET_MB);
     TEST_ASSERT(config.frame_slots == DEFAULT_FRAME_SLOTS);
     TEST_ASSERT(config.decoder_threads == DEFAULT_DECODER_THREADS);
     TEST_ASSERT(config.encoder_threads == DEFAULT_ENCODER_THREADS);
@@ -46,6 +48,8 @@ static int pipeline_config_test_parse_args(void) {
         "--decoder-threads", "3",
         "--encoder-threads", "5",
         "--processor-workers", "6",
+        "--memory-profile", "manual",
+        "--memory-budget-mb", "512",
         "--no-benchmark"
     };
     const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
@@ -62,6 +66,8 @@ static int pipeline_config_test_parse_args(void) {
     TEST_ASSERT(config.filter == FILTER_BLUR_13X13);
     TEST_ASSERT(config.max_frames == 12);
     TEST_ASSERT(config.lossless_output == 1);
+    TEST_ASSERT(config.memory_profile == MEMORY_PROFILE_MANUAL);
+    TEST_ASSERT(config.memory_budget_mb == 512);
     TEST_ASSERT(config.frame_slots == 8);
     TEST_ASSERT(config.decoder_threads == 3);
     TEST_ASSERT(config.encoder_threads == 5);

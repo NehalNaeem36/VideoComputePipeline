@@ -77,18 +77,3 @@ int create_parent_directory_if_missing(const char *path) {
 
     return create_directory_if_missing(buffer);
 }
-
-int build_output_path(char *dest, size_t dest_size, const char *dir, const char *filename) {
-    if (!dest || !dir || !filename || dest_size == 0) {
-        return -1;
-    }
-
-    const char *sep = "";
-    const size_t dir_len = strlen(dir);
-    if (dir_len > 0 && dir[dir_len - 1] != '/' && dir[dir_len - 1] != '\\') {
-        sep = "/";
-    }
-
-    const int written = snprintf(dest, dest_size, "%s%s%s", dir, sep, filename);
-    return written < 0 || (size_t)written >= dest_size ? -1 : 0;
-}

@@ -19,8 +19,6 @@ typedef struct {
     int is_open;
 } VideoWriter;
 
-int video_writer_open(VideoWriter *writer, const char *output_path, int width, int height, double fps);
-int video_writer_open_with_threads(VideoWriter *writer, const char *output_path, int width, int height, double fps, int encoder_threads);
 int video_writer_open_with_options(VideoWriter *writer, const char *output_path, int width, int height, double fps, int encoder_threads, const char *encoder_name, int lossless);
 int video_writer_write_frame(VideoWriter *writer, const Frame *frame);
 int video_writer_flush(VideoWriter *writer);

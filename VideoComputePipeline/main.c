@@ -1,4 +1,5 @@
 #include "config.h"
+#include "benchmark/matrix_report.h"
 #include "pipeline/pipeline_config.h"
 #include "pipeline/pipeline_runner.h"
 #include "utils/logger.h"
@@ -22,6 +23,9 @@ static void print_usage(const char *program_name) {
     printf("  --encoder-threads N       FFmpeg encoder worker threads\n");
     printf("  --processor-workers N     CPU processor workers, GPU mode uses one worker\n");
     printf("  --lossless                Use lossless encoder settings when supported\n");
+    printf("  --memory-profile name     auto, low, balanced, or manual\n");
+    printf("  --memory-budget-mb N      Optional CPU frame-pool budget, 0 means automatic\n");
+    printf("  --matrix-report cpu.csv gpu.csv\n");
     printf("  --no-benchmark            Disable benchmark output\n");
     printf("  --help                    Show this help message\n");
     printf("  --version                 Show version information\n");
@@ -40,6 +44,23 @@ int main(int argc, char **argv) {
 
         if (strcmp(argv[i], "--version") == 0) {
             print_version();
+            return EXIT_SUCCESS;
+        }
+
+        if (strcmp(argv[i], "--matrix-report") == 0) {
+            if (i + 2 >= argc) {
+                log_error("--matrix-report requires CPU and GPU benchmark CSV paths");
+                print_usage(argv[0]);
+                return EXIT_FAILURE;
+            }
+            MatrixReportStats cpu;
+            MatrixReportStats gpu;
+            if (matrix_report_read_csv_summary(argv[i + 1], &cpu) != 0 ||
+                matrix_report_read_csv_summary(argv[i + 2], &gpu) != 0) {
+                log_error("failed to read matrix report inputs");
+                return EXIT_FAILURE;
+            }
+            matrix_report_print_comparison(&cpu, &gpu);
             return EXIT_SUCCESS;
         }
     }

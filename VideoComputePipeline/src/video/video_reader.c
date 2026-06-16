@@ -20,10 +20,6 @@ static void log_ffmpeg_error(const char *message, int error_code) {
     log_error("%s: %s", message, buffer);
 }
 
-int video_reader_open(VideoReader *reader, const char *input_path) {
-    return video_reader_open_with_threads(reader, input_path, 0);
-}
-
 int video_reader_open_with_threads(VideoReader *reader, const char *input_path, int decoder_threads) {
     if (!reader || !input_path) {
         return -1;
@@ -148,11 +144,16 @@ static int receive_rgb_frame(VideoReader *reader, Frame *out_frame) {
         return -1;
     }
 
-    frame_free(out_frame);
-    if (frame_alloc(out_frame, codec_ctx->width, codec_ctx->height, FRAME_FORMAT_RGB24) != 0) {
-        log_error("failed to allocate decoded RGB24 frame: %dx%d", codec_ctx->width, codec_ctx->height);
-        av_frame_unref(decoded);
-        return -1;
+    if (!frame_is_valid(out_frame) ||
+        out_frame->width != codec_ctx->width ||
+        out_frame->height != codec_ctx->height ||
+        out_frame->format != FRAME_FORMAT_RGB24) {
+        frame_free(out_frame);
+        if (frame_alloc(out_frame, codec_ctx->width, codec_ctx->height, FRAME_FORMAT_RGB24) != 0) {
+            log_error("failed to allocate decoded RGB24 frame: %dx%d", codec_ctx->width, codec_ctx->height);
+            av_frame_unref(decoded);
+            return -1;
+        }
     }
 
     out_frame->index = reader->next_frame_index++;

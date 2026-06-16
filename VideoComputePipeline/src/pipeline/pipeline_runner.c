@@ -4,6 +4,7 @@
 #include "benchmark/timer.h"
 #include "cpu/cpu_filters.h"
 #include "gpu/gpu_filters.h"
+#include "pipeline/frame_pool.h"
 #include "utils/logger.h"
 #include "video/video_reader.h"
 #include "video/video_writer.h"
@@ -53,8 +54,14 @@ typedef struct {
     GPUFilterContext gpu;
     PacketQueue raw_queue;
     PacketQueue processed_queue;
+    FramePool raw_frame_pool;
+    FramePool processed_frame_pool;
     int gpu_initialized;
+    int frame_pools_initialized;
     int processor_workers;
+    int effective_frame_slots;
+    int effective_decoder_threads;
+    int effective_encoder_threads;
     int failed;
 #ifdef _WIN32
     volatile LONG active_processors;
@@ -254,6 +261,8 @@ static void pipeline_fail(PipelineContext *ctx) {
     ctx->failed = 1;
     packet_queue_close(&ctx->raw_queue);
     packet_queue_close(&ctx->processed_queue);
+    frame_pool_close(&ctx->raw_frame_pool);
+    frame_pool_close(&ctx->processed_frame_pool);
 }
 
 static int process_cpu(FilterType filter, const Frame *input, Frame *output) {
@@ -273,18 +282,25 @@ static int process_cpu(FilterType filter, const Frame *input, Frame *output) {
     }
 }
 
-static int process_gpu(FilterType filter, GPUFilterContext *gpu, const Frame *input, Frame *output) {
+static void release_uploaded_input(void *user_data, Frame *input) {
+    FramePool *pool = (FramePool *)user_data;
+    if (pool && frame_is_valid(input)) {
+        frame_pool_release(pool, input);
+    }
+}
+
+static int process_gpu(FilterType filter, GPUFilterContext *gpu, Frame *input, Frame *output, FramePool *raw_pool) {
     switch (filter) {
         case FILTER_GRAYSCALE:
-            return gpu_grayscale(gpu, input, output);
+            return gpu_grayscale_with_upload_callback(gpu, input, output, release_uploaded_input, raw_pool);
         case FILTER_BLUR_3X3:
-            return gpu_blur3x3(gpu, input, output);
+            return gpu_blur3x3_with_upload_callback(gpu, input, output, release_uploaded_input, raw_pool);
         case FILTER_BLUR_5X5:
-            return gpu_blur5x5(gpu, input, output);
+            return gpu_blur5x5_with_upload_callback(gpu, input, output, release_uploaded_input, raw_pool);
         case FILTER_BLUR_9X9:
-            return gpu_blur9x9(gpu, input, output);
+            return gpu_blur9x9_with_upload_callback(gpu, input, output, release_uploaded_input, raw_pool);
         case FILTER_BLUR_13X13:
-            return gpu_blur13x13(gpu, input, output);
+            return gpu_blur13x13_with_upload_callback(gpu, input, output, release_uploaded_input, raw_pool);
         default:
             return -1;
     }
@@ -324,22 +340,36 @@ static void *decoder_thread_main(void *arg)
             break;
         }
 
+        const int acquire_result = frame_pool_acquire(&ctx->raw_frame_pool, &packet.frame);
+        if (acquire_result == 0) {
+            packet_free(&packet);
+            break;
+        }
+        if (acquire_result < 0) {
+            packet_free(&packet);
+            log_error("decoder failed to acquire raw frame buffer");
+            pipeline_fail(ctx);
+            break;
+        }
+
         timer_start(&timer);
         const int read_result = video_reader_read_frame(&ctx->reader, &packet.frame);
         packet.timing.decode_ms = timer_stop_ms(&timer);
 
         if (read_result == 0) {
-            packet_free(&packet);
+            frame_pool_release(&ctx->raw_frame_pool, &packet.frame);
             break;
         }
         if (read_result < 0) {
-            packet_free(&packet);
+            if (frame_is_valid(&packet.frame)) {
+                frame_pool_release(&ctx->raw_frame_pool, &packet.frame);
+            }
             log_error("decoder worker failed");
             pipeline_fail(ctx);
             break;
         }
         if (ctx->failed) {
-            packet_free(&packet);
+            frame_pool_release(&ctx->raw_frame_pool, &packet.frame);
             break;
         }
 
@@ -347,8 +377,17 @@ static void *decoder_thread_main(void *arg)
         packet.timing.frame_index = global_frame_id;
         global_frame_id++;
 
-        if (packet_queue_push(&ctx->raw_queue, &packet) < 0) {
-            packet_free(&packet);
+        const int push_result = packet_queue_push(&ctx->raw_queue, &packet);
+        if (push_result == 0) {
+            if (frame_is_valid(&packet.frame)) {
+                frame_pool_release(&ctx->raw_frame_pool, &packet.frame);
+            }
+            break;
+        }
+        if (push_result < 0) {
+            if (frame_is_valid(&packet.frame)) {
+                frame_pool_release(&ctx->raw_frame_pool, &packet.frame);
+            }
             pipeline_fail(ctx);
             break;
         }
@@ -393,16 +432,36 @@ static void *processor_thread_main(void *arg)
             break;
         }
 
+        const int frame_id = input.frame.index;
+        const FrameTiming input_timing = input.timing;
+
         timer_start(&timer);
+        const int acquire_output = frame_pool_acquire(&ctx->processed_frame_pool, &output.frame);
+        if (acquire_output == 0) {
+            if (frame_is_valid(&input.frame)) {
+                frame_pool_release(&ctx->raw_frame_pool, &input.frame);
+            }
+            packet_free(&output);
+            break;
+        }
+        if (acquire_output < 0) {
+            log_error("processor failed to acquire processed frame buffer");
+            packet_free(&input);
+            packet_free(&output);
+            pipeline_fail(ctx);
+            break;
+        }
+
         if (ctx->config->mode == PROCESS_GPU) {
-            result = process_gpu(ctx->config->filter, &ctx->gpu, &input.frame, &output.frame);
+            result = process_gpu(ctx->config->filter, &ctx->gpu, &input.frame, &output.frame, &ctx->raw_frame_pool);
             output.timing.upload_ms = ctx->gpu.last_upload_ms;
             output.timing.kernel_ms = ctx->gpu.last_kernel_ms;
             output.timing.download_ms = ctx->gpu.last_download_ms;
         } else {
             result = process_cpu(ctx->config->filter, &input.frame, &output.frame);
+            frame_pool_release(&ctx->raw_frame_pool, &input.frame);
         }
-        output.timing = input.timing;
+        output.timing = input_timing;
         output.timing.process_ms = timer_stop_ms(&timer);
         if (ctx->config->mode == PROCESS_GPU) {
             output.timing.upload_ms = ctx->gpu.last_upload_ms;
@@ -411,19 +470,37 @@ static void *processor_thread_main(void *arg)
         }
 
         if (result != 0) {
-            log_error("processor worker failed on frame %d", input.frame.index);
-            packet_free(&input);
-            packet_free(&output);
+            log_error("processor worker failed on frame %d", frame_id);
+            if (frame_is_valid(&input.frame)) {
+                frame_pool_release(&ctx->raw_frame_pool, &input.frame);
+            }
+            if (frame_is_valid(&output.frame)) {
+                frame_pool_release(&ctx->processed_frame_pool, &output.frame);
+            }
             pipeline_fail(ctx);
             break;
         }
 
-        output.frame.index = input.frame.index;
-        output.timing.frame_index = input.frame.index;
+        output.frame.index = frame_id;
+        output.timing.frame_index = frame_id;
 
-        if (packet_queue_push(&ctx->processed_queue, &output) < 0) {
-            packet_free(&input);
-            packet_free(&output);
+        const int push_result = packet_queue_push(&ctx->processed_queue, &output);
+        if (push_result == 0) {
+            if (frame_is_valid(&input.frame)) {
+                frame_pool_release(&ctx->raw_frame_pool, &input.frame);
+            }
+            if (frame_is_valid(&output.frame)) {
+                frame_pool_release(&ctx->processed_frame_pool, &output.frame);
+            }
+            break;
+        }
+        if (push_result < 0) {
+            if (frame_is_valid(&input.frame)) {
+                frame_pool_release(&ctx->raw_frame_pool, &input.frame);
+            }
+            if (frame_is_valid(&output.frame)) {
+                frame_pool_release(&ctx->processed_frame_pool, &output.frame);
+            }
             pipeline_fail(ctx);
             break;
         }
@@ -522,6 +599,7 @@ static int write_available_ordered(PipelineContext *ctx, PendingNode **pending, 
             packet_free(&packet);
             return -1;
         }
+        frame_pool_release(&ctx->processed_frame_pool, &packet.frame);
         (*next_frame_id)++;
         packet_free(&packet);
     }
@@ -602,7 +680,8 @@ int pipeline_run(const PipelineConfig *config) {
     int effective_decoder_threads = config->decoder_threads;
     int effective_encoder_threads = config->encoder_threads;
     int effective_processor_workers = config->processor_workers;
-    if (config->lossless_output) {
+    if (config->memory_profile == MEMORY_PROFILE_LOW ||
+        (config->memory_profile == MEMORY_PROFILE_AUTO && config->lossless_output)) {
         if (effective_frame_slots > 1) {
             effective_frame_slots = 1;
         }
@@ -615,28 +694,18 @@ int pipeline_run(const PipelineConfig *config) {
         if (config->mode == PROCESS_CPU && effective_processor_workers > 1) {
             effective_processor_workers = 1;
         }
+    } else if (config->memory_profile == MEMORY_PROFILE_BALANCED && config->mode == PROCESS_CPU && effective_processor_workers > 2) {
+        effective_processor_workers = 2;
     }
 
     const int processor_workers = config->mode == PROCESS_GPU ? 1 : effective_processor_workers;
     ctx.processor_workers = processor_workers > 0 ? processor_workers : 1;
-#ifdef _WIN32
-    ctx.active_processors = ctx.processor_workers;
-#else
-    ctx.active_processors = ctx.processor_workers;
-#endif
-
-    if (packet_queue_init(&ctx.raw_queue, (size_t)effective_frame_slots) != 0 ||
-        packet_queue_init(&ctx.processed_queue, (size_t)effective_frame_slots) != 0) {
-        log_error("failed to initialize pipeline queues");
-        packet_queue_free(&ctx.raw_queue);
-        packet_queue_free(&ctx.processed_queue);
-        return -1;
-    }
+    ctx.effective_frame_slots = effective_frame_slots;
+    ctx.effective_decoder_threads = effective_decoder_threads;
+    ctx.effective_encoder_threads = effective_encoder_threads;
 
     if (video_reader_open_with_threads(&ctx.reader, config->input_path, effective_decoder_threads) != 0) {
         log_error("failed to open input video: %s", config->input_path);
-        packet_queue_free(&ctx.raw_queue);
-        packet_queue_free(&ctx.processed_queue);
         return -1;
     }
 
@@ -644,10 +713,49 @@ int pipeline_run(const PipelineConfig *config) {
     if (!info) {
         log_error("failed to read input video info");
         video_reader_close(&ctx.reader);
-        packet_queue_free(&ctx.raw_queue);
-        packet_queue_free(&ctx.processed_queue);
         return -1;
     }
+
+    const size_t frame_bytes = frame_calculate_size(info->width, info->height, FRAME_FORMAT_RGB24);
+    size_t raw_pool_capacity = (size_t)effective_frame_slots + (size_t)ctx.processor_workers + 1u;
+    size_t processed_pool_capacity = (size_t)effective_frame_slots + (size_t)ctx.processor_workers + 1u;
+    if (config->memory_budget_mb > 0 && frame_bytes > 0) {
+        const size_t budget_bytes = (size_t)config->memory_budget_mb * 1024u * 1024u;
+        const size_t required_bytes = (raw_pool_capacity + processed_pool_capacity) * frame_bytes;
+        if (required_bytes > budget_bytes && config->memory_profile != MEMORY_PROFILE_MANUAL) {
+            effective_frame_slots = 1;
+            ctx.processor_workers = 1;
+            raw_pool_capacity = (size_t)effective_frame_slots + (size_t)ctx.processor_workers + 1u;
+            processed_pool_capacity = (size_t)effective_frame_slots + (size_t)ctx.processor_workers + 1u;
+            ctx.effective_frame_slots = effective_frame_slots;
+            log_warn("memory budget requested low-memory frame pools: frame_slots=%d processor_workers=%d", effective_frame_slots, ctx.processor_workers);
+        }
+        if ((raw_pool_capacity + processed_pool_capacity) * frame_bytes > budget_bytes) {
+            log_warn("frame pools require about %zu MB, above requested memory budget %d MB",
+                     ((raw_pool_capacity + processed_pool_capacity) * frame_bytes) / (1024u * 1024u),
+                     config->memory_budget_mb);
+        }
+    }
+
+    if (packet_queue_init(&ctx.raw_queue, (size_t)effective_frame_slots) != 0 ||
+        packet_queue_init(&ctx.processed_queue, (size_t)effective_frame_slots) != 0 ||
+        frame_pool_init(&ctx.raw_frame_pool, raw_pool_capacity, info->width, info->height, FRAME_FORMAT_RGB24) != 0 ||
+        frame_pool_init(&ctx.processed_frame_pool, processed_pool_capacity, info->width, info->height, FRAME_FORMAT_RGB24) != 0) {
+        log_error("failed to initialize bounded queues/frame pools");
+        video_reader_close(&ctx.reader);
+        packet_queue_free(&ctx.raw_queue);
+        packet_queue_free(&ctx.processed_queue);
+        frame_pool_free(&ctx.raw_frame_pool);
+        frame_pool_free(&ctx.processed_frame_pool);
+        return -1;
+    }
+    ctx.frame_pools_initialized = 1;
+
+#ifdef _WIN32
+    ctx.active_processors = ctx.processor_workers;
+#else
+    ctx.active_processors = ctx.processor_workers;
+#endif
 
     if (video_writer_open_with_options(&ctx.writer,
                                        config->output_path,
@@ -661,33 +769,53 @@ int pipeline_run(const PipelineConfig *config) {
         video_reader_close(&ctx.reader);
         packet_queue_free(&ctx.raw_queue);
         packet_queue_free(&ctx.processed_queue);
+        frame_pool_free(&ctx.raw_frame_pool);
+        frame_pool_free(&ctx.processed_frame_pool);
+        return -1;
+    }
+
+    if (config->enable_benchmark && benchmark_open_csv(&ctx.benchmark, config->benchmark_path) != 0) {
+        log_error("failed to open benchmark CSV: %s", config->benchmark_path);
+        video_writer_close(&ctx.writer);
+        video_reader_close(&ctx.reader);
+        packet_queue_free(&ctx.raw_queue);
+        packet_queue_free(&ctx.processed_queue);
+        frame_pool_free(&ctx.raw_frame_pool);
+        frame_pool_free(&ctx.processed_frame_pool);
         return -1;
     }
 
     if (config->mode == PROCESS_GPU) {
         if (gpu_filters_init(&ctx.gpu) != 0) {
             log_error("failed to initialize GPU filters");
+            benchmark_close_csv(&ctx.benchmark);
             video_writer_close(&ctx.writer);
             video_reader_close(&ctx.reader);
             packet_queue_free(&ctx.raw_queue);
             packet_queue_free(&ctx.processed_queue);
+            frame_pool_free(&ctx.raw_frame_pool);
+            frame_pool_free(&ctx.processed_frame_pool);
             return -1;
         }
         ctx.gpu_initialized = 1;
         opencl_context_print_info(&ctx.gpu.ctx);
     }
 
-    if (config->lossless_output &&
+    if (config->memory_profile != MEMORY_PROFILE_MANUAL &&
         (effective_frame_slots != config->frame_slots ||
          effective_decoder_threads != config->decoder_threads ||
          effective_encoder_threads != config->encoder_threads ||
          effective_processor_workers != config->processor_workers)) {
-        log_info("lossless memory profile: frame_slots=%d decoder_threads=%d encoder_threads=%d processor_workers=%d",
+        log_info("memory profile: frame_slots=%d decoder_threads=%d encoder_threads=%d processor_workers=%d",
                  effective_frame_slots,
                  effective_decoder_threads,
                  effective_encoder_threads,
                  ctx.processor_workers);
     }
+    log_info("frame pools: raw=%zu processed=%zu frame_bytes=%zu",
+             raw_pool_capacity,
+             processed_pool_capacity,
+             frame_bytes);
 
     log_info("pipeline workers: decoder_stage=1 ffmpeg_decoder_threads=%d processor_workers=%d encoder_stage=1 ffmpeg_encoder_threads=%d",
              effective_decoder_threads,
@@ -760,11 +888,12 @@ int pipeline_run(const PipelineConfig *config) {
     free(processor_threads);
 #endif
 
-    if (ctx.config->enable_benchmark && !ctx.failed) {
-        if (benchmark_write_csv(&ctx.benchmark, ctx.config->benchmark_path) != 0) {
-            log_error("failed to write benchmark CSV: %s", ctx.config->benchmark_path);
+    if (ctx.config->enable_benchmark) {
+        if (benchmark_close_csv(&ctx.benchmark) != 0) {
+            log_error("failed to close benchmark CSV: %s", ctx.config->benchmark_path);
             ctx.failed = 1;
-        } else {
+        }
+        if (!ctx.failed) {
             benchmark_print_summary(&ctx.benchmark);
         }
     }
@@ -777,6 +906,8 @@ int pipeline_run(const PipelineConfig *config) {
     video_reader_close(&ctx.reader);
     packet_queue_free(&ctx.raw_queue);
     packet_queue_free(&ctx.processed_queue);
+    frame_pool_free(&ctx.raw_frame_pool);
+    frame_pool_free(&ctx.processed_frame_pool);
 #ifndef _WIN32
     pthread_mutex_destroy(&ctx.active_lock);
 #endif

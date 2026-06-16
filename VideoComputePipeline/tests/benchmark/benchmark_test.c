@@ -13,6 +13,9 @@ int main(void) {
     TEST_ASSERT(benchmark_add_frame_result(&bench, &timing) == 0);
     TEST_ASSERT(bench.count == 1);
     TEST_ASSERT(benchmark_write_csv(&bench, "benchmarks/benchmark_test.csv") == 0);
+    TEST_ASSERT(benchmark_open_csv(&bench, "benchmarks/benchmark_stream_test.csv") == 0);
+    TEST_ASSERT(benchmark_add_frame_result(&bench, &timing) == 0);
+    TEST_ASSERT(benchmark_close_csv(&bench) == 0);
     benchmark_print_summary(&bench);
     benchmark_free(&bench);
     return 0;

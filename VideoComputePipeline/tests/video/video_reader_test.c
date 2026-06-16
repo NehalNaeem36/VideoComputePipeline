@@ -11,7 +11,7 @@
 int main(void) {
     VideoReader reader;
     const char *input_path = VCP_SOURCE_DIR "/data/input/15592600_3840_2160_60fps.mp4";
-    if (video_reader_open(&reader, input_path) != 0) {
+    if (video_reader_open_with_threads(&reader, input_path, 1) != 0) {
         printf("video_reader_test skipped: input video not available\n");
         return 0;
     }

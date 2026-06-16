@@ -30,6 +30,7 @@ set(PROJECT_SOURCES
     src/pipeline/pipeline_runner.c
     src/pipeline/frame_slot.c
     src/pipeline/frame_queue.c
+    src/pipeline/frame_pool.c
     src/benchmark/timer.c
     src/benchmark/benchmark.c
     src/benchmark/matrix_report.c

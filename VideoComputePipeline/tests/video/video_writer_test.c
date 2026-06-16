@@ -18,7 +18,7 @@ int main(void) {
         }
     }
 
-    TEST_ASSERT(video_writer_open(&writer, "data/output/video_writer_test.mp4", 64, 64, 30.0) == 0);
+    TEST_ASSERT(video_writer_open_with_options(&writer, "data/output/video_writer_test.mp4", 64, 64, 30.0, 1, "libx264", 0) == 0);
     TEST_ASSERT(video_writer_write_frame(&writer, &frame) == 0);
     TEST_ASSERT(video_writer_flush(&writer) == 0);
     video_writer_close(&writer);
