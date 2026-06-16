@@ -1,32 +1,11 @@
-#ifndef VIDEOCOMPUTEPIPELINE_UTILS_FILE_UTILS_H
-#define VIDEOCOMPUTEPIPELINE_UTILS_FILE_UTILS_H
+#ifndef VIDEOCOMPUTEPIPELINE_FILE_UTILS_H
+#define VIDEOCOMPUTEPIPELINE_FILE_UTILS_H
 
 #include <stddef.h>
-#include <stdint.h>
 
-/**
- * Check if file exists
- */
-int file_utils_exists(const char *path);
+int file_exists(const char *path);
+int create_directory_if_missing(const char *path);
+int create_parent_directory_if_missing(const char *path);
+int build_output_path(char *dest, size_t dest_size, const char *dir, const char *filename);
 
-/**
- * Get file size in bytes
- */
-uint64_t file_utils_get_size(const char *path);
-
-/**
- * Create directory (and parent directories if needed)
- */
-int file_utils_mkdir_recursive(const char *path);
-
-/**
- * Get file extension
- */
-const char* file_utils_get_extension(const char *filename);
-
-/**
- * Build path from components
- */
-int file_utils_build_path(char *dest, size_t dest_size, const char *dir, const char *file);
-
-#endif // VIDEOCOMPUTEPIPELINE_UTILS_FILE_UTILS_H
+#endif

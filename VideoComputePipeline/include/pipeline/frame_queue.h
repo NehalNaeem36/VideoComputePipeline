@@ -1,48 +1,24 @@
-#ifndef VIDEOCOMPUTEPIPELINE_PIPELINE_FRAME_QUEUE_H
-#define VIDEOCOMPUTEPIPELINE_PIPELINE_FRAME_QUEUE_H
+#ifndef VIDEOCOMPUTEPIPELINE_FRAME_QUEUE_H
+#define VIDEOCOMPUTEPIPELINE_FRAME_QUEUE_H
 
 #include "core/frame.h"
+
 #include <stddef.h>
 
-/**
- * Thread-safe frame queue
- */
 typedef struct {
-    Frame **frames;
+    Frame *items;
     size_t capacity;
     size_t head;
     size_t tail;
     size_t count;
 } FrameQueue;
 
-/**
- * Create frame queue with given capacity
- */
-FrameQueue* frame_queue_create(size_t capacity);
+int frame_queue_init(FrameQueue *queue, size_t capacity);
+void frame_queue_free(FrameQueue *queue);
+int frame_queue_push(FrameQueue *queue, Frame *frame);
+int frame_queue_pop(FrameQueue *queue, Frame *out_frame);
+int frame_queue_is_empty(const FrameQueue *queue);
+int frame_queue_is_full(const FrameQueue *queue);
+size_t frame_queue_size(const FrameQueue *queue);
 
-/**
- * Destroy frame queue
- */
-void frame_queue_destroy(FrameQueue *queue);
-
-/**
- * Enqueue frame
- */
-int frame_queue_enqueue(FrameQueue *queue, Frame *frame);
-
-/**
- * Dequeue frame
- */
-Frame* frame_queue_dequeue(FrameQueue *queue);
-
-/**
- * Check if queue is empty
- */
-int frame_queue_is_empty(FrameQueue *queue);
-
-/**
- * Get queue size
- */
-size_t frame_queue_size(FrameQueue *queue);
-
-#endif // VIDEOCOMPUTEPIPELINE_PIPELINE_FRAME_QUEUE_H
+#endif

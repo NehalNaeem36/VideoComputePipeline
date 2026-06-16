@@ -1,20 +1,264 @@
 #include "video/video_writer.h"
-#include <stdlib.h>
+#include "utils/file_utils.h"
+#include "utils/logger.h"
 
-// TODO: Include FFmpeg headers when available
-// #include <libavformat/avformat.h>
-// #include <libavcodec/avcodec.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
+#include <libswscale/swscale.h>
 
-VideoWriter* video_writer_create(const char *filename, uint32_t width, uint32_t height, double fps, const char *codec) {
-    // TODO: Implement FFmpeg initialization and file creation
-    return NULL;
+#include <string.h>
+
+static AVRational fps_to_time_base(double fps) {
+    if (fps <= 0.0) {
+        fps = 30.0;
+    }
+
+    AVRational rate = av_d2q(fps, 100000);
+    return av_inv_q(rate);
 }
 
-int video_writer_write_frame(VideoWriter *writer, Frame *frame) {
-    // TODO: Implement frame encoding
-    return -1;
+static int write_available_packets(VideoWriter *writer) {
+    AVFormatContext *format_ctx = (AVFormatContext *)writer->format_ctx;
+    AVCodecContext *codec_ctx = (AVCodecContext *)writer->codec_ctx;
+    AVStream *stream = (AVStream *)writer->stream;
+    AVPacket *packet = (AVPacket *)writer->packet;
+
+    for (;;) {
+        const int result = avcodec_receive_packet(codec_ctx, packet);
+        if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) {
+            return 0;
+        }
+        if (result < 0) {
+            return -1;
+        }
+
+        av_packet_rescale_ts(packet, codec_ctx->time_base, stream->time_base);
+        packet->stream_index = stream->index;
+        const int write_result = av_interleaved_write_frame(format_ctx, packet);
+        av_packet_unref(packet);
+        if (write_result < 0) {
+            return -1;
+        }
+    }
+}
+
+int video_writer_open(VideoWriter *writer, const char *output_path, int width, int height, double fps) {
+    if (!writer || !output_path || width <= 0 || height <= 0) {
+        return -1;
+    }
+
+    memset(writer, 0, sizeof(*writer));
+    if (create_parent_directory_if_missing(output_path) != 0) {
+        return -1;
+    }
+
+    AVFormatContext *format_ctx = NULL;
+    if (avformat_alloc_output_context2(&format_ctx, NULL, NULL, output_path) < 0 || !format_ctx) {
+        return -1;
+    }
+
+    const AVCodec *encoder = avcodec_find_encoder_by_name("libx264");
+    if (!encoder) {
+        encoder = avcodec_find_encoder(AV_CODEC_ID_H264);
+    }
+    if (!encoder) {
+        encoder = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+    }
+    if (!encoder) {
+        avformat_free_context(format_ctx);
+        return -1;
+    }
+
+    AVStream *stream = avformat_new_stream(format_ctx, NULL);
+    AVCodecContext *codec_ctx = avcodec_alloc_context3(encoder);
+    AVPacket *packet = av_packet_alloc();
+    AVFrame *rgb = av_frame_alloc();
+    AVFrame *yuv = av_frame_alloc();
+    if (!stream || !codec_ctx || !packet || !rgb || !yuv) {
+        av_packet_free(&packet);
+        av_frame_free(&rgb);
+        av_frame_free(&yuv);
+        avcodec_free_context(&codec_ctx);
+        avformat_free_context(format_ctx);
+        return -1;
+    }
+
+    codec_ctx->codec_id = encoder->id;
+    codec_ctx->codec_type = AVMEDIA_TYPE_VIDEO;
+    codec_ctx->width = width;
+    codec_ctx->height = height;
+    codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+    codec_ctx->time_base = fps_to_time_base(fps);
+    codec_ctx->framerate = av_inv_q(codec_ctx->time_base);
+    codec_ctx->bit_rate = 4000000;
+    codec_ctx->gop_size = 30;
+    codec_ctx->max_b_frames = 0;
+    codec_ctx->thread_count = 4;
+    codec_ctx->thread_type = FF_THREAD_SLICE;
+
+    if (format_ctx->oformat->flags & AVFMT_GLOBALHEADER) {
+        codec_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    }
+
+    if (encoder->id == AV_CODEC_ID_H264) {
+        av_opt_set(codec_ctx->priv_data, "preset", "ultrafast", 0);
+        av_opt_set(codec_ctx->priv_data, "tune", "zerolatency", 0);
+        av_opt_set(codec_ctx->priv_data, "rc-lookahead", "0", 0);
+        av_opt_set(codec_ctx->priv_data, "sync-lookahead", "0", 0);
+        av_opt_set(codec_ctx->priv_data, "bframes", "0", 0);
+    }
+
+    if (avcodec_open2(codec_ctx, encoder, NULL) < 0 ||
+        avcodec_parameters_from_context(stream->codecpar, codec_ctx) < 0) {
+        av_packet_free(&packet);
+        av_frame_free(&rgb);
+        av_frame_free(&yuv);
+        avcodec_free_context(&codec_ctx);
+        avformat_free_context(format_ctx);
+        return -1;
+    }
+
+    stream->time_base = codec_ctx->time_base;
+
+    yuv->format = codec_ctx->pix_fmt;
+    yuv->width = width;
+    yuv->height = height;
+    if (av_frame_get_buffer(yuv, 32) < 0) {
+        av_packet_free(&packet);
+        av_frame_free(&rgb);
+        av_frame_free(&yuv);
+        avcodec_free_context(&codec_ctx);
+        avformat_free_context(format_ctx);
+        return -1;
+    }
+
+    struct SwsContext *sws = sws_getContext(width,
+                                           height,
+                                           AV_PIX_FMT_RGB24,
+                                           width,
+                                           height,
+                                           AV_PIX_FMT_YUV420P,
+                                           SWS_BILINEAR,
+                                           NULL,
+                                           NULL,
+                                           NULL);
+    if (!sws) {
+        av_packet_free(&packet);
+        av_frame_free(&rgb);
+        av_frame_free(&yuv);
+        avcodec_free_context(&codec_ctx);
+        avformat_free_context(format_ctx);
+        return -1;
+    }
+
+    if (!(format_ctx->oformat->flags & AVFMT_NOFILE)) {
+        if (avio_open(&format_ctx->pb, output_path, AVIO_FLAG_WRITE) < 0) {
+            sws_freeContext(sws);
+            av_packet_free(&packet);
+            av_frame_free(&rgb);
+            av_frame_free(&yuv);
+            avcodec_free_context(&codec_ctx);
+            avformat_free_context(format_ctx);
+            return -1;
+        }
+    }
+
+    if (avformat_write_header(format_ctx, NULL) < 0) {
+        if (!(format_ctx->oformat->flags & AVFMT_NOFILE)) {
+            avio_closep(&format_ctx->pb);
+        }
+        sws_freeContext(sws);
+        av_packet_free(&packet);
+        av_frame_free(&rgb);
+        av_frame_free(&yuv);
+        avcodec_free_context(&codec_ctx);
+        avformat_free_context(format_ctx);
+        return -1;
+    }
+
+    writer->format_ctx = format_ctx;
+    writer->codec_ctx = codec_ctx;
+    writer->stream = stream;
+    writer->packet = packet;
+    writer->rgb_frame = rgb;
+    writer->yuv_frame = yuv;
+    writer->sws_ctx = sws;
+    writer->width = width;
+    writer->height = height;
+    writer->fps = fps;
+    writer->next_pts = 0;
+    writer->is_open = 1;
+    return 0;
+}
+
+int video_writer_write_frame(VideoWriter *writer, const Frame *frame) {
+    if (!writer || !writer->is_open || !frame_is_valid(frame) || frame->format != FRAME_FORMAT_RGB24) {
+        return -1;
+    }
+
+    if (frame->width != writer->width || frame->height != writer->height) {
+        return -1;
+    }
+
+    AVCodecContext *codec_ctx = (AVCodecContext *)writer->codec_ctx;
+    AVFrame *yuv = (AVFrame *)writer->yuv_frame;
+    struct SwsContext *sws = (struct SwsContext *)writer->sws_ctx;
+
+    if (av_frame_make_writable(yuv) < 0) {
+        return -1;
+    }
+
+    const uint8_t *src_data[4] = { frame->data, NULL, NULL, NULL };
+    int src_linesize[4] = { (int)frame->stride, 0, 0, 0 };
+    sws_scale(sws, src_data, src_linesize, 0, writer->height, yuv->data, yuv->linesize);
+    yuv->pts = writer->next_pts++;
+
+    if (avcodec_send_frame(codec_ctx, yuv) < 0) {
+        return -1;
+    }
+
+    return write_available_packets(writer);
+}
+
+int video_writer_flush(VideoWriter *writer) {
+    if (!writer || !writer->is_open) {
+        return -1;
+    }
+
+    AVCodecContext *codec_ctx = (AVCodecContext *)writer->codec_ctx;
+    if (avcodec_send_frame(codec_ctx, NULL) < 0) {
+        return -1;
+    }
+
+    return write_available_packets(writer);
 }
 
 void video_writer_close(VideoWriter *writer) {
-    // TODO: Implement cleanup and file finalization
+    if (!writer) {
+        return;
+    }
+
+    AVFormatContext *format_ctx = (AVFormatContext *)writer->format_ctx;
+    AVCodecContext *codec_ctx = (AVCodecContext *)writer->codec_ctx;
+    AVPacket *packet = (AVPacket *)writer->packet;
+    AVFrame *rgb = (AVFrame *)writer->rgb_frame;
+    AVFrame *yuv = (AVFrame *)writer->yuv_frame;
+    struct SwsContext *sws = (struct SwsContext *)writer->sws_ctx;
+
+    if (writer->is_open && format_ctx) {
+        av_write_trailer(format_ctx);
+    }
+    if (format_ctx && !(format_ctx->oformat->flags & AVFMT_NOFILE)) {
+        avio_closep(&format_ctx->pb);
+    }
+
+    sws_freeContext(sws);
+    av_packet_free(&packet);
+    av_frame_free(&rgb);
+    av_frame_free(&yuv);
+    avcodec_free_context(&codec_ctx);
+    avformat_free_context(format_ctx);
+    memset(writer, 0, sizeof(*writer));
 }

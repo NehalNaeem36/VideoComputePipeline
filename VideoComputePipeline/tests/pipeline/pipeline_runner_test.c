@@ -1,6 +1,8 @@
 #include "pipeline/pipeline_runner.h"
+#include "utils/file_utils.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #define TEST_ASSERT(expr) \
     do { \
@@ -13,8 +15,24 @@
 int main(void) {
     printf("Running pipeline_runner tests...\n");
 
+#ifndef VCP_SOURCE_DIR
+#define VCP_SOURCE_DIR "."
+#endif
+
     PipelineConfig config;
     pipeline_config_default(&config);
+    strcpy(config.input_path, VCP_SOURCE_DIR "/data/input/15592600_3840_2160_60fps.mp4");
+    strcpy(config.output_path, VCP_SOURCE_DIR "/data/output/pipeline_runner_test.mp4");
+    strcpy(config.benchmark_path, VCP_SOURCE_DIR "/benchmarks/pipeline_runner_test.csv");
+    config.max_frames = 1;
+    config.mode = PROCESS_CPU;
+    config.filter = FILTER_GRAYSCALE;
+
+    if (!file_exists(config.input_path)) {
+        printf("pipeline_runner_test skipped: input video not available\n");
+        return 0;
+    }
+
     TEST_ASSERT(pipeline_run(&config) == 0);
     return 0;
 }

@@ -1,62 +1,27 @@
 # VideoComputePipeline
 
-VideoComputePipeline is a modular C11 CPU/GPU video-processing benchmark project.
+VideoComputePipeline is a modular C11 CPU/GPU video-processing benchmark.
 
-This repository is currently at the first implementation milestone. The executable builds, prints configuration, and runs a pipeline skeleton that says:
+It reads MP4 input with FFmpeg libraries, decodes frames one at a time into an internal RGB24 `Frame`, processes each frame with CPU filters or OpenCL kernels, writes an output MP4, and records per-frame benchmark timings.
 
-```text
-pipeline not implemented yet
-```
+No FFmpeg CLI commands are used.
 
-FFmpeg, OpenCL, CPU filters, benchmark CSV output, matrix reports, frame queues, and threaded execution are not implemented in this milestone.
+## Implemented
 
-## Implemented In Milestone 1
-
-- Project skeleton and directory layout
-- `CMakeLists.txt`
-- `README.md`
-- `.gitignore`
-- `config.h`
-- `main.c`
-- `frame` module
-- `timer` module
-- `logger` module
-- `pipeline_config` module
-- `pipeline_runner` skeleton
-
-## Directory Layout
-
-```text
-include/core
-include/video
-include/cpu
-include/gpu
-include/pipeline
-include/benchmark
-include/utils
-src/core
-src/video
-src/cpu
-src/gpu
-src/pipeline
-src/benchmark
-src/utils
-tests/core
-tests/video
-tests/cpu
-tests/gpu
-tests/pipeline
-tests/benchmark
-tests/utils
-kernels
-data/input
-data/output
-benchmarks
-```
+- Frame memory and metadata management
+- FFmpeg video reader: MP4 decode to RGB24 frames
+- FFmpeg video writer: RGB24 frames to MP4
+- CPU filters: grayscale, 3x3 blur, 5x5 blur, 9x9 blur
+- OpenCL context, program build, kernels, and GPU filters
+- Sequential pipeline: decode -> process -> encode -> benchmark
+- Benchmark CSV output and summary printing
+- Matrix report CSV summary helper
+- Frame slot and bounded frame queue support for later threaded pipeline work
+- Tests for all modules
 
 ## Build On Windows MSYS2 UCRT64
 
-Open the **MSYS2 UCRT64** terminal from the Start menu, then run:
+Open the **MSYS2 UCRT64** terminal:
 
 ```bash
 cd /path/to/VideoComputePipeline
@@ -64,17 +29,18 @@ cmake -S . -B build -G "MinGW Makefiles"
 cmake --build build
 ```
 
-If your MSYS2 setup uses Unix Makefiles instead:
+If using Unix Makefiles in MSYS2:
 
 ```bash
 cmake -S . -B build -G "Unix Makefiles"
 cmake --build build
 ```
 
-Run:
+If CMake cannot find FFmpeg or OpenCL automatically, pass roots explicitly:
 
 ```bash
-./build/bin/VideoComputePipeline.exe
+cmake -S . -B build -G "MinGW Makefiles" -DFFMPEG_ROOT=C:/ffmpeg -DOPENCL_ROOT=C:/OpenCL-SDK
+cmake --build build
 ```
 
 Run tests:
@@ -83,7 +49,37 @@ Run tests:
 ctest --test-dir build --output-on-failure
 ```
 
-## Current CLI
+## Run
+
+CPU grayscale:
+
+```bash
+./build/bin/VideoComputePipeline.exe \
+  --input data/input/15592600_3840_2160_60fps.mp4 \
+  --output data/output/cpu_grayscale.mp4 \
+  --benchmark benchmarks/cpu_grayscale.csv \
+  --mode cpu \
+  --filter grayscale
+```
+
+GPU 5x5 blur:
+
+```bash
+./build/bin/VideoComputePipeline.exe \
+  --input data/input/15592600_3840_2160_60fps.mp4 \
+  --output data/output/gpu_blur5x5.mp4 \
+  --benchmark benchmarks/gpu_blur5x5.csv \
+  --mode gpu \
+  --filter blur5x5
+```
+
+For a quick smoke run:
+
+```bash
+./build/bin/VideoComputePipeline.exe --max-frames 30
+```
+
+## CLI
 
 ```text
 --input path
@@ -97,19 +93,32 @@ ctest --test-dir build --output-on-failure
 --version
 ```
 
-These options are parsed and printed, but no video processing is performed yet.
+`--max-frames 0` means process the full input.
 
-## Later Milestones
+## Benchmark CSV
 
-Future work will add:
+CSV columns:
 
-- FFmpeg video reader and writer using `libavformat`, `libavcodec`, `libavutil`, and `libswscale`
-- CPU grayscale and box blur filters
-- Benchmark CSV output
-- OpenCL context/program setup
-- OpenCL kernels and GPU filters
-- Sequential CPU and GPU pipelines
-- Matrix reports
-- Frame slots and frame queues for threaded pipeline support
+```text
+frame_index,decode_ms,process_ms,upload_ms,kernel_ms,download_ms,encode_ms,total_ms
+```
 
-The final project will use FFmpeg libraries directly and will not call the FFmpeg CLI.
+For CPU mode, upload/kernel/download columns remain zero. For GPU mode, process time includes upload, kernel execution, and download.
+
+## Module Layout
+
+```text
+include/core        src/core        tests/core
+include/video       src/video       tests/video
+include/cpu         src/cpu         tests/cpu
+include/gpu         src/gpu         tests/gpu
+include/pipeline    src/pipeline    tests/pipeline
+include/benchmark   src/benchmark   tests/benchmark
+include/utils       src/utils       tests/utils
+kernels
+data/input
+data/output
+benchmarks
+```
+
+FFmpeg code is isolated in video modules. OpenCL code is isolated in GPU modules. Frame memory is isolated in the frame module. Timing is isolated in benchmark/timer modules.

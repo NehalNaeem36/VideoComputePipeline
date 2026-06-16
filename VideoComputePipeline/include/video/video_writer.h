@@ -1,32 +1,26 @@
-#ifndef VIDEOCOMPUTEPIPELINE_VIDEO_VIDEO_WRITER_H
-#define VIDEOCOMPUTEPIPELINE_VIDEO_VIDEO_WRITER_H
+#ifndef VIDEOCOMPUTEPIPELINE_VIDEO_WRITER_H
+#define VIDEOCOMPUTEPIPELINE_VIDEO_WRITER_H
 
 #include "core/frame.h"
 
-/**
- * VideoWriter structure for FFmpeg-based video encoding
- */
 typedef struct {
-    const char *filename;
-    uint32_t width;
-    uint32_t height;
+    void *format_ctx;
+    void *codec_ctx;
+    void *stream;
+    void *packet;
+    void *rgb_frame;
+    void *yuv_frame;
+    void *sws_ctx;
+    int width;
+    int height;
     double fps;
-    const char *codec;
+    int next_pts;
+    int is_open;
 } VideoWriter;
 
-/**
- * Create video file and initialize VideoWriter
- */
-VideoWriter* video_writer_create(const char *filename, uint32_t width, uint32_t height, double fps, const char *codec);
-
-/**
- * Write frame to video file
- */
-int video_writer_write_frame(VideoWriter *writer, Frame *frame);
-
-/**
- * Finalize video file and free resources
- */
+int video_writer_open(VideoWriter *writer, const char *output_path, int width, int height, double fps);
+int video_writer_write_frame(VideoWriter *writer, const Frame *frame);
+int video_writer_flush(VideoWriter *writer);
 void video_writer_close(VideoWriter *writer);
 
-#endif // VIDEOCOMPUTEPIPELINE_VIDEO_VIDEO_WRITER_H
+#endif

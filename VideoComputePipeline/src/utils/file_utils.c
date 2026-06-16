@@ -1,28 +1,94 @@
 #include "utils/file_utils.h"
-#include <sys/stat.h>
+
+#include <errno.h>
+#include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
-int file_utils_exists(const char *path) {
-    // TODO: Implement file existence check
+#ifdef _WIN32
+#include <direct.h>
+#define MKDIR(path) _mkdir(path)
+#else
+#include <unistd.h>
+#define MKDIR(path) mkdir((path), 0755)
+#endif
+
+int file_exists(const char *path) {
+    struct stat st;
+    return path && stat(path, &st) == 0;
+}
+
+int create_directory_if_missing(const char *path) {
+    if (!path || path[0] == '\0') {
+        return -1;
+    }
+
+    char buffer[1024];
+    if (strlen(path) >= sizeof(buffer)) {
+        return -1;
+    }
+
+    strcpy(buffer, path);
+    for (char *p = buffer; *p; ++p) {
+        if (*p == '\\') {
+            *p = '/';
+        }
+    }
+
+    for (char *p = buffer + 1; *p; ++p) {
+        if (*p == '/') {
+            *p = '\0';
+            if (buffer[0] != '\0' && !file_exists(buffer) && MKDIR(buffer) != 0 && errno != EEXIST) {
+                return -1;
+            }
+            *p = '/';
+        }
+    }
+
+    if (!file_exists(buffer) && MKDIR(buffer) != 0 && errno != EEXIST) {
+        return -1;
+    }
+
     return 0;
 }
 
-uint64_t file_utils_get_size(const char *path) {
-    // TODO: Implement file size retrieval
-    return 0;
+int create_parent_directory_if_missing(const char *path) {
+    if (!path) {
+        return -1;
+    }
+
+    char buffer[1024];
+    if (strlen(path) >= sizeof(buffer)) {
+        return -1;
+    }
+    strcpy(buffer, path);
+
+    char *last_slash = strrchr(buffer, '/');
+    char *last_backslash = strrchr(buffer, '\\');
+    char *sep = last_slash > last_backslash ? last_slash : last_backslash;
+    if (!sep) {
+        return 0;
+    }
+
+    *sep = '\0';
+    if (buffer[0] == '\0') {
+        return 0;
+    }
+
+    return create_directory_if_missing(buffer);
 }
 
-int file_utils_mkdir_recursive(const char *path) {
-    // TODO: Implement recursive directory creation
-    return -1;
-}
+int build_output_path(char *dest, size_t dest_size, const char *dir, const char *filename) {
+    if (!dest || !dir || !filename || dest_size == 0) {
+        return -1;
+    }
 
-const char* file_utils_get_extension(const char *filename) {
-    // TODO: Implement extension extraction
-    return NULL;
-}
+    const char *sep = "";
+    const size_t dir_len = strlen(dir);
+    if (dir_len > 0 && dir[dir_len - 1] != '/' && dir[dir_len - 1] != '\\') {
+        sep = "/";
+    }
 
-int file_utils_build_path(char *dest, size_t dest_size, const char *dir, const char *file) {
-    // TODO: Implement path building
-    return -1;
+    const int written = snprintf(dest, dest_size, "%s%s%s", dir, sep, filename);
+    return written < 0 || (size_t)written >= dest_size ? -1 : 0;
 }

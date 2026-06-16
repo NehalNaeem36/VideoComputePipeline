@@ -1,21 +1,14 @@
-#ifndef VIDEOCOMPUTEPIPELINE_BENCHMARK_MATRIX_REPORT_H
-#define VIDEOCOMPUTEPIPELINE_BENCHMARK_MATRIX_REPORT_H
+#ifndef VIDEOCOMPUTEPIPELINE_MATRIX_REPORT_H
+#define VIDEOCOMPUTEPIPELINE_MATRIX_REPORT_H
 
-#include "benchmark/benchmark.h"
+typedef struct {
+    int total_frames;
+    double total_time_ms;
+    double average_ms_per_frame;
+    double processed_fps;
+} MatrixReportStats;
 
-/**
- * Generate CSV report with per-frame timing data
- */
-int matrix_report_generate_csv(BenchmarkStats *stats, const char *output_file);
+int matrix_report_read_csv_summary(const char *path, MatrixReportStats *stats);
+void matrix_report_print_comparison(const MatrixReportStats *cpu, const MatrixReportStats *gpu);
 
-/**
- * Generate markdown summary report
- */
-int matrix_report_generate_markdown(BenchmarkStats *stats, const char *output_file);
-
-/**
- * Print comparison matrix to stdout
- */
-void matrix_report_print_comparison(BenchmarkStats *cpu_stats, BenchmarkStats *gpu_stats);
-
-#endif // VIDEOCOMPUTEPIPELINE_BENCHMARK_MATRIX_REPORT_H
+#endif

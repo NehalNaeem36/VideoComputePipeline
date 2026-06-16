@@ -1,48 +1,29 @@
-#ifndef VIDEOCOMPUTEPIPELINE_BENCHMARK_BENCHMARK_H
-#define VIDEOCOMPUTEPIPELINE_BENCHMARK_BENCHMARK_H
+#ifndef VIDEOCOMPUTEPIPELINE_BENCHMARK_H
+#define VIDEOCOMPUTEPIPELINE_BENCHMARK_H
 
 #include <stddef.h>
-#include <stdint.h>
 
-/**
- * Per-frame benchmark data
- */
 typedef struct {
-    uint64_t frame_number;
-    double cpu_time_ms;
-    double gpu_time_ms;
-} FrameBenchmark;
+    int frame_index;
+    double decode_ms;
+    double process_ms;
+    double upload_ms;
+    double kernel_ms;
+    double download_ms;
+    double encode_ms;
+    double total_ms;
+} FrameTiming;
 
-/**
- * Aggregate benchmark statistics
- */
 typedef struct {
-    FrameBenchmark *samples;
-    size_t num_samples;
-    double total_cpu_time;
-    double total_gpu_time;
-    double avg_cpu_time;
-    double avg_gpu_time;
-} BenchmarkStats;
+    FrameTiming *items;
+    size_t count;
+    size_t capacity;
+} Benchmark;
 
-/**
- * Create benchmark stats
- */
-BenchmarkStats* benchmark_create(size_t max_frames);
+void benchmark_init(Benchmark *bench);
+int benchmark_add_frame_result(Benchmark *bench, const FrameTiming *timing);
+int benchmark_write_csv(const Benchmark *bench, const char *path);
+void benchmark_print_summary(const Benchmark *bench);
+void benchmark_free(Benchmark *bench);
 
-/**
- * Record per-frame timing
- */
-void benchmark_record_frame(BenchmarkStats *stats, uint64_t frame_number, double cpu_ms, double gpu_ms);
-
-/**
- * Calculate statistics
- */
-void benchmark_calculate_stats(BenchmarkStats *stats);
-
-/**
- * Free benchmark stats
- */
-void benchmark_destroy(BenchmarkStats *stats);
-
-#endif // VIDEOCOMPUTEPIPELINE_BENCHMARK_BENCHMARK_H
+#endif

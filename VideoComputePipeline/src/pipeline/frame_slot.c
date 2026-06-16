@@ -1,20 +1,49 @@
 #include "pipeline/frame_slot.h"
-#include <stdlib.h>
 
-FrameSlot* frame_slot_create(void) {
-    // TODO: Implement slot allocation
-    return NULL;
+void frame_slot_init(FrameSlot *slot) {
+    if (!slot) {
+        return;
+    }
+
+    frame_init(&slot->frame);
+    slot->occupied = 0;
+    slot->processing = 0;
 }
 
-void frame_slot_destroy(FrameSlot *slot) {
-    // TODO: Implement slot deallocation
+void frame_slot_free(FrameSlot *slot) {
+    if (!slot) {
+        return;
+    }
+
+    frame_free(&slot->frame);
+    slot->occupied = 0;
+    slot->processing = 0;
 }
 
-void frame_slot_put(FrameSlot *slot, Frame *frame) {
-    // TODO: Implement put operation
+int frame_slot_put(FrameSlot *slot, Frame *frame) {
+    if (!slot || !frame || slot->occupied) {
+        return -1;
+    }
+
+    if (frame_move(&slot->frame, frame) != 0) {
+        return -1;
+    }
+
+    slot->occupied = 1;
+    slot->processing = 0;
+    return 0;
 }
 
-Frame* frame_slot_get(FrameSlot *slot) {
-    // TODO: Implement get operation
-    return NULL;
+int frame_slot_take(FrameSlot *slot, Frame *out_frame) {
+    if (!slot || !out_frame || !slot->occupied) {
+        return -1;
+    }
+
+    if (frame_move(out_frame, &slot->frame) != 0) {
+        return -1;
+    }
+
+    slot->occupied = 0;
+    slot->processing = 0;
+    return 0;
 }

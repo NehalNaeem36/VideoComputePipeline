@@ -4,7 +4,7 @@
 #define PROJECT_NAME "VideoComputePipeline"
 #define PROJECT_VERSION "0.1.0"
 
-#define DEFAULT_INPUT_PATH "data/input/input.mp4"
+#define DEFAULT_INPUT_PATH "data/input/15592600_3840_2160_60fps.mp4"
 #define DEFAULT_OUTPUT_PATH "data/output/output.mp4"
 #define DEFAULT_BENCHMARK_PATH "benchmarks/results.csv"
 

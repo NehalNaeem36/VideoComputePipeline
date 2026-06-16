@@ -1,31 +1,18 @@
-#ifndef VIDEOCOMPUTEPIPELINE_GPU_OPENCL_CONTEXT_H
-#define VIDEOCOMPUTEPIPELINE_GPU_OPENCL_CONTEXT_H
+#ifndef VIDEOCOMPUTEPIPELINE_OPENCL_CONTEXT_H
+#define VIDEOCOMPUTEPIPELINE_OPENCL_CONTEXT_H
 
-#include <stdint.h>
+#define CL_TARGET_OPENCL_VERSION 300
+#include <CL/cl.h>
 
-/**
- * OpenCL context wrapper
- */
 typedef struct {
-    void *platform_id;
-    void *device_id;
-    void *context;
-    void *command_queue;
+    cl_platform_id platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
 } OpenCLContext;
 
-/**
- * Initialize OpenCL context and device
- */
-OpenCLContext* opencl_context_create(void);
+int opencl_context_init(OpenCLContext *ctx);
+void opencl_context_print_info(const OpenCLContext *ctx);
+void opencl_context_release(OpenCLContext *ctx);
 
-/**
- * Free OpenCL resources
- */
-void opencl_context_destroy(OpenCLContext *ctx);
-
-/**
- * Get device info (name, capabilities)
- */
-const char* opencl_context_get_device_info(OpenCLContext *ctx);
-
-#endif // VIDEOCOMPUTEPIPELINE_GPU_OPENCL_CONTEXT_H
+#endif
