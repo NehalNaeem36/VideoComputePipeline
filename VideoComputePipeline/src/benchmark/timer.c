@@ -1,26 +1,30 @@
 #include "benchmark/timer.h"
-#include <stdlib.h>
-#include <time.h>
-
-Timer* timer_create(void) {
-    // TODO: Implement timer allocation
-    return NULL;
-}
 
 void timer_start(Timer *timer) {
-    // TODO: Implement timer start using clock_gettime or similar
+    if (!timer) {
+        return;
+    }
+
+#ifdef _WIN32
+    QueryPerformanceFrequency(&timer->frequency);
+    QueryPerformanceCounter(&timer->start);
+#else
+    timer->start = clock();
+#endif
 }
 
-double timer_stop(Timer *timer) {
-    // TODO: Implement timer stop and elapsed calculation
-    return 0.0;
-}
+double timer_stop_ms(Timer *timer) {
+    if (!timer) {
+        return 0.0;
+    }
 
-double timer_get_elapsed_ms(Timer *timer) {
-    // TODO: Implement elapsed time retrieval
-    return 0.0;
-}
-
-void timer_destroy(Timer *timer) {
-    // TODO: Implement timer deallocation
+#ifdef _WIN32
+    LARGE_INTEGER end;
+    QueryPerformanceCounter(&end);
+    return ((double)(end.QuadPart - timer->start.QuadPart) * 1000.0) /
+           (double)timer->frequency.QuadPart;
+#else
+    const clock_t end = clock();
+    return ((double)(end - timer->start) * 1000.0) / (double)CLOCKS_PER_SEC;
+#endif
 }

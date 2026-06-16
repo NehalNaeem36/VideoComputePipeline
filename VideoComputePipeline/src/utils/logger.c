@@ -1,31 +1,31 @@
 #include "utils/logger.h"
+
 #include <stdarg.h>
+#include <stdio.h>
 
-static LogLevel current_level = LOG_INFO;
-static FILE *output_file = NULL;
-
-void logger_init(LogLevel level, FILE *output) {
-    // TODO: Implement logger initialization
-    current_level = level;
-    output_file = output ? output : stdout;
+static void log_message(const char *level, const char *fmt, va_list args) {
+    fprintf(stderr, "[%s] ", level);
+    vfprintf(stderr, fmt, args);
+    fputc('\n', stderr);
 }
 
-void logger_debug(const char *format, ...) {
-    // TODO: Implement debug logging
+void log_info(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    log_message("INFO", fmt, args);
+    va_end(args);
 }
 
-void logger_info(const char *format, ...) {
-    // TODO: Implement info logging
+void log_warn(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    log_message("WARN", fmt, args);
+    va_end(args);
 }
 
-void logger_warn(const char *format, ...) {
-    // TODO: Implement warning logging
-}
-
-void logger_error(const char *format, ...) {
-    // TODO: Implement error logging
-}
-
-void logger_shutdown(void) {
-    // TODO: Implement cleanup
+void log_error(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    log_message("ERROR", fmt, args);
+    va_end(args);
 }

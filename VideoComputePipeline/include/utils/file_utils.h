@@ -1,6 +1,7 @@
 #ifndef VIDEOCOMPUTEPIPELINE_UTILS_FILE_UTILS_H
 #define VIDEOCOMPUTEPIPELINE_UTILS_FILE_UTILS_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /**

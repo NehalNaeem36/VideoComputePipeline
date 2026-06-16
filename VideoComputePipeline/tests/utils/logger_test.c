@@ -1,23 +1,11 @@
 #include "utils/logger.h"
 
-/**
- * Test logger initialization
- */
-int logger_test_init(void) {
-    // TODO: Implement test
-    return 0;
-}
-
-/**
- * Test logging at different levels
- */
-int logger_test_levels(void) {
-    // TODO: Implement test
-    return 0;
-}
+#include <stdio.h>
 
 int main(void) {
     printf("Running logger tests...\n");
-    // TODO: Execute tests
+    log_info("info message");
+    log_warn("warning message");
+    log_error("error message");
     return 0;
 }

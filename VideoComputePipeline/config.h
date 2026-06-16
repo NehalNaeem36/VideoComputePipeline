@@ -4,22 +4,14 @@
 #define PROJECT_NAME "VideoComputePipeline"
 #define PROJECT_VERSION "0.1.0"
 
-// Default configuration paths
-#define DEFAULT_INPUT_FILE "data/input/sample.mp4"
-#define DEFAULT_OUTPUT_FILE "data/output/result.mp4"
-#define DEFAULT_FILTER_TYPE "grayscale"
+#define DEFAULT_INPUT_PATH "data/input/input.mp4"
+#define DEFAULT_OUTPUT_PATH "data/output/output.mp4"
+#define DEFAULT_BENCHMARK_PATH "benchmarks/results.csv"
 
-// Default settings
-#define DEFAULT_USE_GPU 0
-#define DEFAULT_NUM_THREADS 4
-#define DEFAULT_ENABLE_BENCHMARKS 1
+#define DEFAULT_MAX_FRAMES 0
+#define DEFAULT_ENABLE_BENCHMARK 1
+#define DEFAULT_FRAME_SLOTS 3
 
-// Buffer sizes
-#define FRAME_QUEUE_CAPACITY 10
-#define MAX_PATH_LENGTH 512
+#define VCP_MAX_PATH_LENGTH 1024
 
-// Build information
-#define BUILD_DATE __DATE__
-#define BUILD_TIME __TIME__
-
-#endif // VIDEOCOMPUTEPIPELINE_CONFIG_H
+#endif

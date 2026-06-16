@@ -1,46 +1,33 @@
-#ifndef VIDEOCOMPUTEPIPELINE_PIPELINE_PIPELINE_CONFIG_H
-#define VIDEOCOMPUTEPIPELINE_PIPELINE_PIPELINE_CONFIG_H
+#ifndef VIDEOCOMPUTEPIPELINE_PIPELINE_CONFIG_H
+#define VIDEOCOMPUTEPIPELINE_PIPELINE_CONFIG_H
 
-/**
- * Pipeline configuration
- */
+#include "config.h"
+
+typedef enum {
+    PROCESS_CPU = 0,
+    PROCESS_GPU = 1
+} ProcessMode;
+
+typedef enum {
+    FILTER_GRAYSCALE = 0,
+    FILTER_BLUR_3X3 = 1,
+    FILTER_BLUR_5X5 = 2,
+    FILTER_BLUR_9X9 = 3
+} FilterType;
+
 typedef struct {
-    const char *input_file;
-    const char *output_file;
-    const char *filter_type;  // "grayscale", "blur3x3", "blur5x5", "blur9x9"
-    int use_gpu;
-    int num_threads;
-    int enable_benchmarks;
+    char input_path[VCP_MAX_PATH_LENGTH];
+    char output_path[VCP_MAX_PATH_LENGTH];
+    char benchmark_path[VCP_MAX_PATH_LENGTH];
+    ProcessMode mode;
+    FilterType filter;
+    int max_frames;
+    int enable_benchmark;
+    int frame_slots;
 } PipelineConfig;
 
-/**
- * Create pipeline config with defaults
- */
-PipelineConfig* pipeline_config_create(void);
+void pipeline_config_default(PipelineConfig *config);
+int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv);
+void pipeline_config_print(const PipelineConfig *config);
 
-/**
- * Load default configuration
- */
-void pipeline_config_load_defaults(PipelineConfig *cfg);
-
-/**
- * Parse command-line arguments
- */
-int pipeline_config_parse_args(PipelineConfig *cfg, int argc, char **argv);
-
-/**
- * Validate configuration
- */
-int pipeline_config_validate(PipelineConfig *cfg);
-
-/**
- * Print configuration
- */
-void pipeline_config_print(PipelineConfig *cfg);
-
-/**
- * Free configuration
- */
-void pipeline_config_destroy(PipelineConfig *cfg);
-
-#endif // VIDEOCOMPUTEPIPELINE_PIPELINE_PIPELINE_CONFIG_H
+#endif

@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+build-*/
 out/
 dist/
 
@@ -48,14 +49,18 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 compile_commands.json
+CTestTestfile.cmake
+Testing/
 
 # Test outputs
 *.gcda
 *.gcno
 coverage/
+*.log
 
 # Data and benchmarks
-data/output/
+data/output/*
+!data/output/.gitkeep
 benchmarks/*.csv
 benchmarks/*.md
 

@@ -1,146 +1,115 @@
 # VideoComputePipeline
 
-A modular CPU/GPU video processing pipeline designed for real-time video frame processing with performance benchmarking capabilities.
+VideoComputePipeline is a modular C11 CPU/GPU video-processing benchmark project.
 
-## Project Purpose
+This repository is currently at the first implementation milestone. The executable builds, prints configuration, and runs a pipeline skeleton that says:
 
-VideoComputePipeline is a high-performance video processing framework that enables:
-- **Frame-by-frame video processing** using FFmpeg for decoding/encoding
-- **Dual-mode processing**: CPU filters and GPU (OpenCL) accelerated kernels
-- **Real-time benchmarking**: Comprehensive timing analysis for CPU vs GPU comparison
-- **Modular architecture**: Clean separation of concerns for easy extension and maintenance
-
-## Module Layout
-
-### Core Module (`include/core/`, `src/core/`)
-- **frame.h/c**: Internal RGB24 Frame structure and memory management
-
-### Video Module (`include/video/`, `src/video/`)
-- **video_reader.h/c**: FFmpeg-based video file decoding and frame extraction
-- **video_writer.h/c**: FFmpeg-based video file encoding and output
-
-### CPU Module (`include/cpu/`, `src/cpu/`)
-- **cpu_filters.h/c**: CPU implementations of image filters (grayscale, blur3x3, blur5x5, blur9x9)
-
-### GPU Module (`include/gpu/`, `src/gpu/`)
-- **opencl_context.h/c**: OpenCL platform, device, and context initialization
-- **opencl_program.h/c**: OpenCL program compilation and kernel management
-- **gpu_filters.h/c**: GPU-accelerated filter execution
-
-### Pipeline Module (`include/pipeline/`, `src/pipeline/`)
-- **frame_slot.h/c**: Single frame slot for synchronized processing
-- **frame_queue.h/c**: Thread-safe queue for frame buffering
-- **pipeline_config.h/c**: Configuration management and command-line argument parsing
-- **pipeline_runner.h/c**: Main pipeline orchestrator coordinating all components
-
-### Benchmark Module (`include/benchmark/`, `src/benchmark/`)
-- **timer.h/c**: High-resolution timing for performance measurement
-- **benchmark.h/c**: Per-frame and aggregate statistics collection
-- **matrix_report.h/c**: CSV and markdown export for benchmark results
-
-### Utils Module (`include/utils/`, `src/utils/`)
-- **logger.h/c**: Structured logging with multiple verbosity levels
-- **file_utils.h/c**: File system utilities (path building, existence checks, etc.)
-
-### OpenCL Kernels (`kernels/`)
-- **grayscale.cl**: Grayscale conversion kernel
-- **blur3x3.cl**: 3x3 box blur kernel
-- **blur5x5.cl**: 5x5 box blur kernel
-- **blur9x9.cl**: 9x9 box blur kernel
-
-## Directory Structure
-
-```
-VideoComputePipeline/
-├── include/          # Public header files organized by module
-├── src/              # Implementation files organized by module
-├── tests/            # Test files (one per module component)
-├── kernels/          # OpenCL kernel source files
-├── data/
-│   ├── input/        # Input video files
-│   └── output/       # Processed output videos
-├── benchmarks/       # Generated benchmark reports (CSV, markdown)
-├── main.c            # Entry point
-├── config.h          # Global configuration constants
-├── CMakeLists.txt    # Build configuration
-├── README.md         # This file
-└── .gitignore        # Git ignore rules
+```text
+pipeline not implemented yet
 ```
 
-## Build Instructions (Placeholder)
+FFmpeg, OpenCL, CPU filters, benchmark CSV output, matrix reports, frame queues, and threaded execution are not implemented in this milestone.
 
-### Prerequisites
-- CMake >= 3.10
-- C11 compatible compiler
-- FFmpeg development libraries (libavformat, libavcodec, libavutil)
-- OpenCL development libraries (optional, for GPU support)
+## Implemented In Milestone 1
 
-### Build Steps
+- Project skeleton and directory layout
+- `CMakeLists.txt`
+- `README.md`
+- `.gitignore`
+- `config.h`
+- `main.c`
+- `frame` module
+- `timer` module
+- `logger` module
+- `pipeline_config` module
+- `pipeline_runner` skeleton
+
+## Directory Layout
+
+```text
+include/core
+include/video
+include/cpu
+include/gpu
+include/pipeline
+include/benchmark
+include/utils
+src/core
+src/video
+src/cpu
+src/gpu
+src/pipeline
+src/benchmark
+src/utils
+tests/core
+tests/video
+tests/cpu
+tests/gpu
+tests/pipeline
+tests/benchmark
+tests/utils
+kernels
+data/input
+data/output
+benchmarks
+```
+
+## Build On Windows MSYS2 UCRT64
+
+Open the **MSYS2 UCRT64** terminal from the Start menu, then run:
+
 ```bash
-mkdir build
-cd build
-cmake ..
-cmake --build .
+cd /path/to/VideoComputePipeline
+cmake -S . -B build -G "MinGW Makefiles"
+cmake --build build
 ```
 
-### Run Tests
+If your MSYS2 setup uses Unix Makefiles instead:
+
 ```bash
-cmake --build . --target test
+cmake -S . -B build -G "Unix Makefiles"
+cmake --build build
 ```
 
-### Run Pipeline
+Run:
+
 ```bash
-./bin/VideoComputePipeline -i data/input/video.mp4 -o data/output/result.mp4 -f grayscale
+./build/bin/VideoComputePipeline.exe
 ```
 
-## Planned Benchmark Outputs
+Run tests:
 
-### Per-Frame Timing
-- Frame number
-- CPU processing time (ms)
-- GPU processing time (ms)
-- I/O overhead (reading/writing)
+```bash
+ctest --test-dir build --output-on-failure
+```
 
-### Aggregate Statistics
-- Total processing time (CPU vs GPU)
-- Average frame processing time
-- Throughput (frames per second)
-- Acceleration ratio (CPU time / GPU time)
+## Current CLI
 
-### Export Formats
-- CSV: Detailed per-frame timing matrix
-- Markdown: Summary tables and comparison analysis
+```text
+--input path
+--output path
+--benchmark path
+--mode cpu|gpu
+--filter grayscale|blur3x3|blur5x5|blur9x9
+--max-frames N
+--no-benchmark
+--help
+--version
+```
 
-## CPU vs GPU Comparison
+These options are parsed and printed, but no video processing is performed yet.
 
-The pipeline generates comprehensive benchmarks comparing:
-- **CPU Performance**: Single-threaded and multi-threaded baseline
-- **GPU Performance**: OpenCL kernel execution with data transfer overhead
-- **Acceleration Factor**: Measured speedup of GPU over CPU
-- **Efficiency**: Performance per watt (framework prepared, actual measurement depends on hardware)
+## Later Milestones
 
-## Design Principles
+Future work will add:
 
-1. **Strict 3-file module structure**: Every module has .h, .c, and _test.c files
-2. **Clear separation of concerns**: Each module has a single responsibility
-3. **FFmpeg library integration**: Native library usage, not CLI commands
-4. **OpenCL for GPU computing**: Direct GPU kernel execution
-5. **Comprehensive benchmarking**: Frame-level timing with detailed statistics
-6. **Extensibility**: Easy to add new filters or processing stages
+- FFmpeg video reader and writer using `libavformat`, `libavcodec`, `libavutil`, and `libswscale`
+- CPU grayscale and box blur filters
+- Benchmark CSV output
+- OpenCL context/program setup
+- OpenCL kernels and GPU filters
+- Sequential CPU and GPU pipelines
+- Matrix reports
+- Frame slots and frame queues for threaded pipeline support
 
-## Next Steps
-
-1. Implement core module (Frame structure and memory management)
-2. Implement video I/O module (FFmpeg integration)
-3. Implement CPU and GPU filter modules
-4. Implement pipeline orchestration and frame queuing
-5. Implement benchmarking and reporting
-6. Integration testing and performance validation
-
-## License
-
-To be determined
-
-## Contributing
-
-Development guidelines TBD
+The final project will use FFmpeg libraries directly and will not call the FFmpeg CLI.
