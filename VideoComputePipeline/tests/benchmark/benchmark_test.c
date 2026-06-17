@@ -10,6 +10,8 @@ int main(void) {
     FrameTiming timing = {0};
     timing.frame_index = 1;
     timing.total_ms = 3.5;
+    benchmark_set_wall_clock_ms /* module: benchmark/benchmark */ (&bench, 2.0);
+    TEST_ASSERT(bench.wall_clock_ms == 2.0);
     TEST_ASSERT(benchmark_add_frame_result /* module: benchmark/benchmark */ (&bench, &timing) == 0);
     TEST_ASSERT(bench.count == 1);
     TEST_ASSERT(benchmark_write_csv /* module: benchmark/benchmark */ (&bench, "benchmarks/benchmark_test.csv") == 0);

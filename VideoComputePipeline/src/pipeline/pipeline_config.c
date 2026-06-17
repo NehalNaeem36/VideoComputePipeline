@@ -5,6 +5,7 @@
 #include <string.h>
 
 static int copy_path(char *dst, size_t dst_size, const char *src) {
+    /*basic wrapper for "strcpy" used for path copying */
     if (!dst || !src || strlen(src) >= dst_size) {
         return -1;
     }
@@ -49,6 +50,8 @@ static int parse_mode(const char *value, ProcessMode *mode) {
 }
 
 static int parse_filter(const char *value, FilterType *filter) {
+
+    /* parses arguments containing video filter and stores numeric equivalent */
     if (strcmp(value, "grayscale") == 0) {
         *filter = FILTER_GRAYSCALE;
         return 0;
@@ -222,6 +225,9 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
 }
 
 void pipeline_config_print(const PipelineConfig *config) {
+
+/*   A function that prints the pipeline configuration */
+
     if (!config) {
         return;
     }

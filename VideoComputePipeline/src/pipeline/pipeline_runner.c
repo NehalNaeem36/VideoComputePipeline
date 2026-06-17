@@ -663,14 +663,34 @@ static void *encoder_thread_main(void *arg)
 }
 
 int pipeline_run(const PipelineConfig *config) {
-    if (!config) {
+    /* initial entry to pipeline runner module */
+    if (!config) {  //check config is not null
         return -1;
     }
 
-    PipelineContext ctx;
-    memset(&ctx, 0, sizeof(ctx));
-    ctx.config = config;
+    PipelineContext ctx;  /*pipeline context struct 
+                                const PipelineConfig *config;
+                                VideoReader reader;
+                                VideoWriter writer;
+                                Benchmark benchmark;
+                                GPUFilterContext gpu;
+                                PacketQueue raw_queue;
+                                PacketQueue processed_queue;
+                                FramePool raw_frame_pool;
+                                FramePool processed_frame_pool;
+                                int gpu_initialized;
+                                int frame_pools_initialized;
+                                int processor_workers;
+                                int effective_frame_slots;
+                                int effective_decoder_threads;
+                                int effective_encoder_threads;
+                                int failed; 
+                                lock  */
+    memset(&ctx, 0, sizeof(ctx));  // clear out the struct memory so any garbage does not affect our usage
+    ctx.config = config; //set context config as the config we received as parameter from main module
     benchmark_init /* module: benchmark/benchmark */ (&ctx.benchmark);
+    Timer pipeline_wall_timer;
+    timer_start /* module: benchmark/timer */ (&pipeline_wall_timer);
 
 #ifndef _WIN32
     pthread_mutex_init(&ctx.active_lock, NULL);
@@ -889,6 +909,7 @@ int pipeline_run(const PipelineConfig *config) {
 #endif
 
     if (ctx.config->enable_benchmark) {
+        benchmark_set_wall_clock_ms /* module: benchmark/benchmark */ (&ctx.benchmark, timer_stop_ms /* module: benchmark/timer */ (&pipeline_wall_timer));
         if (benchmark_close_csv /* module: benchmark/benchmark */ (&ctx.benchmark) != 0) {
             log_error /* module: utils/logger */ ("failed to close benchmark CSV: %s", ctx.config->benchmark_path);
             ctx.failed = 1;

@@ -15,7 +15,16 @@ void benchmark_init(Benchmark *bench) {
     bench->capacity = 0;
     bench->total_ms = 0.0;
     bench->process_ms = 0.0;
+    bench->wall_clock_ms = 0.0;
     bench->csv_file = NULL;
+}
+
+void benchmark_set_wall_clock_ms(Benchmark *bench, double wall_clock_ms) {
+    if (!bench || wall_clock_ms < 0.0) {
+        return;
+    }
+
+    bench->wall_clock_ms = wall_clock_ms;
 }
 
 static int write_csv_header(FILE *file) {
@@ -146,6 +155,10 @@ void benchmark_print_summary(const Benchmark *bench) {
     printf("  avg_process_ms: %.3f\n", bench->process_ms / (double)bench->count);
     if (bench->total_ms > 0.0) {
         printf("  processed_fps: %.3f\n", (double)bench->count * 1000.0 / bench->total_ms);
+    }
+    if (bench->wall_clock_ms > 0.0) {
+        printf("  wall_clock_ms: %.3f\n", bench->wall_clock_ms);
+        printf("  wall_clock_fps: %.3f\n", (double)bench->count * 1000.0 / bench->wall_clock_ms);
     }
 }
 

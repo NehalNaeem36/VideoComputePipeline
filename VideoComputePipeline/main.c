@@ -10,6 +10,7 @@
 
 static void print_usage(const char *program_name) {
     printf("Usage: %s [options]\n", program_name);
+    printf("\n-------------------------------------------------------------------------------------\n");
     printf("Options:\n");
     printf("  --input path              Input MP4 path\n");
     printf("  --output path             Output MP4 path\n");
@@ -29,6 +30,7 @@ static void print_usage(const char *program_name) {
     printf("  --no-benchmark            Disable benchmark output\n");
     printf("  --help                    Show this help message\n");
     printf("  --version                 Show version information\n");
+    printf("\n-------------------------------------------------------------------------------------\n");
 }
 
 static void print_version(void) {
@@ -36,6 +38,8 @@ static void print_version(void) {
 }
 
 int main(int argc, char **argv) {
+
+    // cli arguments are passed to the pipeline config parser, but we also handle some special cases here
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--help") == 0) {
             print_usage /* module: app/main */ (argv[0]);
@@ -66,19 +70,27 @@ int main(int argc, char **argv) {
     }
 
     PipelineConfig config;
+    //config store deffault at first
     pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
 
+
+    //then we parse the cli arguments and override the config with them
     if (pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) != 0) {
+        /*here pipeline_config_parse_args tried to parse given args and build the config but failed */
         log_error /* module: utils/logger */ ("invalid command-line arguments");
         print_usage /* module: app/main */ (argv[0]);
         return EXIT_FAILURE;
     }
-
+    /* if config created sucessfully 
+            print config 
+            run pipeline  and logg error in result*/
     printf("%s %s\n", PROJECT_NAME, PROJECT_VERSION);
     printf("configuration:\n");
     pipeline_config_print /* module: pipeline/pipeline_config */ (&config);
 
     log_info /* module: utils/logger */ ("starting pipeline");
+
+    /*  pipeline_run is the main execution entry point*/
     const int result = pipeline_run /* module: pipeline/pipeline_runner */ (&config);
     if (result != 0) {
         log_error /* module: utils/logger */ ("pipeline failed with code %d", result);

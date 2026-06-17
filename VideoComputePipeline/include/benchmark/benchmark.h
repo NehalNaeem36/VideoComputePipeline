@@ -20,10 +20,12 @@ typedef struct {
     size_t capacity;
     double total_ms;
     double process_ms;
+    double wall_clock_ms;
     void *csv_file;
 } Benchmark;
 
 void benchmark_init(Benchmark *bench);
+void benchmark_set_wall_clock_ms(Benchmark *bench, double wall_clock_ms);
 int benchmark_open_csv(Benchmark *bench, const char *path);
 int benchmark_add_frame_result(Benchmark *bench, const FrameTiming *timing);
 int benchmark_write_csv(const Benchmark *bench, const char *path);
