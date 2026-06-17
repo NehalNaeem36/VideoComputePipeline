@@ -116,7 +116,7 @@ static const char *opencl_error_name(cl_int err) {
 }
 
 static void log_opencl_error(const char *operation, cl_int err) {
-    log_error("%s failed: %s (%d)", operation, opencl_error_name(err), (int)err);
+    log_error /* module: utils/logger */ ("%s failed: %s (%d)", operation, opencl_error_name(err), (int)err);
 }
 
 static int create_kernel(OpenCLProgram *program, const char *name, cl_kernel *kernel) {
@@ -131,7 +131,7 @@ int gpu_filters_init(GPUFilterContext *gpu) {
     }
 
     memset(gpu, 0, sizeof(*gpu));
-    if (opencl_context_init(&gpu->ctx) != 0) {
+    if (opencl_context_init /* module: gpu/opencl_context */ (&gpu->ctx) != 0) {
         return -1;
     }
 
@@ -140,26 +140,26 @@ int gpu_filters_init(GPUFilterContext *gpu) {
     char blur5x5_path[1024];
     char blur9x9_path[1024];
     char blur13x13_path[1024];
-    if (build_kernel_path(grayscale_path, sizeof(grayscale_path), "grayscale.cl") != 0 ||
-        build_kernel_path(blur3x3_path, sizeof(blur3x3_path), "blur3x3.cl") != 0 ||
-        build_kernel_path(blur5x5_path, sizeof(blur5x5_path), "blur5x5.cl") != 0 ||
-        build_kernel_path(blur9x9_path, sizeof(blur9x9_path), "blur9x9.cl") != 0 ||
-        build_kernel_path(blur13x13_path, sizeof(blur13x13_path), "blur13x13.cl") != 0) {
-        gpu_filters_release(gpu);
+    if (build_kernel_path /* module: gpu/gpu_filters */ (grayscale_path, sizeof(grayscale_path), "grayscale.cl") != 0 ||
+        build_kernel_path /* module: gpu/gpu_filters */ (blur3x3_path, sizeof(blur3x3_path), "blur3x3.cl") != 0 ||
+        build_kernel_path /* module: gpu/gpu_filters */ (blur5x5_path, sizeof(blur5x5_path), "blur5x5.cl") != 0 ||
+        build_kernel_path /* module: gpu/gpu_filters */ (blur9x9_path, sizeof(blur9x9_path), "blur9x9.cl") != 0 ||
+        build_kernel_path /* module: gpu/gpu_filters */ (blur13x13_path, sizeof(blur13x13_path), "blur13x13.cl") != 0) {
+        gpu_filters_release /* module: gpu/gpu_filters */ (gpu);
         return -1;
     }
 
-    if (opencl_program_build(&gpu->grayscale_program, &gpu->ctx, grayscale_path) != 0 ||
-        opencl_program_build(&gpu->blur3x3_program, &gpu->ctx, blur3x3_path) != 0 ||
-        opencl_program_build(&gpu->blur5x5_program, &gpu->ctx, blur5x5_path) != 0 ||
-        opencl_program_build(&gpu->blur9x9_program, &gpu->ctx, blur9x9_path) != 0 ||
-        opencl_program_build(&gpu->blur13x13_program, &gpu->ctx, blur13x13_path) != 0 ||
-        create_kernel(&gpu->grayscale_program, "grayscale_rgb24", &gpu->grayscale_kernel) != 0 ||
-        create_kernel(&gpu->blur3x3_program, "blur3x3_rgb24", &gpu->blur3x3_kernel) != 0 ||
-        create_kernel(&gpu->blur5x5_program, "blur5x5_rgb24", &gpu->blur5x5_kernel) != 0 ||
-        create_kernel(&gpu->blur9x9_program, "blur9x9_rgb24", &gpu->blur9x9_kernel) != 0 ||
-        create_kernel(&gpu->blur13x13_program, "blur13x13_rgb24", &gpu->blur13x13_kernel) != 0) {
-        gpu_filters_release(gpu);
+    if (opencl_program_build /* module: gpu/opencl_program */ (&gpu->grayscale_program, &gpu->ctx, grayscale_path) != 0 ||
+        opencl_program_build /* module: gpu/opencl_program */ (&gpu->blur3x3_program, &gpu->ctx, blur3x3_path) != 0 ||
+        opencl_program_build /* module: gpu/opencl_program */ (&gpu->blur5x5_program, &gpu->ctx, blur5x5_path) != 0 ||
+        opencl_program_build /* module: gpu/opencl_program */ (&gpu->blur9x9_program, &gpu->ctx, blur9x9_path) != 0 ||
+        opencl_program_build /* module: gpu/opencl_program */ (&gpu->blur13x13_program, &gpu->ctx, blur13x13_path) != 0 ||
+        create_kernel /* module: gpu/gpu_filters */ (&gpu->grayscale_program, "grayscale_rgb24", &gpu->grayscale_kernel) != 0 ||
+        create_kernel /* module: gpu/gpu_filters */ (&gpu->blur3x3_program, "blur3x3_rgb24", &gpu->blur3x3_kernel) != 0 ||
+        create_kernel /* module: gpu/gpu_filters */ (&gpu->blur5x5_program, "blur5x5_rgb24", &gpu->blur5x5_kernel) != 0 ||
+        create_kernel /* module: gpu/gpu_filters */ (&gpu->blur9x9_program, "blur9x9_rgb24", &gpu->blur9x9_kernel) != 0 ||
+        create_kernel /* module: gpu/gpu_filters */ (&gpu->blur13x13_program, "blur13x13_rgb24", &gpu->blur13x13_kernel) != 0) {
+        gpu_filters_release /* module: gpu/gpu_filters */ (gpu);
         return -1;
     }
 
@@ -192,12 +192,12 @@ void gpu_filters_release(GPUFilterContext *gpu) {
     if (gpu->blur13x13_kernel) {
         clReleaseKernel(gpu->blur13x13_kernel);
     }
-    opencl_program_release(&gpu->grayscale_program);
-    opencl_program_release(&gpu->blur3x3_program);
-    opencl_program_release(&gpu->blur5x5_program);
-    opencl_program_release(&gpu->blur9x9_program);
-    opencl_program_release(&gpu->blur13x13_program);
-    opencl_context_release(&gpu->ctx);
+    opencl_program_release /* module: gpu/opencl_program */ (&gpu->grayscale_program);
+    opencl_program_release /* module: gpu/opencl_program */ (&gpu->blur3x3_program);
+    opencl_program_release /* module: gpu/opencl_program */ (&gpu->blur5x5_program);
+    opencl_program_release /* module: gpu/opencl_program */ (&gpu->blur9x9_program);
+    opencl_program_release /* module: gpu/opencl_program */ (&gpu->blur13x13_program);
+    opencl_context_release /* module: gpu/opencl_context */ (&gpu->ctx);
     memset(gpu, 0, sizeof(*gpu));
 }
 
@@ -219,12 +219,12 @@ static int ensure_buffers(GPUFilterContext *gpu, size_t size) {
     cl_int err = CL_SUCCESS;
     gpu->input_buffer = clCreateBuffer(gpu->ctx.context, CL_MEM_READ_ONLY, size, NULL, &err);
     if (err != CL_SUCCESS) {
-        log_opencl_error("clCreateBuffer input", err);
+        log_opencl_error /* module: gpu/gpu_filters */ ("clCreateBuffer input", err);
         return -1;
     }
     gpu->output_buffer = clCreateBuffer(gpu->ctx.context, CL_MEM_WRITE_ONLY, size, NULL, &err);
     if (err != CL_SUCCESS) {
-        log_opencl_error("clCreateBuffer output", err);
+        log_opencl_error /* module: gpu/gpu_filters */ ("clCreateBuffer output", err);
         return -1;
     }
     gpu->buffer_size = size;
@@ -232,7 +232,7 @@ static int ensure_buffers(GPUFilterContext *gpu, size_t size) {
 }
 
 static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, Frame *input, Frame *output, GPUFrameUploadedCallback callback, void *user_data) {
-    if (!gpu || !kernel || !frame_is_valid(input) || input->format != FRAME_FORMAT_RGB24 || !output) {
+    if (!gpu || !kernel || !frame_is_valid /* module: core/frame */ (input) || input->format != FRAME_FORMAT_RGB24 || !output) {
         return -1;
     }
 
@@ -242,12 +242,12 @@ static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, Frame *input, Fra
     const size_t input_stride = input->stride;
     const size_t input_size = input->size;
 
-    if (!frame_is_valid(output) ||
+    if (!frame_is_valid /* module: core/frame */ (output) ||
         output->width != input_width ||
         output->height != input_height ||
         output->format != FRAME_FORMAT_RGB24) {
-        if (frame_alloc(output, input_width, input_height, FRAME_FORMAT_RGB24) != 0) {
-            log_error("failed to allocate GPU filter output frame: %dx%d, %zu bytes",
+        if (frame_alloc /* module: core/frame */ (output, input_width, input_height, FRAME_FORMAT_RGB24) != 0) {
+            log_error /* module: utils/logger */ ("failed to allocate GPU filter output frame: %dx%d, %zu bytes",
                       input_width,
                       input_height,
                       input_size);
@@ -256,16 +256,16 @@ static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, Frame *input, Fra
     }
     output->index = input_index;
 
-    if (ensure_buffers(gpu, input_size) != 0) {
+    if (ensure_buffers /* module: gpu/gpu_filters */ (gpu, input_size) != 0) {
         return -1;
     }
 
     Timer timer;
-    timer_start(&timer);
+    timer_start /* module: benchmark/timer */ (&timer);
     cl_int err = clEnqueueWriteBuffer(gpu->ctx.queue, gpu->input_buffer, CL_TRUE, 0, input_size, input->data, 0, NULL, NULL);
-    gpu->last_upload_ms = timer_stop_ms(&timer);
+    gpu->last_upload_ms = timer_stop_ms /* module: benchmark/timer */ (&timer);
     if (err != CL_SUCCESS) {
-        log_opencl_error("clEnqueueWriteBuffer", err);
+        log_opencl_error /* module: gpu/gpu_filters */ ("clEnqueueWriteBuffer", err);
         return -1;
     }
     if (callback) {
@@ -282,27 +282,27 @@ static int run_kernel(GPUFilterContext *gpu, cl_kernel kernel, Frame *input, Fra
     err |= clSetKernelArg(kernel, 3, sizeof(cl_uint), &height);
     err |= clSetKernelArg(kernel, 4, sizeof(cl_uint), &stride);
     if (err != CL_SUCCESS) {
-        log_opencl_error("clSetKernelArg", err);
+        log_opencl_error /* module: gpu/gpu_filters */ ("clSetKernelArg", err);
         return -1;
     }
 
     const size_t global[2] = { (size_t)input_width, (size_t)input_height };
-    timer_start(&timer);
+    timer_start /* module: benchmark/timer */ (&timer);
     err = clEnqueueNDRangeKernel(gpu->ctx.queue, kernel, 2, NULL, global, NULL, 0, NULL, NULL);
     if (err == CL_SUCCESS) {
         err = clFinish(gpu->ctx.queue);
     }
-    gpu->last_kernel_ms = timer_stop_ms(&timer);
+    gpu->last_kernel_ms = timer_stop_ms /* module: benchmark/timer */ (&timer);
     if (err != CL_SUCCESS) {
-        log_opencl_error("clEnqueueNDRangeKernel/clFinish", err);
+        log_opencl_error /* module: gpu/gpu_filters */ ("clEnqueueNDRangeKernel/clFinish", err);
         return -1;
     }
 
-    timer_start(&timer);
+    timer_start /* module: benchmark/timer */ (&timer);
     err = clEnqueueReadBuffer(gpu->ctx.queue, gpu->output_buffer, CL_TRUE, 0, output->size, output->data, 0, NULL, NULL);
-    gpu->last_download_ms = timer_stop_ms(&timer);
+    gpu->last_download_ms = timer_stop_ms /* module: benchmark/timer */ (&timer);
     if (err != CL_SUCCESS) {
-        log_opencl_error("clEnqueueReadBuffer", err);
+        log_opencl_error /* module: gpu/gpu_filters */ ("clEnqueueReadBuffer", err);
         return -1;
     }
     return 0;

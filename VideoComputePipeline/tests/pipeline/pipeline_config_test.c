@@ -13,7 +13,7 @@
 
 static int pipeline_config_test_defaults(void) {
     PipelineConfig config;
-    pipeline_config_default(&config);
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
 
     TEST_ASSERT(strcmp(config.input_path, DEFAULT_INPUT_PATH) == 0);
     TEST_ASSERT(strcmp(config.output_path, DEFAULT_OUTPUT_PATH) == 0);
@@ -55,9 +55,9 @@ static int pipeline_config_test_parse_args(void) {
     const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
 
     PipelineConfig config;
-    pipeline_config_default(&config);
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
 
-    TEST_ASSERT(pipeline_config_parse_args(&config, argc, argv) == 0);
+    TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) == 0);
     TEST_ASSERT(strcmp(config.input_path, "input.mp4") == 0);
     TEST_ASSERT(strcmp(config.output_path, "output.mp4") == 0);
     TEST_ASSERT(strcmp(config.benchmark_path, "bench.csv") == 0);

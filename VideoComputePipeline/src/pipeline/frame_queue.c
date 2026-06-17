@@ -13,7 +13,7 @@ int frame_queue_init(FrameQueue *queue, size_t capacity) {
     }
 
     for (size_t i = 0; i < capacity; ++i) {
-        frame_init(&queue->items[i]);
+        frame_init /* module: core/frame */ (&queue->items[i]);
     }
 
     queue->capacity = capacity;
@@ -30,7 +30,7 @@ void frame_queue_free(FrameQueue *queue) {
 
     if (queue->items) {
         for (size_t i = 0; i < queue->capacity; ++i) {
-            frame_free(&queue->items[i]);
+            frame_free /* module: core/frame */ (&queue->items[i]);
         }
     }
 
@@ -43,11 +43,11 @@ void frame_queue_free(FrameQueue *queue) {
 }
 
 int frame_queue_push(FrameQueue *queue, Frame *frame) {
-    if (!queue || !frame || frame_queue_is_full(queue)) {
+    if (!queue || !frame || frame_queue_is_full /* module: pipeline/frame_queue */ (queue)) {
         return -1;
     }
 
-    if (frame_move(&queue->items[queue->tail], frame) != 0) {
+    if (frame_move /* module: core/frame */ (&queue->items[queue->tail], frame) != 0) {
         return -1;
     }
 
@@ -57,11 +57,11 @@ int frame_queue_push(FrameQueue *queue, Frame *frame) {
 }
 
 int frame_queue_pop(FrameQueue *queue, Frame *out_frame) {
-    if (!queue || !out_frame || frame_queue_is_empty(queue)) {
+    if (!queue || !out_frame || frame_queue_is_empty /* module: pipeline/frame_queue */ (queue)) {
         return -1;
     }
 
-    if (frame_move(out_frame, &queue->items[queue->head]) != 0) {
+    if (frame_move /* module: core/frame */ (out_frame, &queue->items[queue->head]) != 0) {
         return -1;
     }
 

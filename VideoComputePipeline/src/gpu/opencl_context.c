@@ -44,22 +44,22 @@ int opencl_context_init(OpenCLContext *ctx) {
     }
 
     memset(ctx, 0, sizeof(*ctx));
-    if (choose_device(ctx, CL_DEVICE_TYPE_GPU) != 0 &&
-        choose_device(ctx, CL_DEVICE_TYPE_CPU) != 0) {
+    if (choose_device /* module: gpu/opencl_context */ (ctx, CL_DEVICE_TYPE_GPU) != 0 &&
+        choose_device /* module: gpu/opencl_context */ (ctx, CL_DEVICE_TYPE_CPU) != 0) {
         return -1;
     }
 
     cl_int err = CL_SUCCESS;
     ctx->context = clCreateContext(NULL, 1, &ctx->device, NULL, NULL, &err);
     if (err != CL_SUCCESS || !ctx->context) {
-        opencl_context_release(ctx);
+        opencl_context_release /* module: gpu/opencl_context */ (ctx);
         return -1;
     }
 
     const cl_queue_properties props[] = { 0 };
     ctx->queue = clCreateCommandQueueWithProperties(ctx->context, ctx->device, props, &err);
     if (err != CL_SUCCESS || !ctx->queue) {
-        opencl_context_release(ctx);
+        opencl_context_release /* module: gpu/opencl_context */ (ctx);
         return -1;
     }
 

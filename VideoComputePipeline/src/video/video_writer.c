@@ -72,15 +72,15 @@ int video_writer_open_with_options(VideoWriter *writer, const char *output_path,
         encoder_name = "libx264rgb";
     }
     if (lossless && strcmp(encoder_name, "mpeg4") == 0) {
-        log_error("mpeg4 output is not supported for lossless mode; use libx264 or h264_nvenc");
+        log_error /* module: utils/logger */ ("mpeg4 output is not supported for lossless mode; use libx264 or h264_nvenc");
         return -1;
     }
-    if (lossless && is_nvenc_encoder(encoder_name)) {
-        log_warn("h264_nvenc lossless uses YUV420P to avoid OpenCL/NVENC 4:4:4 resource pressure; use --encoder libx264 for RGB lossless output");
+    if (lossless && is_nvenc_encoder /* module: video/video_writer */ (encoder_name)) {
+        log_warn /* module: utils/logger */ ("h264_nvenc lossless uses YUV420P to avoid OpenCL/NVENC 4:4:4 resource pressure; use --encoder libx264 for RGB lossless output");
     }
 
     memset(writer, 0, sizeof(*writer));
-    if (create_parent_directory_if_missing(output_path) != 0) {
+    if (create_parent_directory_if_missing /* module: utils/file_utils */ (output_path) != 0) {
         return -1;
     }
 
@@ -94,7 +94,7 @@ int video_writer_open_with_options(VideoWriter *writer, const char *output_path,
         encoder = avcodec_find_encoder(AV_CODEC_ID_H264);
     }
     if (!encoder) {
-        log_error("requested encoder is not available: %s", encoder_name);
+        log_error /* module: utils/logger */ ("requested encoder is not available: %s", encoder_name);
         avformat_free_context(format_ctx);
         return -1;
     }
@@ -126,16 +126,16 @@ int video_writer_open_with_options(VideoWriter *writer, const char *output_path,
     codec_ctx->width = width;
     codec_ctx->height = height;
     enum AVPixelFormat output_pix_fmt = AV_PIX_FMT_YUV420P;
-    if (is_rgb_encoder(encoder_name)) {
+    if (is_rgb_encoder /* module: video/video_writer */ (encoder_name)) {
         output_pix_fmt = AV_PIX_FMT_RGB24;
-    } else if (lossless && is_nvenc_encoder(encoder_name)) {
+    } else if (lossless && is_nvenc_encoder /* module: video/video_writer */ (encoder_name)) {
         output_pix_fmt = AV_PIX_FMT_YUV420P;
     }
 
-    const int nvenc_lossless = lossless && is_nvenc_encoder(encoder_name);
+    const int nvenc_lossless = lossless && is_nvenc_encoder /* module: video/video_writer */ (encoder_name);
 
     codec_ctx->pix_fmt = output_pix_fmt;
-    codec_ctx->time_base = fps_to_time_base(fps);
+    codec_ctx->time_base = fps_to_time_base /* module: video/video_writer */ (fps);
     codec_ctx->framerate = av_inv_q(codec_ctx->time_base);
     codec_ctx->bit_rate = nvenc_lossless ? 1000000000LL : (lossless ? 0 : 4000000);
     if (nvenc_lossless) {
@@ -151,7 +151,7 @@ int video_writer_open_with_options(VideoWriter *writer, const char *output_path,
         codec_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
 
-    if (is_nvenc_encoder(encoder_name)) {
+    if (is_nvenc_encoder /* module: video/video_writer */ (encoder_name)) {
         av_opt_set(codec_ctx->priv_data, "preset", "p1", 0);
         av_opt_set(codec_ctx->priv_data, "tune", lossless ? "lossless" : "ull", 0);
         av_opt_set(codec_ctx->priv_data, "rc", lossless ? "constqp" : "cbr", 0);
@@ -166,7 +166,7 @@ int video_writer_open_with_options(VideoWriter *writer, const char *output_path,
             av_opt_set(codec_ctx->priv_data, "rgb_mode", "yuv444", 0);
             av_opt_set(codec_ctx->priv_data, "surfaces", "4", 0);
         }
-    } else if (is_h264_encoder(encoder_name) || encoder->id == AV_CODEC_ID_H264) {
+    } else if (is_h264_encoder /* module: video/video_writer */ (encoder_name) || encoder->id == AV_CODEC_ID_H264) {
         av_opt_set(codec_ctx->priv_data, "preset", "ultrafast", 0);
         av_opt_set(codec_ctx->priv_data, "tune", "zerolatency", 0);
         av_opt_set(codec_ctx->priv_data, "rc-lookahead", "0", 0);
@@ -266,7 +266,7 @@ int video_writer_open_with_options(VideoWriter *writer, const char *output_path,
 }
 
 int video_writer_write_frame(VideoWriter *writer, const Frame *frame) {
-    if (!writer || !writer->is_open || !frame_is_valid(frame) || frame->format != FRAME_FORMAT_RGB24) {
+    if (!writer || !writer->is_open || !frame_is_valid /* module: core/frame */ (frame) || frame->format != FRAME_FORMAT_RGB24) {
         return -1;
     }
 

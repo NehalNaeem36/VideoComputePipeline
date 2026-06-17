@@ -38,14 +38,14 @@ int create_directory_if_missing(const char *path) {
     for (char *p = buffer + 1; *p; ++p) {
         if (*p == '/') {
             *p = '\0';
-            if (buffer[0] != '\0' && !file_exists(buffer) && MKDIR(buffer) != 0 && errno != EEXIST) {
+            if (buffer[0] != '\0' && !file_exists /* module: utils/file_utils */ (buffer) && MKDIR(buffer) != 0 && errno != EEXIST) {
                 return -1;
             }
             *p = '/';
         }
     }
 
-    if (!file_exists(buffer) && MKDIR(buffer) != 0 && errno != EEXIST) {
+    if (!file_exists /* module: utils/file_utils */ (buffer) && MKDIR(buffer) != 0 && errno != EEXIST) {
         return -1;
     }
 

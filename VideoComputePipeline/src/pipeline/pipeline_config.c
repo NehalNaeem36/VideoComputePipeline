@@ -117,10 +117,10 @@ void pipeline_config_default(PipelineConfig *config) {
         return;
     }
 
-    copy_path(config->input_path, sizeof(config->input_path), DEFAULT_INPUT_PATH);
-    copy_path(config->output_path, sizeof(config->output_path), DEFAULT_OUTPUT_PATH);
-    copy_path(config->benchmark_path, sizeof(config->benchmark_path), DEFAULT_BENCHMARK_PATH);
-    copy_path(config->encoder_name, sizeof(config->encoder_name), DEFAULT_ENCODER_NAME);
+    copy_path /* module: pipeline/pipeline_config */ (config->input_path, sizeof(config->input_path), DEFAULT_INPUT_PATH);
+    copy_path /* module: pipeline/pipeline_config */ (config->output_path, sizeof(config->output_path), DEFAULT_OUTPUT_PATH);
+    copy_path /* module: pipeline/pipeline_config */ (config->benchmark_path, sizeof(config->benchmark_path), DEFAULT_BENCHMARK_PATH);
+    copy_path /* module: pipeline/pipeline_config */ (config->encoder_name, sizeof(config->encoder_name), DEFAULT_ENCODER_NAME);
     config->mode = PROCESS_CPU;
     config->filter = FILTER_GRAYSCALE;
     config->max_frames = DEFAULT_MAX_FRAMES;
@@ -143,15 +143,15 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
         const char *arg = argv[i];
 
         if (strcmp(arg, "--input") == 0 && i + 1 < argc) {
-            if (copy_path(config->input_path, sizeof(config->input_path), argv[++i]) != 0) {
+            if (copy_path /* module: pipeline/pipeline_config */ (config->input_path, sizeof(config->input_path), argv[++i]) != 0) {
                 return -1;
             }
         } else if (strcmp(arg, "--output") == 0 && i + 1 < argc) {
-            if (copy_path(config->output_path, sizeof(config->output_path), argv[++i]) != 0) {
+            if (copy_path /* module: pipeline/pipeline_config */ (config->output_path, sizeof(config->output_path), argv[++i]) != 0) {
                 return -1;
             }
         } else if (strcmp(arg, "--benchmark") == 0 && i + 1 < argc) {
-            if (copy_path(config->benchmark_path, sizeof(config->benchmark_path), argv[++i]) != 0) {
+            if (copy_path /* module: pipeline/pipeline_config */ (config->benchmark_path, sizeof(config->benchmark_path), argv[++i]) != 0) {
                 return -1;
             }
         } else if (strcmp(arg, "--encoder") == 0 && i + 1 < argc) {
@@ -162,15 +162,15 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
                 strcmp(encoder, "mpeg4") != 0) {
                 return -1;
             }
-            if (copy_path(config->encoder_name, sizeof(config->encoder_name), encoder) != 0) {
+            if (copy_path /* module: pipeline/pipeline_config */ (config->encoder_name, sizeof(config->encoder_name), encoder) != 0) {
                 return -1;
             }
         } else if (strcmp(arg, "--mode") == 0 && i + 1 < argc) {
-            if (parse_mode(argv[++i], &config->mode) != 0) {
+            if (parse_mode /* module: pipeline/pipeline_config */ (argv[++i], &config->mode) != 0) {
                 return -1;
             }
         } else if (strcmp(arg, "--filter") == 0 && i + 1 < argc) {
-            if (parse_filter(argv[++i], &config->filter) != 0) {
+            if (parse_filter /* module: pipeline/pipeline_config */ (argv[++i], &config->filter) != 0) {
                 return -1;
             }
         } else if (strcmp(arg, "--max-frames") == 0 && i + 1 < argc) {
@@ -205,7 +205,7 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
         } else if (strcmp(arg, "--lossy") == 0) {
             config->lossless_output = 0;
         } else if (strcmp(arg, "--memory-profile") == 0 && i + 1 < argc) {
-            if (parse_memory_profile(argv[++i], &config->memory_profile) != 0) {
+            if (parse_memory_profile /* module: pipeline/pipeline_config */ (argv[++i], &config->memory_profile) != 0) {
                 return -1;
             }
         } else if (strcmp(arg, "--memory-budget-mb") == 0 && i + 1 < argc) {

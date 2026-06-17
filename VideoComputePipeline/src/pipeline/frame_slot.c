@@ -5,7 +5,7 @@ void frame_slot_init(FrameSlot *slot) {
         return;
     }
 
-    frame_init(&slot->frame);
+    frame_init /* module: core/frame */ (&slot->frame);
     slot->occupied = 0;
     slot->processing = 0;
 }
@@ -15,7 +15,7 @@ void frame_slot_free(FrameSlot *slot) {
         return;
     }
 
-    frame_free(&slot->frame);
+    frame_free /* module: core/frame */ (&slot->frame);
     slot->occupied = 0;
     slot->processing = 0;
 }
@@ -25,7 +25,7 @@ int frame_slot_put(FrameSlot *slot, Frame *frame) {
         return -1;
     }
 
-    if (frame_move(&slot->frame, frame) != 0) {
+    if (frame_move /* module: core/frame */ (&slot->frame, frame) != 0) {
         return -1;
     }
 
@@ -39,7 +39,7 @@ int frame_slot_take(FrameSlot *slot, Frame *out_frame) {
         return -1;
     }
 
-    if (frame_move(out_frame, &slot->frame) != 0) {
+    if (frame_move /* module: core/frame */ (out_frame, &slot->frame) != 0) {
         return -1;
     }
 

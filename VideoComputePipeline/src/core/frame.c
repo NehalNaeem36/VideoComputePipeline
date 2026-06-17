@@ -35,13 +35,13 @@ int frame_alloc(Frame *frame, int width, int height, FrameFormat format) {
         return -1;
     }
 
-    const int channels = frame_channels_for_format(format);
+    const int channels = frame_channels_for_format /* module: core/frame */ (format);
     if (channels == 0) {
         return -1;
     }
 
-    const size_t stride = frame_calculate_stride(width, format);
-    const size_t size = frame_calculate_size(width, height, format);
+    const size_t stride = frame_calculate_stride /* module: core/frame */ (width, format);
+    const size_t size = frame_calculate_size /* module: core/frame */ (width, height, format);
     if (stride == 0 || size == 0) {
         return -1;
     }
@@ -51,7 +51,7 @@ int frame_alloc(Frame *frame, int width, int height, FrameFormat format) {
         return -1;
     }
 
-    frame_free(frame);
+    frame_free /* module: core/frame */ (frame);
     frame->index = 0;
     frame->width = width;
     frame->height = height;
@@ -69,25 +69,25 @@ void frame_free(Frame *frame) {
     }
 
     free(frame->data);
-    frame_init(frame);
+    frame_init /* module: core/frame */ (frame);
 }
 
 int frame_copy(Frame *dst, const Frame *src) {
-    if (!dst || !frame_is_valid(src)) {
+    if (!dst || !frame_is_valid /* module: core/frame */ (src)) {
         return -1;
     }
 
     Frame copy;
-    frame_init(&copy);
+    frame_init /* module: core/frame */ (&copy);
 
-    if (frame_alloc(&copy, src->width, src->height, src->format) != 0) {
+    if (frame_alloc /* module: core/frame */ (&copy, src->width, src->height, src->format) != 0) {
         return -1;
     }
 
     copy.index = src->index;
     memcpy(copy.data, src->data, src->size);
 
-    frame_free(dst);
+    frame_free /* module: core/frame */ (dst);
     *dst = copy;
     return 0;
 }
@@ -101,9 +101,9 @@ int frame_move(Frame *dst, Frame *src) {
         return 0;
     }
 
-    frame_free(dst);
+    frame_free /* module: core/frame */ (dst);
     *dst = *src;
-    frame_init(src);
+    frame_init /* module: core/frame */ (src);
     return 0;
 }
 
@@ -111,14 +111,14 @@ int frame_is_valid(const Frame *frame) {
     return frame &&
            frame->width > 0 &&
            frame->height > 0 &&
-           frame->channels == frame_channels_for_format(frame->format) &&
+           frame->channels == frame_channels_for_format /* module: core/frame */ (frame->format) &&
            frame->stride > 0 &&
            frame->size > 0 &&
            frame->data != NULL;
 }
 
 size_t frame_calculate_stride(int width, FrameFormat format) {
-    const int channels = frame_channels_for_format(format);
+    const int channels = frame_channels_for_format /* module: core/frame */ (format);
     if (width <= 0 || channels <= 0) {
         return 0;
     }
@@ -135,7 +135,7 @@ size_t frame_calculate_size(int width, int height, FrameFormat format) {
         return 0;
     }
 
-    const size_t stride = frame_calculate_stride(width, format);
+    const size_t stride = frame_calculate_stride /* module: core/frame */ (width, format);
     if (stride == 0 || (size_t)height > SIZE_MAX / stride) {
         return 0;
     }

@@ -38,50 +38,50 @@ static void print_version(void) {
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--help") == 0) {
-            print_usage(argv[0]);
+            print_usage /* module: app/main */ (argv[0]);
             return EXIT_SUCCESS;
         }
 
         if (strcmp(argv[i], "--version") == 0) {
-            print_version();
+            print_version /* module: app/main */ ();
             return EXIT_SUCCESS;
         }
 
         if (strcmp(argv[i], "--matrix-report") == 0) {
             if (i + 2 >= argc) {
-                log_error("--matrix-report requires CPU and GPU benchmark CSV paths");
-                print_usage(argv[0]);
+                log_error /* module: utils/logger */ ("--matrix-report requires CPU and GPU benchmark CSV paths");
+                print_usage /* module: app/main */ (argv[0]);
                 return EXIT_FAILURE;
             }
             MatrixReportStats cpu;
             MatrixReportStats gpu;
-            if (matrix_report_read_csv_summary(argv[i + 1], &cpu) != 0 ||
-                matrix_report_read_csv_summary(argv[i + 2], &gpu) != 0) {
-                log_error("failed to read matrix report inputs");
+            if (matrix_report_read_csv_summary /* module: benchmark/matrix_report */ (argv[i + 1], &cpu) != 0 ||
+                matrix_report_read_csv_summary /* module: benchmark/matrix_report */ (argv[i + 2], &gpu) != 0) {
+                log_error /* module: utils/logger */ ("failed to read matrix report inputs");
                 return EXIT_FAILURE;
             }
-            matrix_report_print_comparison(&cpu, &gpu);
+            matrix_report_print_comparison /* module: benchmark/matrix_report */ (&cpu, &gpu);
             return EXIT_SUCCESS;
         }
     }
 
     PipelineConfig config;
-    pipeline_config_default(&config);
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
 
-    if (pipeline_config_parse_args(&config, argc, argv) != 0) {
-        log_error("invalid command-line arguments");
-        print_usage(argv[0]);
+    if (pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) != 0) {
+        log_error /* module: utils/logger */ ("invalid command-line arguments");
+        print_usage /* module: app/main */ (argv[0]);
         return EXIT_FAILURE;
     }
 
     printf("%s %s\n", PROJECT_NAME, PROJECT_VERSION);
     printf("configuration:\n");
-    pipeline_config_print(&config);
+    pipeline_config_print /* module: pipeline/pipeline_config */ (&config);
 
-    log_info("starting pipeline");
-    const int result = pipeline_run(&config);
+    log_info /* module: utils/logger */ ("starting pipeline");
+    const int result = pipeline_run /* module: pipeline/pipeline_runner */ (&config);
     if (result != 0) {
-        log_error("pipeline failed with code %d", result);
+        log_error /* module: utils/logger */ ("pipeline failed with code %d", result);
         return EXIT_FAILURE;
     }
 

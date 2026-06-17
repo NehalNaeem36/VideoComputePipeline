@@ -12,14 +12,14 @@
 
 static int timer_test_measures_elapsed_time(void) {
     Timer timer;
-    timer_start(&timer);
+    timer_start /* module: benchmark/timer */ (&timer);
 
     volatile unsigned long sink = 0;
     for (unsigned long i = 0; i < 1000000ul; ++i) {
         sink += i;
     }
 
-    const double elapsed_ms = timer_stop_ms(&timer);
+    const double elapsed_ms = timer_stop_ms /* module: benchmark/timer */ (&timer);
     TEST_ASSERT(elapsed_ms >= 0.0);
     return 0;
 }

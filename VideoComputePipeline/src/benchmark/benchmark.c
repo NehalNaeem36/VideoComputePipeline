@@ -39,7 +39,7 @@ int benchmark_open_csv(Benchmark *bench, const char *path) {
         return -1;
     }
 
-    if (create_parent_directory_if_missing(path) != 0) {
+    if (create_parent_directory_if_missing /* module: utils/file_utils */ (path) != 0) {
         return -1;
     }
 
@@ -48,7 +48,7 @@ int benchmark_open_csv(Benchmark *bench, const char *path) {
         return -1;
     }
 
-    if (write_csv_header(file) != 0) {
+    if (write_csv_header /* module: benchmark/benchmark */ (file) != 0) {
         fclose(file);
         return -1;
     }
@@ -78,14 +78,14 @@ int benchmark_add_frame_result(Benchmark *bench, const FrameTiming *timing) {
     }
 
     if (bench->csv_file) {
-        if (write_csv_row((FILE *)bench->csv_file, timing) != 0) {
+        if (write_csv_row /* module: benchmark/benchmark */ ((FILE *)bench->csv_file, timing) != 0) {
             return -1;
         }
         bench->count++;
         if (bench->count % 300u == 0u) {
             fflush((FILE *)bench->csv_file);
         }
-    } else if (append_in_memory(bench, timing) != 0) {
+    } else if (append_in_memory /* module: benchmark/benchmark */ (bench, timing) != 0) {
         return -1;
     }
 
@@ -99,7 +99,7 @@ int benchmark_write_csv(const Benchmark *bench, const char *path) {
         return -1;
     }
 
-    if (create_parent_directory_if_missing(path) != 0) {
+    if (create_parent_directory_if_missing /* module: utils/file_utils */ (path) != 0) {
         return -1;
     }
 
@@ -108,12 +108,12 @@ int benchmark_write_csv(const Benchmark *bench, const char *path) {
         return -1;
     }
 
-    if (write_csv_header(file) != 0) {
+    if (write_csv_header /* module: benchmark/benchmark */ (file) != 0) {
         fclose(file);
         return -1;
     }
     for (size_t i = 0; i < bench->count; ++i) {
-        if (write_csv_row(file, &bench->items[i]) != 0) {
+        if (write_csv_row /* module: benchmark/benchmark */ (file, &bench->items[i]) != 0) {
             fclose(file);
             return -1;
         }
@@ -154,7 +154,7 @@ void benchmark_free(Benchmark *bench) {
         return;
     }
 
-    benchmark_close_csv(bench);
+    benchmark_close_csv /* module: benchmark/benchmark */ (bench);
     free(bench->items);
-    benchmark_init(bench);
+    benchmark_init /* module: benchmark/benchmark */ (bench);
 }

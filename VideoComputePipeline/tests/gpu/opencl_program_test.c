@@ -9,15 +9,15 @@
 int main(void) {
     OpenCLContext ctx;
     OpenCLProgram program;
-    if (opencl_context_init(&ctx) != 0) {
+    if (opencl_context_init /* module: gpu/opencl_context */ (&ctx) != 0) {
         printf("opencl_program_test skipped: no OpenCL device available\n");
         return 0;
     }
-    if (opencl_program_build(&program, &ctx, VCP_KERNEL_DIR "/grayscale.cl") != 0) {
-        opencl_context_release(&ctx);
+    if (opencl_program_build /* module: gpu/opencl_program */ (&program, &ctx, VCP_KERNEL_DIR "/grayscale.cl") != 0) {
+        opencl_context_release /* module: gpu/opencl_context */ (&ctx);
         return 1;
     }
-    opencl_program_release(&program);
-    opencl_context_release(&ctx);
+    opencl_program_release /* module: gpu/opencl_program */ (&program);
+    opencl_context_release /* module: gpu/opencl_context */ (&ctx);
     return 0;
 }

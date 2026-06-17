@@ -20,15 +20,15 @@ int frame_pool_init(FramePool *pool, size_t capacity, int width, int height, Fra
 
     pool->slots = (FrameSlot *)calloc(capacity, sizeof(*pool->slots));
     if (!pool->slots) {
-        frame_pool_free(pool);
+        frame_pool_free /* module: pipeline/frame_pool */ (pool);
         return -1;
     }
 
     pool->capacity = capacity;
     for (size_t i = 0; i < capacity; ++i) {
-        frame_slot_init(&pool->slots[i]);
-        if (frame_alloc(&pool->slots[i].frame, width, height, format) != 0) {
-            frame_pool_free(pool);
+        frame_slot_init /* module: pipeline/frame_slot */ (&pool->slots[i]);
+        if (frame_alloc /* module: core/frame */ (&pool->slots[i].frame, width, height, format) != 0) {
+            frame_pool_free /* module: pipeline/frame_pool */ (pool);
             return -1;
         }
         pool->slots[i].occupied = 1;
@@ -56,7 +56,7 @@ int frame_pool_acquire(FramePool *pool, Frame *out_frame) {
     }
     for (size_t i = 0; i < pool->capacity; ++i) {
         if (pool->slots[i].occupied) {
-            const int result = frame_slot_take(&pool->slots[i], out_frame);
+            const int result = frame_slot_take /* module: pipeline/frame_slot */ (&pool->slots[i], out_frame);
             if (result == 0) {
                 pool->available--;
             }
@@ -79,7 +79,7 @@ int frame_pool_acquire(FramePool *pool, Frame *out_frame) {
     }
     for (size_t i = 0; i < pool->capacity; ++i) {
         if (pool->slots[i].occupied) {
-            const int result = frame_slot_take(&pool->slots[i], out_frame);
+            const int result = frame_slot_take /* module: pipeline/frame_slot */ (&pool->slots[i], out_frame);
             if (result == 0) {
                 pool->available--;
             }
@@ -93,24 +93,24 @@ int frame_pool_acquire(FramePool *pool, Frame *out_frame) {
 }
 
 int frame_pool_release(FramePool *pool, Frame *frame) {
-    if (!pool || !frame || !frame_is_valid(frame)) {
+    if (!pool || !frame || !frame_is_valid /* module: core/frame */ (frame)) {
         return -1;
     }
 
 #ifdef _WIN32
     if (!pool->lock_initialized) {
-        frame_free(frame);
+        frame_free /* module: core/frame */ (frame);
         return -1;
     }
     EnterCriticalSection(&pool->lock);
     if (pool->closed) {
         LeaveCriticalSection(&pool->lock);
-        frame_free(frame);
+        frame_free /* module: core/frame */ (frame);
         return 0;
     }
     for (size_t i = 0; i < pool->capacity; ++i) {
         if (!pool->slots[i].occupied) {
-            const int result = frame_slot_put(&pool->slots[i], frame);
+            const int result = frame_slot_put /* module: pipeline/frame_slot */ (&pool->slots[i], frame);
             if (result == 0) {
                 pool->available++;
                 WakeConditionVariable(&pool->not_empty);
@@ -122,18 +122,18 @@ int frame_pool_release(FramePool *pool, Frame *frame) {
     LeaveCriticalSection(&pool->lock);
 #else
     if (!pool->lock_initialized) {
-        frame_free(frame);
+        frame_free /* module: core/frame */ (frame);
         return -1;
     }
     pthread_mutex_lock(&pool->lock);
     if (pool->closed) {
         pthread_mutex_unlock(&pool->lock);
-        frame_free(frame);
+        frame_free /* module: core/frame */ (frame);
         return 0;
     }
     for (size_t i = 0; i < pool->capacity; ++i) {
         if (!pool->slots[i].occupied) {
-            const int result = frame_slot_put(&pool->slots[i], frame);
+            const int result = frame_slot_put /* module: pipeline/frame_slot */ (&pool->slots[i], frame);
             if (result == 0) {
                 pool->available++;
                 pthread_cond_signal(&pool->not_empty);
@@ -145,7 +145,7 @@ int frame_pool_release(FramePool *pool, Frame *frame) {
     pthread_mutex_unlock(&pool->lock);
 #endif
 
-    frame_free(frame);
+    frame_free /* module: core/frame */ (frame);
     return -1;
 }
 
@@ -178,10 +178,10 @@ void frame_pool_free(FramePool *pool) {
         return;
     }
 
-    frame_pool_close(pool);
+    frame_pool_close /* module: pipeline/frame_pool */ (pool);
     if (pool->slots) {
         for (size_t i = 0; i < pool->capacity; ++i) {
-            frame_slot_free(&pool->slots[i]);
+            frame_slot_free /* module: pipeline/frame_slot */ (&pool->slots[i]);
         }
     }
     free(pool->slots);

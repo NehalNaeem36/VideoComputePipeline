@@ -47,7 +47,7 @@ int opencl_program_build(OpenCLProgram *program, OpenCLContext *ctx, const char 
     size_t source_size = 0;
     char *source = read_text_file(kernel_path, &source_size);
     if (!source) {
-        log_error("failed to read OpenCL kernel: %s", kernel_path);
+        log_error /* module: utils/logger */ ("failed to read OpenCL kernel: %s", kernel_path);
         return -1;
     }
 
@@ -70,8 +70,8 @@ int opencl_program_build(OpenCLProgram *program, OpenCLContext *ctx, const char 
                               log_buffer,
                               &log_size);
         log_buffer[log_size < sizeof(log_buffer) ? log_size : sizeof(log_buffer) - 1] = '\0';
-        log_error("OpenCL build failed for %s:\n%s", kernel_path, log_buffer);
-        opencl_program_release(program);
+        log_error /* module: utils/logger */ ("OpenCL build failed for %s:\n%s", kernel_path, log_buffer);
+        opencl_program_release /* module: gpu/opencl_program */ (program);
         return -1;
     }
 

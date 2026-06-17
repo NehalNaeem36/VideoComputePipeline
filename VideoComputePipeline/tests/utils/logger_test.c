@@ -4,8 +4,8 @@
 
 int main(void) {
     printf("Running logger tests...\n");
-    log_info("info message");
-    log_warn("warning message");
-    log_error("error message");
+    log_info /* module: utils/logger */ ("info message");
+    log_warn /* module: utils/logger */ ("warning message");
+    log_error /* module: utils/logger */ ("error message");
     return 0;
 }

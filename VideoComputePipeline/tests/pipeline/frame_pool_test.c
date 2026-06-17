@@ -7,17 +7,17 @@
 int main(void) {
     FramePool pool;
     Frame frame;
-    frame_init(&frame);
+    frame_init /* module: core/frame */ (&frame);
 
-    TEST_ASSERT(frame_pool_init(&pool, 2, 4, 4, FRAME_FORMAT_RGB24) == 0);
-    TEST_ASSERT(frame_pool_available(&pool) == 2);
-    TEST_ASSERT(frame_pool_acquire(&pool, &frame) == 1);
-    TEST_ASSERT(frame_is_valid(&frame));
-    TEST_ASSERT(frame_pool_available(&pool) == 1);
-    TEST_ASSERT(frame_pool_release(&pool, &frame) == 0);
-    TEST_ASSERT(!frame_is_valid(&frame));
-    TEST_ASSERT(frame_pool_available(&pool) == 2);
+    TEST_ASSERT(frame_pool_init /* module: pipeline/frame_pool */ (&pool, 2, 4, 4, FRAME_FORMAT_RGB24) == 0);
+    TEST_ASSERT(frame_pool_available /* module: pipeline/frame_pool */ (&pool) == 2);
+    TEST_ASSERT(frame_pool_acquire /* module: pipeline/frame_pool */ (&pool, &frame) == 1);
+    TEST_ASSERT(frame_is_valid /* module: core/frame */ (&frame));
+    TEST_ASSERT(frame_pool_available /* module: pipeline/frame_pool */ (&pool) == 1);
+    TEST_ASSERT(frame_pool_release /* module: pipeline/frame_pool */ (&pool, &frame) == 0);
+    TEST_ASSERT(!frame_is_valid /* module: core/frame */ (&frame));
+    TEST_ASSERT(frame_pool_available /* module: pipeline/frame_pool */ (&pool) == 2);
 
-    frame_pool_free(&pool);
+    frame_pool_free /* module: pipeline/frame_pool */ (&pool);
     return 0;
 }

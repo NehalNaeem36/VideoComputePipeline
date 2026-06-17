@@ -17,7 +17,7 @@ static double rational_to_double(AVRational r) {
 static void log_ffmpeg_error(const char *message, int error_code) {
     char buffer[AV_ERROR_MAX_STRING_SIZE] = { 0 };
     av_strerror(error_code, buffer, sizeof(buffer));
-    log_error("%s: %s", message, buffer);
+    log_error /* module: utils/logger */ ("%s: %s", message, buffer);
 }
 
 int video_reader_open_with_threads(VideoReader *reader, const char *input_path, int decoder_threads) {
@@ -30,7 +30,7 @@ int video_reader_open_with_threads(VideoReader *reader, const char *input_path, 
 
     AVFormatContext *format_ctx = NULL;
     if (avformat_open_input(&format_ctx, input_path, NULL, NULL) < 0) {
-        log_error("failed to open input: %s", input_path);
+        log_error /* module: utils/logger */ ("failed to open input: %s", input_path);
         return -1;
     }
 
@@ -114,9 +114,9 @@ int video_reader_open_with_threads(VideoReader *reader, const char *input_path, 
     reader->decoder_flushed = 0;
     reader->info.width = codec_ctx->width;
     reader->info.height = codec_ctx->height;
-    reader->info.fps = rational_to_double(av_guess_frame_rate(format_ctx, stream, NULL));
+    reader->info.fps = rational_to_double /* module: video/video_reader */ (av_guess_frame_rate(format_ctx, stream, NULL));
     if (reader->info.fps <= 0.0) {
-        reader->info.fps = rational_to_double(stream->avg_frame_rate);
+        reader->info.fps = rational_to_double /* module: video/video_reader */ (stream->avg_frame_rate);
     }
     if (reader->info.fps <= 0.0) {
         reader->info.fps = 30.0;
@@ -140,17 +140,17 @@ static int receive_rgb_frame(VideoReader *reader, Frame *out_frame) {
         return 2;
     }
     if (receive_result < 0) {
-        log_ffmpeg_error("decoder receive_frame failed", receive_result);
+        log_ffmpeg_error /* module: video/video_reader */ ("decoder receive_frame failed", receive_result);
         return -1;
     }
 
-    if (!frame_is_valid(out_frame) ||
+    if (!frame_is_valid /* module: core/frame */ (out_frame) ||
         out_frame->width != codec_ctx->width ||
         out_frame->height != codec_ctx->height ||
         out_frame->format != FRAME_FORMAT_RGB24) {
-        frame_free(out_frame);
-        if (frame_alloc(out_frame, codec_ctx->width, codec_ctx->height, FRAME_FORMAT_RGB24) != 0) {
-            log_error("failed to allocate decoded RGB24 frame: %dx%d", codec_ctx->width, codec_ctx->height);
+        frame_free /* module: core/frame */ (out_frame);
+        if (frame_alloc /* module: core/frame */ (out_frame, codec_ctx->width, codec_ctx->height, FRAME_FORMAT_RGB24) != 0) {
+            log_error /* module: utils/logger */ ("failed to allocate decoded RGB24 frame: %dx%d", codec_ctx->width, codec_ctx->height);
             av_frame_unref(decoded);
             return -1;
         }
@@ -175,7 +175,7 @@ int video_reader_read_frame(VideoReader *reader, Frame *out_frame) {
         return -1;
     }
 
-    int result = receive_rgb_frame(reader, out_frame);
+    int result = receive_rgb_frame /* module: video/video_reader */ (reader, out_frame);
     if (result == 1) {
         return 1;
     }
@@ -194,7 +194,7 @@ int video_reader_read_frame(VideoReader *reader, Frame *out_frame) {
         const int read_result = av_read_frame(format_ctx, packet);
         if (read_result < 0) {
             if (read_result != AVERROR_EOF) {
-                log_ffmpeg_error("av_read_frame failed", read_result);
+                log_ffmpeg_error /* module: video/video_reader */ ("av_read_frame failed", read_result);
                 return -1;
             }
             break;
@@ -204,7 +204,7 @@ int video_reader_read_frame(VideoReader *reader, Frame *out_frame) {
             for (;;) {
                 const int send_result = avcodec_send_packet(codec_ctx, packet);
                 if (send_result == AVERROR(EAGAIN)) {
-                    result = receive_rgb_frame(reader, out_frame);
+                    result = receive_rgb_frame /* module: video/video_reader */ (reader, out_frame);
                     if (result == 1) {
                         av_packet_unref(packet);
                         return 1;
@@ -218,18 +218,18 @@ int video_reader_read_frame(VideoReader *reader, Frame *out_frame) {
                         return -1;
                     }
                     av_packet_unref(packet);
-                    log_error("decoder requested frame draining but no frame was available");
+                    log_error /* module: utils/logger */ ("decoder requested frame draining but no frame was available");
                     return -1;
                 }
                 av_packet_unref(packet);
                 if (send_result < 0) {
-                    log_ffmpeg_error("decoder send_packet failed", send_result);
+                    log_ffmpeg_error /* module: video/video_reader */ ("decoder send_packet failed", send_result);
                     return -1;
                 }
                 break;
             }
 
-            result = receive_rgb_frame(reader, out_frame);
+            result = receive_rgb_frame /* module: video/video_reader */ (reader, out_frame);
             if (result == 1) {
                 return 1;
             }
@@ -248,12 +248,12 @@ int video_reader_read_frame(VideoReader *reader, Frame *out_frame) {
         reader->decoder_flushed = 1;
         const int flush_result = avcodec_send_packet(codec_ctx, NULL);
         if (flush_result < 0 && flush_result != AVERROR_EOF) {
-            log_ffmpeg_error("decoder flush failed", flush_result);
+            log_ffmpeg_error /* module: video/video_reader */ ("decoder flush failed", flush_result);
             return -1;
         }
     }
 
-    result = receive_rgb_frame(reader, out_frame);
+    result = receive_rgb_frame /* module: video/video_reader */ (reader, out_frame);
     if (result == 1) {
         return 1;
     }

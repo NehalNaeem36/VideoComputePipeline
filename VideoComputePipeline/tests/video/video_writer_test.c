@@ -7,8 +7,8 @@
 int main(void) {
     VideoWriter writer;
     Frame frame;
-    frame_init(&frame);
-    TEST_ASSERT(frame_alloc(&frame, 64, 64, FRAME_FORMAT_RGB24) == 0);
+    frame_init /* module: core/frame */ (&frame);
+    TEST_ASSERT(frame_alloc /* module: core/frame */ (&frame, 64, 64, FRAME_FORMAT_RGB24) == 0);
     for (int y = 0; y < frame.height; ++y) {
         for (int x = 0; x < frame.width; ++x) {
             unsigned char *p = frame.data + (size_t)y * frame.stride + x * 3;
@@ -18,10 +18,10 @@ int main(void) {
         }
     }
 
-    TEST_ASSERT(video_writer_open_with_options(&writer, "data/output/video_writer_test.mp4", 64, 64, 30.0, 1, "libx264", 0) == 0);
-    TEST_ASSERT(video_writer_write_frame(&writer, &frame) == 0);
-    TEST_ASSERT(video_writer_flush(&writer) == 0);
-    video_writer_close(&writer);
-    frame_free(&frame);
+    TEST_ASSERT(video_writer_open_with_options /* module: video/video_writer */ (&writer, "data/output/video_writer_test.mp4", 64, 64, 30.0, 1, "libx264", 0) == 0);
+    TEST_ASSERT(video_writer_write_frame /* module: video/video_writer */ (&writer, &frame) == 0);
+    TEST_ASSERT(video_writer_flush /* module: video/video_writer */ (&writer) == 0);
+    video_writer_close /* module: video/video_writer */ (&writer);
+    frame_free /* module: core/frame */ (&frame);
     return 0;
 }

@@ -3,15 +3,15 @@
 #include <string.h>
 
 static int ensure_rgb_output(const Frame *input, Frame *output) {
-    if (!frame_is_valid(input) || !output || input->format != FRAME_FORMAT_RGB24) {
+    if (!frame_is_valid /* module: core/frame */ (input) || !output || input->format != FRAME_FORMAT_RGB24) {
         return -1;
     }
 
-    if (!frame_is_valid(output) ||
+    if (!frame_is_valid /* module: core/frame */ (output) ||
         output->width != input->width ||
         output->height != input->height ||
         output->format != FRAME_FORMAT_RGB24) {
-        if (frame_alloc(output, input->width, input->height, FRAME_FORMAT_RGB24) != 0) {
+        if (frame_alloc /* module: core/frame */ (output, input->width, input->height, FRAME_FORMAT_RGB24) != 0) {
             return -1;
         }
     }
@@ -31,7 +31,7 @@ static int clamp_int(int value, int min_value, int max_value) {
 }
 
 int cpu_grayscale(const Frame *input, Frame *output) {
-    if (ensure_rgb_output(input, output) != 0) {
+    if (ensure_rgb_output /* module: cpu/cpu_filters */ (input, output) != 0) {
         return -1;
     }
 
@@ -54,7 +54,7 @@ int cpu_grayscale(const Frame *input, Frame *output) {
 }
 
 static int cpu_box_blur(const Frame *input, Frame *output, int kernel_size) {
-    if (ensure_rgb_output(input, output) != 0) {
+    if (ensure_rgb_output /* module: cpu/cpu_filters */ (input, output) != 0) {
         return -1;
     }
 
@@ -75,11 +75,11 @@ static int cpu_box_blur(const Frame *input, Frame *output, int kernel_size) {
             int sum_b = 0;
 
             for (int ky = start; ky < end; ++ky) {
-                const int sy = clamp_int(y + ky, 0, input->height - 1);
+                const int sy = clamp_int /* module: cpu/cpu_filters */ (y + ky, 0, input->height - 1);
                 const unsigned char *src_row = input->data + (size_t)sy * input->stride;
 
                 for (int kx = start; kx < end; ++kx) {
-                    const int sx = clamp_int(x + kx, 0, input->width - 1);
+                    const int sx = clamp_int /* module: cpu/cpu_filters */ (x + kx, 0, input->width - 1);
                     const unsigned char *pixel = src_row + sx * 3;
                     sum_r += pixel[0];
                     sum_g += pixel[1];
