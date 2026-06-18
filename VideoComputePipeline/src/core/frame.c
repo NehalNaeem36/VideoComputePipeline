@@ -10,8 +10,30 @@ static int frame_channels_for_format(FrameFormat format) {
             return 3;
         case FRAME_FORMAT_GRAY8:
             return 1;
+        case FRAME_FORMAT_NV12:
+            return 1;
         default:
             return 0;
+    }
+}
+
+static void frame_set_planes(Frame *frame) {
+    if (!frame) {
+        return;
+    }
+
+    memset(frame->planes, 0, sizeof(frame->planes));
+    memset(frame->linesize, 0, sizeof(frame->linesize));
+
+    if (!frame->data) {
+        return;
+    }
+
+    frame->planes[0] = frame->data;
+    frame->linesize[0] = frame->stride;
+    if (frame->format == FRAME_FORMAT_NV12) {
+        frame->planes[1] = frame->data + frame->stride * (size_t)frame->height;
+        frame->linesize[1] = frame->stride;
     }
 }
 
@@ -28,6 +50,8 @@ void frame_init(Frame *frame) {
     frame->stride = 0;
     frame->size = 0;
     frame->data = NULL;
+    memset(frame->planes, 0, sizeof(frame->planes));
+    memset(frame->linesize, 0, sizeof(frame->linesize));
 }
 
 int frame_alloc(Frame *frame, int width, int height, FrameFormat format) {
@@ -60,6 +84,7 @@ int frame_alloc(Frame *frame, int width, int height, FrameFormat format) {
     frame->stride = stride;
     frame->size = size;
     frame->data = data;
+    frame_set_planes /* module: core/frame */ (frame);
     return 0;
 }
 
@@ -89,6 +114,7 @@ int frame_copy(Frame *dst, const Frame *src) {
 
     frame_free /* module: core/frame */ (dst);
     *dst = copy;
+    frame_set_planes /* module: core/frame */ (dst);
     return 0;
 }
 
@@ -104,6 +130,7 @@ int frame_move(Frame *dst, Frame *src) {
     frame_free /* module: core/frame */ (dst);
     *dst = *src;
     frame_init /* module: core/frame */ (src);
+    frame_set_planes /* module: core/frame */ (dst);
     return 0;
 }
 
@@ -114,10 +141,17 @@ int frame_is_valid(const Frame *frame) {
            frame->channels == frame_channels_for_format /* module: core/frame */ (frame->format) &&
            frame->stride > 0 &&
            frame->size > 0 &&
-           frame->data != NULL;
+           frame->data != NULL &&
+           frame->planes[0] == frame->data &&
+           frame->linesize[0] == frame->stride &&
+           (frame->format != FRAME_FORMAT_NV12 || (frame->planes[1] != NULL && frame->linesize[1] == frame->stride));
 }
 
 size_t frame_calculate_stride(int width, FrameFormat format) {
+    if (format == FRAME_FORMAT_NV12) {
+        return width > 0 && (width % 2) == 0 ? (size_t)width : 0;
+    }
+
     const int channels = frame_channels_for_format /* module: core/frame */ (format);
     if (width <= 0 || channels <= 0) {
         return 0;
@@ -138,6 +172,17 @@ size_t frame_calculate_size(int width, int height, FrameFormat format) {
     const size_t stride = frame_calculate_stride /* module: core/frame */ (width, format);
     if (stride == 0 || (size_t)height > SIZE_MAX / stride) {
         return 0;
+    }
+
+    if (format == FRAME_FORMAT_NV12) {
+        if ((height % 2) != 0) {
+            return 0;
+        }
+        const size_t y_size = stride * (size_t)height;
+        if (y_size > SIZE_MAX / 3u) {
+            return 0;
+        }
+        return y_size + y_size / 2u;
     }
 
     return stride * (size_t)height;

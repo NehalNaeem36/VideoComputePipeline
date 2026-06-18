@@ -28,5 +28,19 @@ int main(void) {
     TEST_ASSERT(frame_is_valid /* module: core/frame */ (&frame));
     frame_free /* module: core/frame */ (&frame);
     video_reader_close /* module: video/video_reader */ (&reader);
+
+    if (video_reader_open_with_threads /* module: video/video_reader */ (&reader, input_path, 1) != 0) {
+        printf("video_reader_test skipped NV12 read: input video not available\n");
+        return 0;
+    }
+    frame_init /* module: core/frame */ (&frame);
+    const int nv12_result = video_reader_read_frame_as /* module: video/video_reader */ (&reader, &frame, FRAME_FORMAT_NV12);
+    TEST_ASSERT(nv12_result == 1);
+    TEST_ASSERT(frame_is_valid /* module: core/frame */ (&frame));
+    TEST_ASSERT(frame.format == FRAME_FORMAT_NV12);
+    TEST_ASSERT(frame.planes[0] == frame.data);
+    TEST_ASSERT(frame.planes[1] != NULL);
+    frame_free /* module: core/frame */ (&frame);
+    video_reader_close /* module: video/video_reader */ (&reader);
     return 0;
 }

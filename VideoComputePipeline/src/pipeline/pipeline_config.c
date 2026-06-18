@@ -18,6 +18,10 @@ static const char *mode_to_string(ProcessMode mode) {
     return mode == PROCESS_GPU ? "gpu" : "cpu";
 }
 
+static const char *task_to_string(PipelineTask task) {
+    return task == PIPELINE_TASK_DETECT ? "detect" : "filter";
+}
+
 static const char *filter_to_string(FilterType filter) {
     switch (filter) {
         case FILTER_GRAYSCALE:
@@ -43,6 +47,20 @@ static int parse_mode(const char *value, ProcessMode *mode) {
 
     if (strcmp(value, "gpu") == 0) {
         *mode = PROCESS_GPU;
+        return 0;
+    }
+
+    return -1;
+}
+
+static int parse_task(const char *value, PipelineTask *task) {
+    if (strcmp(value, "filter") == 0) {
+        *task = PIPELINE_TASK_FILTER;
+        return 0;
+    }
+
+    if (strcmp(value, "detect") == 0) {
+        *task = PIPELINE_TASK_DETECT;
         return 0;
     }
 
@@ -123,7 +141,13 @@ void pipeline_config_default(PipelineConfig *config) {
     copy_path /* module: pipeline/pipeline_config */ (config->input_path, sizeof(config->input_path), DEFAULT_INPUT_PATH);
     copy_path /* module: pipeline/pipeline_config */ (config->output_path, sizeof(config->output_path), DEFAULT_OUTPUT_PATH);
     copy_path /* module: pipeline/pipeline_config */ (config->benchmark_path, sizeof(config->benchmark_path), DEFAULT_BENCHMARK_PATH);
+    copy_path /* module: pipeline/pipeline_config */ (config->detections_path, sizeof(config->detections_path), DEFAULT_DETECTIONS_PATH);
+    copy_path /* module: pipeline/pipeline_config */ (config->model_path, sizeof(config->model_path), DEFAULT_MODEL_PATH);
+    copy_path /* module: pipeline/pipeline_config */ (config->labels_path, sizeof(config->labels_path), DEFAULT_LABELS_PATH);
+    copy_path /* module: pipeline/pipeline_config */ (config->inference_backend, sizeof(config->inference_backend), DEFAULT_INFERENCE_BACKEND);
+    copy_path /* module: pipeline/pipeline_config */ (config->inference_precision, sizeof(config->inference_precision), DEFAULT_INFERENCE_PRECISION);
     copy_path /* module: pipeline/pipeline_config */ (config->encoder_name, sizeof(config->encoder_name), DEFAULT_ENCODER_NAME);
+    config->task = PIPELINE_TASK_FILTER;
     config->mode = PROCESS_CPU;
     config->filter = FILTER_GRAYSCALE;
     config->max_frames = DEFAULT_MAX_FRAMES;
@@ -135,6 +159,11 @@ void pipeline_config_default(PipelineConfig *config) {
     config->decoder_threads = DEFAULT_DECODER_THREADS;
     config->encoder_threads = DEFAULT_ENCODER_THREADS;
     config->processor_workers = DEFAULT_PROCESSOR_WORKERS;
+    config->confidence_threshold = DEFAULT_DETECTION_CONFIDENCE;
+    config->iou_threshold = DEFAULT_DETECTION_IOU_THRESHOLD;
+    config->inference_input_size = DEFAULT_INFERENCE_INPUT_SIZE;
+    config->detection_class_count = DEFAULT_DETECTION_CLASS_COUNT;
+    config->max_detections_per_frame = DEFAULT_MAX_DETECTIONS_PER_FRAME;
 }
 
 int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
@@ -155,6 +184,53 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
             }
         } else if (strcmp(arg, "--benchmark") == 0 && i + 1 < argc) {
             if (copy_path /* module: pipeline/pipeline_config */ (config->benchmark_path, sizeof(config->benchmark_path), argv[++i]) != 0) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--task") == 0 && i + 1 < argc) {
+            if (parse_task /* module: pipeline/pipeline_config */ (argv[++i], &config->task) != 0) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--model") == 0 && i + 1 < argc) {
+            if (copy_path /* module: pipeline/pipeline_config */ (config->model_path, sizeof(config->model_path), argv[++i]) != 0) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--labels") == 0 && i + 1 < argc) {
+            if (copy_path /* module: pipeline/pipeline_config */ (config->labels_path, sizeof(config->labels_path), argv[++i]) != 0) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--detections") == 0 && i + 1 < argc) {
+            if (copy_path /* module: pipeline/pipeline_config */ (config->detections_path, sizeof(config->detections_path), argv[++i]) != 0) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--confidence") == 0 && i + 1 < argc) {
+            config->confidence_threshold = (float)atof(argv[++i]);
+            if (config->confidence_threshold < 0.0f || config->confidence_threshold > 1.0f) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--iou-threshold") == 0 && i + 1 < argc) {
+            config->iou_threshold = (float)atof(argv[++i]);
+            if (config->iou_threshold < 0.0f || config->iou_threshold > 1.0f) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--input-size") == 0 && i + 1 < argc) {
+            config->inference_input_size = atoi(argv[++i]);
+            if (config->inference_input_size <= 0) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--inference-backend") == 0 && i + 1 < argc) {
+            const char *backend = argv[++i];
+            if (strcmp(backend, "tensorrt") != 0) {
+                return -1;
+            }
+            if (copy_path /* module: pipeline/pipeline_config */ (config->inference_backend, sizeof(config->inference_backend), backend) != 0) {
+                return -1;
+            }
+        } else if (strcmp(arg, "--precision") == 0 && i + 1 < argc) {
+            const char *precision = argv[++i];
+            if (strcmp(precision, "fp16") != 0) {
+                return -1;
+            }
+            if (copy_path /* module: pipeline/pipeline_config */ (config->inference_precision, sizeof(config->inference_precision), precision) != 0) {
                 return -1;
             }
         } else if (strcmp(arg, "--encoder") == 0 && i + 1 < argc) {
@@ -235,6 +311,10 @@ void pipeline_config_print(const PipelineConfig *config) {
     printf("input_path: %s\n", config->input_path);
     printf("output_path: %s\n", config->output_path);
     printf("benchmark_path: %s\n", config->benchmark_path);
+    printf("detections_path: %s\n", config->detections_path);
+    printf("model_path: %s\n", config->model_path);
+    printf("labels_path: %s\n", config->labels_path);
+    printf("task: %s\n", task_to_string(config->task));
     printf("encoder: %s\n", config->encoder_name);
     printf("mode: %s\n", mode_to_string(config->mode));
     printf("filter: %s\n", filter_to_string(config->filter));
@@ -247,4 +327,9 @@ void pipeline_config_print(const PipelineConfig *config) {
     printf("decoder_threads: %d\n", config->decoder_threads);
     printf("encoder_threads: %d\n", config->encoder_threads);
     printf("processor_workers: %d\n", config->processor_workers);
+    printf("confidence: %.3f\n", config->confidence_threshold);
+    printf("iou_threshold: %.3f\n", config->iou_threshold);
+    printf("input_size: %d\n", config->inference_input_size);
+    printf("inference_backend: %s\n", config->inference_backend);
+    printf("precision: %s\n", config->inference_precision);
 }

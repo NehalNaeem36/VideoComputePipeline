@@ -10,8 +10,10 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
 option(BUILD_TESTING "Build tests" ON)
+option(ENABLE_CUDA_INFERENCE "Build CUDA/TensorRT inference backend" OFF)
 set(FFMPEG_ROOT "" CACHE PATH "Optional FFmpeg installation root")
 set(OPENCL_ROOT "" CACHE PATH "Optional OpenCL installation root")
+set(TENSORRT_ROOT "" CACHE PATH "Optional TensorRT installation root")
 
 set(PROJECT_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -34,9 +36,17 @@ set(PROJECT_SOURCES
     src/benchmark/timer.c
     src/benchmark/benchmark.c
     src/benchmark/matrix_report.c
+    src/inference/detection_result.c
+    src/inference/detection_writer.c
+    src/inference/inference_engine_stub.c
     src/utils/logger.c
     src/utils/file_utils.c
 )
+
+if(ENABLE_CUDA_INFERENCE)
+    enable_language(CXX CUDA)
+    message(WARNING "ENABLE_CUDA_INFERENCE is reserved for the TensorRT backend. The current build still uses the CUDA-disabled inference stub.")
+endif()
 
 find_package(PkgConfig QUIET)
 

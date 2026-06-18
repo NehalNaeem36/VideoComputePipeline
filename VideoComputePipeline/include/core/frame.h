@@ -6,7 +6,8 @@
 
 typedef enum {
     FRAME_FORMAT_RGB24 = 0,
-    FRAME_FORMAT_GRAY8 = 1
+    FRAME_FORMAT_GRAY8 = 1,
+    FRAME_FORMAT_NV12 = 2
 } FrameFormat;
 
 typedef struct {
@@ -18,6 +19,8 @@ typedef struct {
     size_t stride;
     size_t size;
     uint8_t *data;
+    uint8_t *planes[4];
+    size_t linesize[4];
 } Frame;
 
 void frame_init(Frame *frame);

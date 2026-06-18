@@ -54,10 +54,32 @@ static int frame_test_allocate_copy_move_free(void) {
 static int frame_test_calculate_size(void) {
     TEST_ASSERT(frame_calculate_stride /* module: core/frame */ (8, FRAME_FORMAT_RGB24) == 24);
     TEST_ASSERT(frame_calculate_stride /* module: core/frame */ (8, FRAME_FORMAT_GRAY8) == 8);
+    TEST_ASSERT(frame_calculate_stride /* module: core/frame */ (8, FRAME_FORMAT_NV12) == 8);
     TEST_ASSERT(frame_calculate_size /* module: core/frame */ (8, 2, FRAME_FORMAT_RGB24) == 48);
     TEST_ASSERT(frame_calculate_size /* module: core/frame */ (8, 2, FRAME_FORMAT_GRAY8) == 16);
+    TEST_ASSERT(frame_calculate_size /* module: core/frame */ (8, 2, FRAME_FORMAT_NV12) == 24);
+    TEST_ASSERT(frame_calculate_size /* module: core/frame */ (7, 2, FRAME_FORMAT_NV12) == 0);
+    TEST_ASSERT(frame_calculate_size /* module: core/frame */ (8, 3, FRAME_FORMAT_NV12) == 0);
     TEST_ASSERT(frame_calculate_size /* module: core/frame */ (0, 2, FRAME_FORMAT_RGB24) == 0);
     TEST_ASSERT(frame_calculate_size /* module: core/frame */ (8, 0, FRAME_FORMAT_RGB24) == 0);
+    return 0;
+}
+
+static int frame_test_nv12_layout(void) {
+    Frame frame;
+    frame_init /* module: core/frame */ (&frame);
+
+    TEST_ASSERT(frame_alloc /* module: core/frame */ (&frame, 8, 4, FRAME_FORMAT_NV12) == 0);
+    TEST_ASSERT(frame_is_valid /* module: core/frame */ (&frame));
+    TEST_ASSERT(frame.channels == 1);
+    TEST_ASSERT(frame.stride == 8);
+    TEST_ASSERT(frame.size == 48);
+    TEST_ASSERT(frame.planes[0] == frame.data);
+    TEST_ASSERT(frame.planes[1] == frame.data + 32);
+    TEST_ASSERT(frame.linesize[0] == 8);
+    TEST_ASSERT(frame.linesize[1] == 8);
+
+    frame_free /* module: core/frame */ (&frame);
     return 0;
 }
 
@@ -67,6 +89,9 @@ int main(void) {
         return 1;
     }
     if (frame_test_calculate_size() != 0) {
+        return 1;
+    }
+    if (frame_test_nv12_layout() != 0) {
         return 1;
     }
     return 0;

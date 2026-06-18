@@ -9,6 +9,11 @@ typedef enum {
 } ProcessMode;
 
 typedef enum {
+    PIPELINE_TASK_FILTER = 0,
+    PIPELINE_TASK_DETECT = 1
+} PipelineTask;
+
+typedef enum {
     FILTER_GRAYSCALE = 0,
     FILTER_BLUR_3X3 = 1,
     FILTER_BLUR_5X5 = 2,
@@ -27,7 +32,13 @@ typedef struct {
     char input_path[VCP_MAX_PATH_LENGTH];
     char output_path[VCP_MAX_PATH_LENGTH];
     char benchmark_path[VCP_MAX_PATH_LENGTH];
+    char detections_path[VCP_MAX_PATH_LENGTH];
+    char model_path[VCP_MAX_PATH_LENGTH];
+    char labels_path[VCP_MAX_PATH_LENGTH];
+    char inference_backend[64];
+    char inference_precision[32];
     char encoder_name[64];
+    PipelineTask task;
     ProcessMode mode;
     FilterType filter;
     int max_frames;
@@ -39,6 +50,11 @@ typedef struct {
     int decoder_threads;
     int encoder_threads;
     int processor_workers;
+    float confidence_threshold;
+    float iou_threshold;
+    int inference_input_size;
+    int detection_class_count;
+    int max_detections_per_frame;
 } PipelineConfig;
 
 void pipeline_config_default(PipelineConfig *config);

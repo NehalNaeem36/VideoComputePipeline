@@ -14,7 +14,12 @@ void benchmark_init(Benchmark *bench) {
     bench->count = 0;
     bench->capacity = 0;
     bench->total_ms = 0.0;
+    bench->decode_ms = 0.0;
     bench->process_ms = 0.0;
+    bench->upload_ms = 0.0;
+    bench->preprocess_ms = 0.0;
+    bench->inference_ms = 0.0;
+    bench->postprocess_ms = 0.0;
     bench->wall_clock_ms = 0.0;
     bench->csv_file = NULL;
 }
@@ -28,11 +33,11 @@ void benchmark_set_wall_clock_ms(Benchmark *bench, double wall_clock_ms) {
 }
 
 static int write_csv_header(FILE *file) {
-    return fprintf(file, "frame_index,decode_ms,process_ms,upload_ms,kernel_ms,download_ms,encode_ms,total_ms\n") < 0 ? -1 : 0;
+    return fprintf(file, "frame_index,decode_ms,process_ms,upload_ms,kernel_ms,download_ms,encode_ms,total_ms,preprocess_ms,inference_ms,postprocess_ms\n") < 0 ? -1 : 0;
 }
 
 static int write_csv_row(FILE *file, const FrameTiming *t) {
-    return fprintf(file, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+    return fprintf(file, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                    t->frame_index,
                    t->decode_ms,
                    t->process_ms,
@@ -40,7 +45,10 @@ static int write_csv_row(FILE *file, const FrameTiming *t) {
                    t->kernel_ms,
                    t->download_ms,
                    t->encode_ms,
-                   t->total_ms) < 0 ? -1 : 0;
+                   t->total_ms,
+                   t->preprocess_ms,
+                   t->inference_ms,
+                   t->postprocess_ms) < 0 ? -1 : 0;
 }
 
 int benchmark_open_csv(Benchmark *bench, const char *path) {
@@ -99,7 +107,12 @@ int benchmark_add_frame_result(Benchmark *bench, const FrameTiming *timing) {
     }
 
     bench->total_ms += timing->total_ms;
+    bench->decode_ms += timing->decode_ms;
     bench->process_ms += timing->process_ms;
+    bench->upload_ms += timing->upload_ms;
+    bench->preprocess_ms += timing->preprocess_ms;
+    bench->inference_ms += timing->inference_ms;
+    bench->postprocess_ms += timing->postprocess_ms;
     return 0;
 }
 
@@ -160,6 +173,26 @@ void benchmark_print_summary(const Benchmark *bench) {
         printf("  wall_clock_ms: %.3f\n", bench->wall_clock_ms);
         printf("  wall_clock_fps: %.3f\n", (double)bench->count * 1000.0 / bench->wall_clock_ms);
     }
+}
+
+void benchmark_print_detection_summary(const Benchmark *bench) {
+    if (!bench || bench->count == 0) {
+        printf("Detection benchmark: no frames recorded\n");
+        return;
+    }
+
+    printf("Detection benchmark summary:\n");
+    printf("  frames: %zu\n", bench->count);
+    printf("  wall_clock_ms: %.3f\n", bench->wall_clock_ms);
+    if (bench->wall_clock_ms > 0.0) {
+        printf("  wall_clock_fps: %.3f\n", (double)bench->count * 1000.0 / bench->wall_clock_ms);
+    }
+    printf("  avg_decode_ms: %.3f\n", bench->decode_ms / (double)bench->count);
+    printf("  avg_upload_ms: %.3f\n", bench->upload_ms / (double)bench->count);
+    printf("  avg_preprocess_ms: %.3f\n", bench->preprocess_ms / (double)bench->count);
+    printf("  avg_inference_ms: %.3f\n", bench->inference_ms / (double)bench->count);
+    printf("  avg_postprocess_ms: %.3f\n", bench->postprocess_ms / (double)bench->count);
+    printf("  avg_total_ms: %.3f\n", bench->total_ms / (double)bench->count);
 }
 
 void benchmark_free(Benchmark *bench) {

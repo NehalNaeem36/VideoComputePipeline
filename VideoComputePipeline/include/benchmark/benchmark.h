@@ -12,6 +12,9 @@ typedef struct {
     double download_ms;
     double encode_ms;
     double total_ms;
+    double preprocess_ms;
+    double inference_ms;
+    double postprocess_ms;
 } FrameTiming;
 
 typedef struct {
@@ -19,7 +22,12 @@ typedef struct {
     size_t count;
     size_t capacity;
     double total_ms;
+    double decode_ms;
     double process_ms;
+    double upload_ms;
+    double preprocess_ms;
+    double inference_ms;
+    double postprocess_ms;
     double wall_clock_ms;
     void *csv_file;
 } Benchmark;
@@ -31,6 +39,7 @@ int benchmark_add_frame_result(Benchmark *bench, const FrameTiming *timing);
 int benchmark_write_csv(const Benchmark *bench, const char *path);
 int benchmark_close_csv(Benchmark *bench);
 void benchmark_print_summary(const Benchmark *bench);
+void benchmark_print_detection_summary(const Benchmark *bench);
 void benchmark_free(Benchmark *bench);
 
 #endif

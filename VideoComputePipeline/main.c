@@ -15,6 +15,15 @@ static void print_usage(const char *program_name) {
     printf("  --input path              Input MP4 path\n");
     printf("  --output path             Output MP4 path\n");
     printf("  --benchmark path          Benchmark CSV path\n");
+    printf("  --task filter|detect      Filter video or run detection-only inference\n");
+    printf("  --model path              TensorRT engine path for detect mode\n");
+    printf("  --labels path             Class label file for detect mode\n");
+    printf("  --detections path         Detection CSV output path\n");
+    printf("  --confidence value        Detection confidence threshold, 0.0 to 1.0\n");
+    printf("  --iou-threshold value     Detection NMS IoU threshold, 0.0 to 1.0\n");
+    printf("  --input-size N            Detector input size, default 640\n");
+    printf("  --inference-backend name  tensorrt\n");
+    printf("  --precision name          fp16\n");
     printf("  --encoder name            libx264, libx264rgb, h264_nvenc, or mpeg4\n");
     printf("  --mode cpu|gpu            Processing mode\n");
     printf("  --filter grayscale|blur3x3|blur5x5|blur9x9|blur13x13\n");
