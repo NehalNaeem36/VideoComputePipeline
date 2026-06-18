@@ -3,6 +3,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct {
     int frame_index;
     double timestamp_ms;
@@ -25,5 +29,9 @@ int detection_result_alloc(DetectionResult *result, size_t capacity);
 void detection_result_clear(DetectionResult *result);
 int detection_result_add(DetectionResult *result, const Detection *detection);
 void detection_result_free(DetectionResult *result);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

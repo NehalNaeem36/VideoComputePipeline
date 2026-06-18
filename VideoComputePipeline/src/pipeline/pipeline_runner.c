@@ -4,9 +4,6 @@
 #include "benchmark/timer.h"
 #include "cpu/cpu_filters.h"
 #include "gpu/gpu_filters.h"
-#include "inference/detection_result.h"
-#include "inference/detection_writer.h"
-#include "inference/inference_engine.h"
 #include "pipeline/frame_pool.h"
 #include "utils/logger.h"
 #include "video/video_reader.h"
@@ -54,9 +51,6 @@ typedef struct {
     VideoReader reader;
     VideoWriter writer;
     Benchmark benchmark;
-    DetectionWriter detection_writer;
-    DetectionResult detection_result;
-    InferenceEngine *inference_engine;
     GPUFilterContext gpu;
     PacketQueue raw_queue;
     PacketQueue processed_queue;
@@ -136,7 +130,7 @@ static int packet_queue_init(PacketQueue *queue, size_t capacity) {
 }
 
 static void packet_queue_close(PacketQueue *queue) {
-    if (!queue || !queue->items) {
+    if (!queue) {
         return;
     }
 
@@ -161,7 +155,6 @@ static void packet_queue_free(PacketQueue *queue) {
     }
 
     packet_queue_close /* module: pipeline/pipeline_runner */ (queue);
-    const int was_initialized = queue->items != NULL;
     if (queue->items) {
         for (size_t i = 0; i < queue->capacity; ++i) {
             packet_free /* module: pipeline/pipeline_runner */ (&queue->items[i]);
@@ -172,15 +165,13 @@ static void packet_queue_free(PacketQueue *queue) {
     queue->capacity = 0;
     queue->count = 0;
 
-    if (was_initialized) {
 #ifdef _WIN32
-        DeleteCriticalSection(&queue->lock);
+    DeleteCriticalSection(&queue->lock);
 #else
-        pthread_cond_destroy(&queue->not_empty);
-        pthread_cond_destroy(&queue->not_full);
-        pthread_mutex_destroy(&queue->lock);
+    pthread_cond_destroy(&queue->not_empty);
+    pthread_cond_destroy(&queue->not_full);
+    pthread_mutex_destroy(&queue->lock);
 #endif
-    }
 }
 
 static int packet_queue_push(PacketQueue *queue, PipelinePacket *packet) {
@@ -671,268 +662,7 @@ static void *encoder_thread_main(void *arg)
 #endif
 }
 
-static void build_inference_config(const PipelineConfig *config, InferenceConfig *inference_config) {
-    memset(inference_config, 0, sizeof(*inference_config));
-    strncpy(inference_config->model_path, config->model_path, sizeof(inference_config->model_path) - 1u);
-    strncpy(inference_config->labels_path, config->labels_path, sizeof(inference_config->labels_path) - 1u);
-    inference_config->input_width = config->inference_input_size;
-    inference_config->input_height = config->inference_input_size;
-    inference_config->class_count = config->detection_class_count;
-    inference_config->confidence_threshold = config->confidence_threshold;
-    inference_config->iou_threshold = config->iou_threshold;
-    inference_config->use_fp16 = strcmp(config->inference_precision, "fp16") == 0;
-}
-
-#ifdef _WIN32
-static DWORD WINAPI detection_decoder_thread_main(LPVOID arg)
-#else
-static void *detection_decoder_thread_main(void *arg)
-#endif
-{
-    PipelineContext *ctx = (PipelineContext *)arg;
-    int global_frame_id = 0;
-
-    for (;;) {
-        PipelinePacket packet;
-        Timer timer;
-        packet_init /* module: pipeline/pipeline_runner */ (&packet);
-
-        if (ctx->config->max_frames > 0 && global_frame_id >= ctx->config->max_frames) {
-            packet_free /* module: pipeline/pipeline_runner */ (&packet);
-            break;
-        }
-
-        const int acquire_result = frame_pool_acquire /* module: pipeline/frame_pool */ (&ctx->raw_frame_pool, &packet.frame);
-        if (acquire_result == 0) {
-            packet_free /* module: pipeline/pipeline_runner */ (&packet);
-            break;
-        }
-        if (acquire_result < 0) {
-            packet_free /* module: pipeline/pipeline_runner */ (&packet);
-            log_error /* module: utils/logger */ ("detection decoder failed to acquire NV12 frame buffer");
-            pipeline_fail /* module: pipeline/pipeline_runner */ (ctx);
-            break;
-        }
-
-        timer_start /* module: benchmark/timer */ (&timer);
-        const int read_result = video_reader_read_frame_as /* module: video/video_reader */ (&ctx->reader, &packet.frame, FRAME_FORMAT_NV12);
-        packet.timing.decode_ms = timer_stop_ms /* module: benchmark/timer */ (&timer);
-
-        if (read_result == 0) {
-            frame_pool_release /* module: pipeline/frame_pool */ (&ctx->raw_frame_pool, &packet.frame);
-            break;
-        }
-        if (read_result < 0 || ctx->failed) {
-            if (frame_is_valid /* module: core/frame */ (&packet.frame)) {
-                frame_pool_release /* module: pipeline/frame_pool */ (&ctx->raw_frame_pool, &packet.frame);
-            }
-            log_error /* module: utils/logger */ ("detection decoder worker failed");
-            pipeline_fail /* module: pipeline/pipeline_runner */ (ctx);
-            break;
-        }
-
-        packet.frame.index = global_frame_id;
-        packet.timing.frame_index = global_frame_id;
-        global_frame_id++;
-
-        const int push_result = packet_queue_push /* module: pipeline/pipeline_runner */ (&ctx->raw_queue, &packet);
-        if (push_result <= 0) {
-            if (frame_is_valid /* module: core/frame */ (&packet.frame)) {
-                frame_pool_release /* module: pipeline/frame_pool */ (&ctx->raw_frame_pool, &packet.frame);
-            }
-            if (push_result < 0) {
-                pipeline_fail /* module: pipeline/pipeline_runner */ (ctx);
-            }
-            break;
-        }
-        packet_free /* module: pipeline/pipeline_runner */ (&packet);
-    }
-
-    packet_queue_close /* module: pipeline/pipeline_runner */ (&ctx->raw_queue);
-#ifdef _WIN32
-    return 0;
-#else
-    return NULL;
-#endif
-}
-
-#ifdef _WIN32
-static DWORD WINAPI detection_inference_thread_main(LPVOID arg)
-#else
-static void *detection_inference_thread_main(void *arg)
-#endif
-{
-    PipelineContext *ctx = (PipelineContext *)arg;
-    const VideoInfo *info = video_reader_get_info(&ctx->reader);
-    const double fps = info && info->fps > 0.0 ? info->fps : 30.0;
-
-    for (;;) {
-        PipelinePacket packet;
-        Timer total_timer;
-        packet_init /* module: pipeline/pipeline_runner */ (&packet);
-
-        const int pop_result = packet_queue_pop /* module: pipeline/pipeline_runner */ (&ctx->raw_queue, &packet);
-        if (pop_result == 0) {
-            packet_free /* module: pipeline/pipeline_runner */ (&packet);
-            break;
-        }
-        if (pop_result < 0 || ctx->failed) {
-            packet_free /* module: pipeline/pipeline_runner */ (&packet);
-            pipeline_fail /* module: pipeline/pipeline_runner */ (ctx);
-            break;
-        }
-
-        timer_start /* module: benchmark/timer */ (&total_timer);
-        detection_result_clear /* module: inference/detection_result */ (&ctx->detection_result);
-        const int inference_result = inference_engine_run_nv12 /* module: inference/inference_engine */ (ctx->inference_engine, &packet.frame, &ctx->detection_result, &packet.timing);
-        frame_pool_release /* module: pipeline/frame_pool */ (&ctx->raw_frame_pool, &packet.frame);
-
-        if (inference_result != 0) {
-            log_error /* module: utils/logger */ ("inference failed on frame %d: %s", packet.timing.frame_index, inference_engine_last_error /* module: inference/inference_engine */ ());
-            packet_free /* module: pipeline/pipeline_runner */ (&packet);
-            pipeline_fail /* module: pipeline/pipeline_runner */ (ctx);
-            break;
-        }
-
-        const double timestamp_ms = (double)packet.timing.frame_index * 1000.0 / fps;
-        for (size_t i = 0; i < ctx->detection_result.count; ++i) {
-            ctx->detection_result.items[i].frame_index = packet.timing.frame_index;
-            ctx->detection_result.items[i].timestamp_ms = timestamp_ms;
-        }
-
-        packet.timing.process_ms = packet.timing.upload_ms + packet.timing.preprocess_ms + packet.timing.inference_ms + packet.timing.postprocess_ms;
-        packet.timing.total_ms = packet.timing.decode_ms + timer_stop_ms /* module: benchmark/timer */ (&total_timer);
-        if (detection_writer_write_frame /* module: inference/detection_writer */ (&ctx->detection_writer, &ctx->detection_result) != 0 ||
-            (ctx->config->enable_benchmark && benchmark_add_frame_result /* module: benchmark/benchmark */ (&ctx->benchmark, &packet.timing) != 0)) {
-            log_error /* module: utils/logger */ ("failed to write detection outputs for frame %d", packet.timing.frame_index);
-            packet_free /* module: pipeline/pipeline_runner */ (&packet);
-            pipeline_fail /* module: pipeline/pipeline_runner */ (ctx);
-            break;
-        }
-
-        packet_free /* module: pipeline/pipeline_runner */ (&packet);
-    }
-
-#ifdef _WIN32
-    return 0;
-#else
-    return NULL;
-#endif
-}
-
-static int pipeline_run_detection(const PipelineConfig *config) {
-    if (!config) {
-        return -1;
-    }
-
-    PipelineContext ctx;
-    memset(&ctx, 0, sizeof(ctx));
-    ctx.config = config;
-    benchmark_init /* module: benchmark/benchmark */ (&ctx.benchmark);
-    detection_writer_init /* module: inference/detection_writer */ (&ctx.detection_writer);
-    detection_result_init /* module: inference/detection_result */ (&ctx.detection_result);
-
-    Timer wall_timer;
-    timer_start /* module: benchmark/timer */ (&wall_timer);
-
-    InferenceConfig inference_config;
-    build_inference_config /* module: pipeline/pipeline_runner */ (config, &inference_config);
-    if (inference_engine_create /* module: inference/inference_engine */ (&ctx.inference_engine, &inference_config) != 0) {
-        log_error /* module: utils/logger */ ("%s", inference_engine_last_error /* module: inference/inference_engine */ ());
-        return -1;
-    }
-
-    if (video_reader_open_with_threads /* module: video/video_reader */ (&ctx.reader, config->input_path, config->decoder_threads) != 0) {
-        log_error /* module: utils/logger */ ("failed to open input video: %s", config->input_path);
-        inference_engine_destroy /* module: inference/inference_engine */ (ctx.inference_engine);
-        return -1;
-    }
-
-    const VideoInfo *info = video_reader_get_info(&ctx.reader);
-    if (!info) {
-        log_error /* module: utils/logger */ ("failed to read input video info");
-        video_reader_close /* module: video/video_reader */ (&ctx.reader);
-        inference_engine_destroy /* module: inference/inference_engine */ (ctx.inference_engine);
-        return -1;
-    }
-
-    const size_t frame_bytes = frame_calculate_size /* module: core/frame */ (info->width, info->height, FRAME_FORMAT_NV12);
-    const size_t pool_capacity = (size_t)config->frame_slots + 2u;
-    if (packet_queue_init /* module: pipeline/pipeline_runner */ (&ctx.raw_queue, (size_t)config->frame_slots) != 0 ||
-        frame_pool_init /* module: pipeline/frame_pool */ (&ctx.raw_frame_pool, pool_capacity, info->width, info->height, FRAME_FORMAT_NV12) != 0 ||
-        detection_result_alloc /* module: inference/detection_result */ (&ctx.detection_result, (size_t)config->max_detections_per_frame) != 0 ||
-        detection_writer_open /* module: inference/detection_writer */ (&ctx.detection_writer, config->detections_path, config->labels_path) != 0 ||
-        (config->enable_benchmark && benchmark_open_csv /* module: benchmark/benchmark */ (&ctx.benchmark, config->benchmark_path) != 0)) {
-        log_error /* module: utils/logger */ ("failed to initialize detection pipeline resources");
-        ctx.failed = 1;
-    }
-
-    log_info /* module: utils/logger */ ("detection frame pool: nv12=%zu frame_bytes=%zu", pool_capacity, frame_bytes);
-
-    if (!ctx.failed) {
-#ifdef _WIN32
-        HANDLE decoder_thread = CreateThread(NULL, 0, detection_decoder_thread_main, &ctx, 0, NULL);
-        HANDLE inference_thread = CreateThread(NULL, 0, detection_inference_thread_main, &ctx, 0, NULL);
-        if (!decoder_thread || !inference_thread) {
-            pipeline_fail /* module: pipeline/pipeline_runner */ (&ctx);
-        }
-        if (decoder_thread) {
-            WaitForSingleObject(decoder_thread, INFINITE);
-            CloseHandle(decoder_thread);
-        }
-        if (inference_thread) {
-            WaitForSingleObject(inference_thread, INFINITE);
-            CloseHandle(inference_thread);
-        }
-#else
-        pthread_t decoder_thread;
-        pthread_t inference_thread;
-        if (pthread_create(&decoder_thread, NULL, detection_decoder_thread_main, &ctx) != 0 ||
-            pthread_create(&inference_thread, NULL, detection_inference_thread_main, &ctx) != 0) {
-            pipeline_fail /* module: pipeline/pipeline_runner */ (&ctx);
-        } else {
-            pthread_join(decoder_thread, NULL);
-            pthread_join(inference_thread, NULL);
-        }
-#endif
-    }
-
-    if (config->enable_benchmark) {
-        benchmark_set_wall_clock_ms /* module: benchmark/benchmark */ (&ctx.benchmark, timer_stop_ms /* module: benchmark/timer */ (&wall_timer));
-        if (benchmark_close_csv /* module: benchmark/benchmark */ (&ctx.benchmark) != 0) {
-            ctx.failed = 1;
-        }
-        if (!ctx.failed) {
-            benchmark_print_detection_summary /* module: benchmark/benchmark */ (&ctx.benchmark);
-        }
-    }
-
-    detection_writer_close /* module: inference/detection_writer */ (&ctx.detection_writer);
-    detection_result_free /* module: inference/detection_result */ (&ctx.detection_result);
-    inference_engine_destroy /* module: inference/inference_engine */ (ctx.inference_engine);
-    benchmark_free /* module: benchmark/benchmark */ (&ctx.benchmark);
-    video_reader_close /* module: video/video_reader */ (&ctx.reader);
-    packet_queue_free /* module: pipeline/pipeline_runner */ (&ctx.raw_queue);
-    frame_pool_free /* module: pipeline/frame_pool */ (&ctx.raw_frame_pool);
-
-    return ctx.failed ? -1 : 0;
-}
-
-static int pipeline_run_filter(const PipelineConfig *config);
-
 int pipeline_run(const PipelineConfig *config) {
-    if (!config) {
-        return -1;
-    }
-
-    if (config->task == PIPELINE_TASK_DETECT) {
-        return pipeline_run_detection /* module: pipeline/pipeline_runner */ (config);
-    }
-
-    return pipeline_run_filter /* module: pipeline/pipeline_runner */ (config);
-}
-
-static int pipeline_run_filter(const PipelineConfig *config) {
     /* initial entry to pipeline runner module */
     if (!config) {  //check config is not null
         return -1;
@@ -987,7 +717,7 @@ static int pipeline_run_filter(const PipelineConfig *config) {
     } else if (config->memory_profile == MEMORY_PROFILE_BALANCED && config->mode == PROCESS_CPU && effective_processor_workers > 2) {
         effective_processor_workers = 2;
     }
-
+/* allocates effective threads for processor workers, effective frame slots, effective decoder/encoder*/
     const int processor_workers = config->mode == PROCESS_GPU ? 1 : effective_processor_workers;
     ctx.processor_workers = processor_workers > 0 ? processor_workers : 1;
     ctx.effective_frame_slots = effective_frame_slots;

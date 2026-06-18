@@ -6,6 +6,10 @@
 #include "core/frame.h"
 #include "inference/detection_result.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct InferenceEngine InferenceEngine;
 
 typedef struct {
@@ -23,5 +27,9 @@ int inference_engine_create(InferenceEngine **engine, const InferenceConfig *con
 int inference_engine_run_nv12(InferenceEngine *engine, const Frame *frame, DetectionResult *result, FrameTiming *timing);
 void inference_engine_destroy(InferenceEngine *engine);
 const char *inference_engine_last_error(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
