@@ -70,6 +70,8 @@ models/*
 *.engine
 *.onnx
 *.pt
+tools/
+tools/yolov5/
 
 # Python related
 __pycache__/

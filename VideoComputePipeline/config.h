@@ -8,7 +8,7 @@
 #define DEFAULT_OUTPUT_PATH "data/output/output.mp4"
 #define DEFAULT_BENCHMARK_PATH "benchmarks/results.csv"
 #define DEFAULT_DETECTIONS_PATH "benchmarks/detections.csv"
-#define DEFAULT_MODEL_PATH "models/yolov5s_fp16.engine"
+#define DEFAULT_MODEL_PATH "models/yolov5s_trt11.engine"
 #define DEFAULT_LABELS_PATH "models/coco.names"
 #define DEFAULT_ENCODER_NAME "libx264"
 
@@ -27,6 +27,8 @@
 #define DEFAULT_INFERENCE_PRECISION "fp16"
 #define DEFAULT_DETECTION_CLASS_COUNT 80
 #define DEFAULT_MAX_DETECTIONS_PER_FRAME 300
+#define DEFAULT_PROGRESS_INTERVAL 300
+#define DEFAULT_FFMPEG_LOG_LEVEL "warning"
 
 #define VCP_MAX_PATH_LENGTH 1024
 

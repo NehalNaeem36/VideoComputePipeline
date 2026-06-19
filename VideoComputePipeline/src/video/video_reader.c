@@ -5,6 +5,7 @@
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/log.h>
 #include <libavutil/rational.h>
 #include <libswscale/swscale.h>
 
@@ -18,6 +19,28 @@ static void log_ffmpeg_error(const char *message, int error_code) {
     char buffer[AV_ERROR_MAX_STRING_SIZE] = { 0 };
     av_strerror(error_code, buffer, sizeof(buffer));
     log_error /* module: utils/logger */ ("%s: %s", message, buffer);
+}
+
+int video_set_ffmpeg_log_level(const char *level) {
+    if (!level) {
+        return -1;
+    }
+
+    if (strcmp(level, "quiet") == 0) {
+        av_log_set_level(AV_LOG_QUIET);
+    } else if (strcmp(level, "error") == 0) {
+        av_log_set_level(AV_LOG_ERROR);
+    } else if (strcmp(level, "warning") == 0) {
+        av_log_set_level(AV_LOG_WARNING);
+    } else if (strcmp(level, "info") == 0) {
+        av_log_set_level(AV_LOG_INFO);
+    } else if (strcmp(level, "debug") == 0) {
+        av_log_set_level(AV_LOG_DEBUG);
+    } else {
+        return -1;
+    }
+
+    return 0;
 }
 /*typedef struct {
     void *format_ctx;

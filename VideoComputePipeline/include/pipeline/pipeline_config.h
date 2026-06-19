@@ -3,6 +3,8 @@
 
 #include "config.h"
 
+#include <stddef.h>
+
 typedef enum {
     PROCESS_CPU = 0,
     PROCESS_GPU = 1
@@ -55,10 +57,14 @@ typedef struct {
     int inference_input_size;
     int detection_class_count;
     int max_detections_per_frame;
+    int progress_interval;
+    char ffmpeg_log_level[16];
 } PipelineConfig;
 
 void pipeline_config_default(PipelineConfig *config);
 int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv);
+const char *pipeline_config_last_error(void);
+int pipeline_config_format_summary(const PipelineConfig *config, char *buffer, size_t buffer_size);
 void pipeline_config_print(const PipelineConfig *config);
 
 #endif

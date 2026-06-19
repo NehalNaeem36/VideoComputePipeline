@@ -37,6 +37,8 @@ static int pipeline_config_test_defaults(void) {
     TEST_ASSERT(config.confidence_threshold == DEFAULT_DETECTION_CONFIDENCE);
     TEST_ASSERT(config.iou_threshold == DEFAULT_DETECTION_IOU_THRESHOLD);
     TEST_ASSERT(config.inference_input_size == DEFAULT_INFERENCE_INPUT_SIZE);
+    TEST_ASSERT(config.progress_interval == DEFAULT_PROGRESS_INTERVAL);
+    TEST_ASSERT(strcmp(config.ffmpeg_log_level, DEFAULT_FFMPEG_LOG_LEVEL) == 0);
     return 0;
 }
 
@@ -66,6 +68,8 @@ static int pipeline_config_test_parse_args(void) {
         "--processor-workers", "6",
         "--memory-profile", "manual",
         "--memory-budget-mb", "512",
+        "--progress-interval", "42",
+        "--ffmpeg-log-level", "error",
         "--no-benchmark"
     };
     const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
@@ -98,6 +102,107 @@ static int pipeline_config_test_parse_args(void) {
     TEST_ASSERT(config.inference_input_size == 512);
     TEST_ASSERT(strcmp(config.inference_backend, "tensorrt") == 0);
     TEST_ASSERT(strcmp(config.inference_precision, "fp16") == 0);
+    TEST_ASSERT(config.progress_interval == 42);
+    TEST_ASSERT(strcmp(config.ffmpeg_log_level, "error") == 0);
+    return 0;
+}
+
+static int pipeline_config_test_parse_fp32_precision(void) {
+    char *argv[] = {
+        "VideoComputePipeline",
+        "--precision", "fp32"
+    };
+    const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+
+    PipelineConfig config;
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+
+    TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) == 0);
+    TEST_ASSERT(strcmp(config.inference_precision, "fp32") == 0);
+    return 0;
+}
+
+static int pipeline_config_test_no_progress(void) {
+    char *argv[] = {
+        "VideoComputePipeline",
+        "--no-progress"
+    };
+    const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+
+    PipelineConfig config;
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+
+    TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) == 0);
+    TEST_ASSERT(config.progress_interval == 0);
+    return 0;
+}
+
+static int pipeline_config_test_parse_error_message(void) {
+    char *argv[] = {
+        "VideoComputePipeline",
+        "--confidence", "2"
+    };
+    const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+
+    PipelineConfig config;
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+
+    TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) != 0);
+    TEST_ASSERT(strstr(pipeline_config_last_error /* module: pipeline/pipeline_config */ (), "--confidence must be between 0 and 1") != NULL);
+    return 0;
+}
+
+static int pipeline_config_test_missing_value_error_message(void) {
+    char *argv[] = {
+        "VideoComputePipeline",
+        "--input-size"
+    };
+    const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+
+    PipelineConfig config;
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+
+    TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) != 0);
+    TEST_ASSERT(strstr(pipeline_config_last_error /* module: pipeline/pipeline_config */ (), "missing value for --input-size") != NULL);
+    return 0;
+}
+
+static int pipeline_config_test_detect_summary(void) {
+    PipelineConfig config;
+    char summary[4096];
+
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+    config.task = PIPELINE_TASK_DETECT;
+
+    TEST_ASSERT(pipeline_config_format_summary /* module: pipeline/pipeline_config */ (&config, summary, sizeof(summary)) == 0);
+    TEST_ASSERT(strstr(summary, "task: detect") != NULL);
+    TEST_ASSERT(strstr(summary, "model_path:") != NULL);
+    TEST_ASSERT(strstr(summary, "labels_path:") != NULL);
+    TEST_ASSERT(strstr(summary, "detections_path:") != NULL);
+    TEST_ASSERT(strstr(summary, "confidence:") != NULL);
+    TEST_ASSERT(strstr(summary, "input_size:") != NULL);
+    TEST_ASSERT(strstr(summary, "filter:") == NULL);
+    TEST_ASSERT(strstr(summary, "encoder:") == NULL);
+    TEST_ASSERT(strstr(summary, "output_path:") == NULL);
+    TEST_ASSERT(strstr(summary, "lossless_output:") == NULL);
+    return 0;
+}
+
+static int pipeline_config_test_filter_summary(void) {
+    PipelineConfig config;
+    char summary[4096];
+
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+
+    TEST_ASSERT(pipeline_config_format_summary /* module: pipeline/pipeline_config */ (&config, summary, sizeof(summary)) == 0);
+    TEST_ASSERT(strstr(summary, "task: filter") != NULL);
+    TEST_ASSERT(strstr(summary, "output_path:") != NULL);
+    TEST_ASSERT(strstr(summary, "encoder:") != NULL);
+    TEST_ASSERT(strstr(summary, "mode:") != NULL);
+    TEST_ASSERT(strstr(summary, "filter:") != NULL);
+    TEST_ASSERT(strstr(summary, "model_path:") == NULL);
+    TEST_ASSERT(strstr(summary, "confidence:") == NULL);
+    TEST_ASSERT(strstr(summary, "detections_path:") == NULL);
     return 0;
 }
 
@@ -107,6 +212,24 @@ int main(void) {
         return 1;
     }
     if (pipeline_config_test_parse_args() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_parse_fp32_precision() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_no_progress() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_parse_error_message() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_missing_value_error_message() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_detect_summary() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_filter_summary() != 0) {
         return 1;
     }
     return 0;

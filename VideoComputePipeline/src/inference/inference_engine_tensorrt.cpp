@@ -94,7 +94,7 @@ struct CudaSlot {
     cudaEvent_t inference_done = nullptr;
     cudaEvent_t output_done = nullptr;
     uint8_t *d_nv12 = nullptr;
-    __half *d_input = nullptr;
+    void *d_input = nullptr;
     void *d_output = nullptr;
     std::vector<uint8_t> h_output_raw;
     std::vector<float> h_output_float;
@@ -186,19 +186,37 @@ public:
         }
         cudaEventRecord(slot.upload_done, slot.stream);
 
-        if (vcp_cuda_preprocess_nv12_to_nchw_fp16(d_y,
-                                                  d_uv,
-                                                  frame->width,
-                                                  frame->height,
-                                                  (size_t)frame->width,
-                                                  (size_t)frame->width,
-                                                  config_.input_width,
-                                                  config_.input_height,
-                                                  scale,
-                                                  pad_x,
-                                                  pad_y,
-                                                  slot.d_input,
-                                                  slot.stream) != cudaSuccess) {
+        cudaError_t preprocess_result = cudaSuccess;
+        if (input_type_ == nvinfer1::DataType::kHALF) {
+            preprocess_result = vcp_cuda_preprocess_nv12_to_nchw_fp16(d_y,
+                                                                      d_uv,
+                                                                      frame->width,
+                                                                      frame->height,
+                                                                      (size_t)frame->width,
+                                                                      (size_t)frame->width,
+                                                                      config_.input_width,
+                                                                      config_.input_height,
+                                                                      scale,
+                                                                      pad_x,
+                                                                      pad_y,
+                                                                      reinterpret_cast<__half *>(slot.d_input),
+                                                                      slot.stream);
+        } else {
+            preprocess_result = vcp_cuda_preprocess_nv12_to_nchw_fp32(d_y,
+                                                                      d_uv,
+                                                                      frame->width,
+                                                                      frame->height,
+                                                                      (size_t)frame->width,
+                                                                      (size_t)frame->width,
+                                                                      config_.input_width,
+                                                                      config_.input_height,
+                                                                      scale,
+                                                                      pad_x,
+                                                                      pad_y,
+                                                                      reinterpret_cast<float *>(slot.d_input),
+                                                                      slot.stream);
+        }
+        if (preprocess_result != cudaSuccess) {
             g_last_error = "failed to launch CUDA NV12 preprocess kernel";
             return -1;
         }
@@ -279,8 +297,9 @@ private:
             return -1;
         }
 
-        if (engine_->getTensorDataType(input_name_.c_str()) != nvinfer1::DataType::kHALF) {
-            g_last_error = "TensorRT input must be FP16 for this backend";
+        input_type_ = engine_->getTensorDataType(input_name_.c_str());
+        if (input_type_ != nvinfer1::DataType::kHALF && input_type_ != nvinfer1::DataType::kFLOAT) {
+            g_last_error = "TensorRT input must be FP16 or FP32 for this backend";
             return -1;
         }
 
@@ -320,7 +339,8 @@ private:
 
     int allocate_static_buffers() {
         slots_.resize(3);
-        const size_t input_bytes = (size_t)3 * (size_t)config_.input_width * (size_t)config_.input_height * sizeof(__half);
+        const size_t input_element_size = input_type_ == nvinfer1::DataType::kHALF ? sizeof(__half) : sizeof(float);
+        const size_t input_bytes = (size_t)3 * (size_t)config_.input_width * (size_t)config_.input_height * input_element_size;
         for (CudaSlot &slot : slots_) {
             if (cudaStreamCreate(&slot.stream) != cudaSuccess ||
                 cudaEventCreate(&slot.start) != cudaSuccess ||
@@ -328,7 +348,7 @@ private:
                 cudaEventCreate(&slot.preprocess_done) != cudaSuccess ||
                 cudaEventCreate(&slot.inference_done) != cudaSuccess ||
                 cudaEventCreate(&slot.output_done) != cudaSuccess ||
-                cudaMalloc((void **)&slot.d_input, input_bytes) != cudaSuccess ||
+                cudaMalloc(&slot.d_input, input_bytes) != cudaSuccess ||
                 cudaMalloc(&slot.d_output, output_bytes_) != cudaSuccess) {
                 g_last_error = "failed to allocate CUDA/TensorRT static buffers";
                 return -1;
@@ -401,6 +421,7 @@ private:
     std::string input_name_;
     std::string output_name_;
     nvinfer1::Dims output_dims_{};
+    nvinfer1::DataType input_type_{nvinfer1::DataType::kHALF};
     nvinfer1::DataType output_type_{nvinfer1::DataType::kFLOAT};
     size_t output_elements_ = 0;
     size_t output_element_size_ = 0;

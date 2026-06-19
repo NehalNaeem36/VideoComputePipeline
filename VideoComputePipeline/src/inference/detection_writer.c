@@ -110,7 +110,12 @@ int detection_writer_open(DetectionWriter *writer, const char *path, const char 
         return -1;
     }
 
-    return fprintf(file, "frame_index,timestamp_ms,class_id,class_name,confidence,x1,y1,x2,y2\n") < 0 ? -1 : 0;
+    if (fprintf(file, "frame_index,timestamp_ms,class_id,class_name,confidence,x1,y1,x2,y2\n") < 0) {
+        detection_writer_close /* module: inference/detection_writer */ (writer);
+        return -1;
+    }
+
+    return 0;
 }
 
 int detection_writer_write_frame(DetectionWriter *writer, const DetectionResult *result) {
