@@ -189,6 +189,7 @@ static int packet_queue_push(PacketQueue *queue, PipelinePacket *packet) {
 
 #ifdef _WIN32
     EnterCriticalSection(&queue->lock);
+    /* lets you enter only if queue is  */
     while (!queue->closed && queue->count == queue->capacity) {
         SleepConditionVariableCS(&queue->not_full, &queue->lock, INFINITE);
     }

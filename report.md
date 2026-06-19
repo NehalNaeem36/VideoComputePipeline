@@ -203,3 +203,49 @@ NVDEC decode -> GPU processing -> NVENC encode
 ```
 
 That would reduce CPU/GPU round trips, but requires a larger FFmpeg hardware-frames integration.
+
+## CUDA/TensorRT Detection Workflow
+
+The detection milestone is separate from the filter-and-encode pipeline:
+
+```text
+MP4 input
+  -> FFmpeg decoder
+  -> NV12 Frame
+  -> CUDA upload
+  -> fused NV12 to NCHW preprocess
+  -> TensorRT YOLO inference
+  -> CPU YOLO decode + NMS
+  -> detections CSV
+  -> benchmark CSV
+```
+
+Detection mode does not initialize the video writer, processed frame pool, processed queue, encoder thread, or ordered pending frame list. It is currently sequential for correctness and simpler memory ownership.
+
+TensorRT 11 engine generation uses:
+
+```cmd
+python tools\build_yolov5s_tensorrt.py
+```
+
+The script writes:
+
+```text
+models\yolov5s_trt11.engine
+```
+
+TensorRT 11 no longer accepts the old `trtexec --fp16` flag in this setup. The runtime accepts FP32 or FP16 engine input tensors and selects the matching CUDA preprocess output type.
+
+Detection benchmark fields:
+
+```text
+decode_ms       FFmpeg decode and NV12 conversion
+upload_ms       CPU NV12 to CUDA buffer transfer
+preprocess_ms   fused CUDA resize/colorspace/normalize/NCHW
+inference_ms    TensorRT enqueueV3
+download_ms     TensorRT output copy to host
+postprocess_ms  YOLO decode, confidence filtering, NMS
+total_ms        decode + upload + preprocess + inference + download + postprocess
+```
+
+Wall-clock FPS is measured separately from summed per-frame latency.

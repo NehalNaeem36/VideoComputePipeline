@@ -2,7 +2,7 @@
 
 VideoComputePipeline is a modular C11 CPU/GPU video-processing benchmark.
 
-It uses FFmpeg libraries for MP4 decode/encode and OpenCL for GPU filters. It does not call the FFmpeg CLI from the application.
+It uses FFmpeg libraries for MP4 decode/encode, OpenCL for GPU filters, and optional CUDA/TensorRT for YOLO detection. It does not call the FFmpeg CLI from the application.
 
 Project directory:
 
@@ -22,6 +22,7 @@ VideoComputePipeline/
 - Long-run memory profile with bounded reusable frame pools
 - Streaming benchmark CSV output
 - Matrix report CLI for CPU/GPU CSV comparison
+- Detection-only CUDA/TensorRT YOLO path: MP4 -> NV12 -> detections CSV
 - Tests for modules
 
 ## Build
@@ -45,6 +46,23 @@ If configuring from scratch in MSYS2 UCRT64:
 cd /e/wAI/first_task/VideoComputePipeline
 cmake -S . -B build-win -G "MinGW Makefiles"
 cmake --build build-win -j 4
+```
+
+CUDA/TensorRT detection builds require MSVC, CUDA Toolkit, TensorRT, and MSVC-compatible FFmpeg development files:
+
+```cmd
+cd /d E:\wAI\first_task\VideoComputePipeline
+rmdir /s /q build-msvc
+
+cmake -S . -B build-msvc -G "Ninja" ^
+  -DCMAKE_BUILD_TYPE=Release ^
+  -DENABLE_CUDA_INFERENCE=ON ^
+  -DCMAKE_CUDA_ARCHITECTURES=86 ^
+  -DOPENCL_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3" ^
+  -DTENSORRT_ROOT="D:\TensorRT\TensorRT-Enterprise-11.1.0.106-Windows-amd64-cuda-13.3-Release-external\TensorRT-11.1.0.106" ^
+  -DFFMPEG_ROOT="C:\vcpkg\installed\x64-windows"
+
+cmake --build build-msvc -j 8
 ```
 
 ## Run Examples
@@ -97,12 +115,44 @@ Matrix report:
   --matrix-report benchmarks\cpu_run.csv benchmarks\gpu_run.csv
 ```
 
+Build a TensorRT 11 YOLOv5s engine:
+
+```cmd
+cd /d E:\wAI\first_task\VideoComputePipeline
+python tools\build_yolov5s_tensorrt.py
+```
+
+Detection smoke test:
+
+```powershell
+.\build-msvc\bin\VideoComputePipeline.exe `
+  --task detect `
+  --input data\input\sample.mp4 `
+  --model models\yolov5s_trt11.engine `
+  --labels models\coco.names `
+  --detections benchmarks\detections.csv `
+  --benchmark benchmarks\detection_benchmark.csv `
+  --confidence 0.25 `
+  --iou-threshold 0.45 `
+  --input-size 640 `
+  --max-frames 300
+```
+
 ## CLI
 
 ```text
 --input path
 --output path
 --benchmark path
+--task filter|detect
+--model path
+--labels path
+--detections path
+--confidence value
+--iou-threshold value
+--input-size N
+--inference-backend tensorrt
+--precision fp16|fp32
 --encoder libx264|libx264rgb|h264_nvenc|mpeg4
 --mode cpu|gpu
 --filter grayscale|blur3x3|blur5x5|blur9x9|blur13x13
@@ -180,3 +230,5 @@ VideoComputePipeline/benchmarks
 ```
 
 FFmpeg code is isolated in video modules. OpenCL code is isolated in GPU modules. Frame memory is isolated in core/pipeline frame modules. Timing and benchmark output are isolated in benchmark modules.
+
+Detection mode skips video encoding and does not create an output MP4. It decodes NV12 frames, runs TensorRT inference, writes `detections.csv`, and records detection timing fields in the benchmark CSV.
