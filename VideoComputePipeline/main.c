@@ -17,6 +17,7 @@ static void print_common_options(void) {
     printf("  --progress-interval N        Log progress every N completed frames, 0 disables\n");
     printf("  --no-progress                Disable progress logging\n");
     printf("  --ffmpeg-log-level level     quiet, error, warning, info, or debug\n");
+    printf("  --output-format auto|mp4|mkv Force output container extension\n");
     printf("  --no-benchmark               Disable benchmark output\n");
     printf("  --version                    Show version information\n");
 }
@@ -42,7 +43,7 @@ static void print_filter_usage(const char *program_name) {
     printf("Usage: %s --task filter [options]\n\n", program_name);
     print_common_options /* module: app/main */ ();
     printf("\nFilter options:\n");
-    printf("  --output path                Output MP4 path\n");
+    printf("  --output path                Output video path\n");
     printf("  --mode cpu|gpu               Processing mode\n");
     printf("  --filter name                grayscale, blur3x3, blur5x5, blur9x9, blur13x13\n");
     printf("  --encoder name               libx264, libx264rgb, h264_nvenc, or mpeg4\n");
@@ -59,9 +60,18 @@ static void print_detect_usage(const char *program_name) {
     printf("Usage: %s --task detect [options]\n\n", program_name);
     print_common_options /* module: app/main */ ();
     printf("\nDetection options:\n");
+    printf("  --decoder cpu|nvdec          CPU fallback decode or GPU-resident NVDEC path\n");
+    printf("  --decoder-fallback cpu|none  Fallback when NVDEC is unavailable\n");
+    printf("  --no-decoder-fallback        Fail instead of falling back to CPU decode\n");
     printf("  --model path                 TensorRT engine path\n");
     printf("  --labels path                Class label file\n");
     printf("  --detections path            Detection CSV output path\n");
+    printf("  --draw-boxes                 Draw detection boxes and write annotated video\n");
+    printf("  --no-draw-boxes              Disable annotated video output\n");
+    printf("  --output path                Annotated video output path when --draw-boxes is set\n");
+    printf("  --encoder name               h264_nvenc for GPU-resident annotated output\n");
+    printf("  --box-thickness N            Bounding box border thickness\n");
+    printf("  --box-confidence value       Minimum confidence for drawing boxes\n");
     printf("  --confidence value           Detection confidence threshold, 0.0 to 1.0\n");
     printf("  --iou-threshold value        Detection NMS IoU threshold, 0.0 to 1.0\n");
     printf("  --input-size N               Detector input size, default 640\n");

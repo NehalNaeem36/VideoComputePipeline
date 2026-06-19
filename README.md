@@ -23,6 +23,7 @@ VideoComputePipeline/
 - Streaming benchmark CSV output
 - Matrix report CLI for CPU/GPU CSV comparison
 - Detection-only CUDA/TensorRT YOLO path: MP4 -> NV12 -> detections CSV
+- Experimental GPU-resident detection path: NVDEC -> TensorRT -> CUDA box overlay -> NVENC
 - Tests for modules
 
 ## Build
@@ -57,6 +58,21 @@ rmdir /s /q build-msvc
 cmake -S . -B build-msvc -G "Ninja" ^
   -DCMAKE_BUILD_TYPE=Release ^
   -DENABLE_CUDA_INFERENCE=ON ^
+  -DCMAKE_CUDA_ARCHITECTURES=86 ^
+  -DOPENCL_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3" ^
+  -DTENSORRT_ROOT="D:\TensorRT\TensorRT-Enterprise-11.1.0.106-Windows-amd64-cuda-13.3-Release-external\TensorRT-11.1.0.106" ^
+  -DFFMPEG_ROOT="C:\vcpkg\installed\x64-windows"
+
+cmake --build build-msvc -j 8
+```
+
+Experimental NVDEC/NVENC annotated detection additionally enables hardware video:
+
+```cmd
+cmake -S . -B build-msvc -G "Ninja" ^
+  -DCMAKE_BUILD_TYPE=Release ^
+  -DENABLE_CUDA_INFERENCE=ON ^
+  -DENABLE_HW_VIDEO=ON ^
   -DCMAKE_CUDA_ARCHITECTURES=86 ^
   -DOPENCL_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3" ^
   -DTENSORRT_ROOT="D:\TensorRT\TensorRT-Enterprise-11.1.0.106-Windows-amd64-cuda-13.3-Release-external\TensorRT-11.1.0.106" ^
@@ -138,6 +154,26 @@ Detection smoke test:
   --max-frames 300
 ```
 
+Experimental annotated detection without full-frame CPU transfers:
+
+```powershell
+.\build-msvc\bin\VideoComputePipeline.exe `
+  --task detect `
+  --decoder nvdec `
+  --draw-boxes `
+  --input data\input\sample.mp4 `
+  --output data\output\annotated.mkv `
+  --encoder h264_nvenc `
+  --model models\yolov5s_trt11.engine `
+  --labels models\coco.names `
+  --detections benchmarks\detections_hw.csv `
+  --benchmark benchmarks\detection_hw.csv `
+  --confidence 0.25 `
+  --iou-threshold 0.45 `
+  --input-size 640 `
+  --max-frames 300
+```
+
 ## CLI
 
 ```text
@@ -145,9 +181,14 @@ Detection smoke test:
 --output path
 --benchmark path
 --task filter|detect
+--decoder cpu|nvdec
+--decoder-fallback cpu|none
 --model path
 --labels path
 --detections path
+--draw-boxes
+--box-thickness N
+--box-confidence value
 --confidence value
 --iou-threshold value
 --input-size N
@@ -167,6 +208,7 @@ Detection smoke test:
 --memory-budget-mb N
 --matrix-report cpu.csv gpu.csv
 --no-benchmark
+--no-decoder-fallback
 --help
 --version
 ```

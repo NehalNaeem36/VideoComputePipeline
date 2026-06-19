@@ -39,6 +39,12 @@ static int pipeline_config_test_defaults(void) {
     TEST_ASSERT(config.inference_input_size == DEFAULT_INFERENCE_INPUT_SIZE);
     TEST_ASSERT(config.progress_interval == DEFAULT_PROGRESS_INTERVAL);
     TEST_ASSERT(strcmp(config.ffmpeg_log_level, DEFAULT_FFMPEG_LOG_LEVEL) == 0);
+    TEST_ASSERT(config.decoder_mode == VIDEO_DECODER_CPU);
+    TEST_ASSERT(config.decoder_fallback == DECODER_FALLBACK_CPU);
+    TEST_ASSERT(config.output_format == OUTPUT_FORMAT_AUTO);
+    TEST_ASSERT(config.draw_boxes == DEFAULT_DRAW_BOXES);
+    TEST_ASSERT(config.box_thickness == DEFAULT_BOX_THICKNESS);
+    TEST_ASSERT(config.box_confidence == DEFAULT_BOX_CONFIDENCE);
     return 0;
 }
 
@@ -58,6 +64,7 @@ static int pipeline_config_test_parse_args(void) {
         "--inference-backend", "tensorrt",
         "--precision", "fp16",
         "--encoder", "h264_nvenc",
+        "--output-format", "mkv",
         "--lossless",
         "--mode", "gpu",
         "--filter", "blur13x13",
@@ -70,6 +77,11 @@ static int pipeline_config_test_parse_args(void) {
         "--memory-budget-mb", "512",
         "--progress-interval", "42",
         "--ffmpeg-log-level", "error",
+        "--decoder", "nvdec",
+        "--decoder-fallback", "none",
+        "--draw-boxes",
+        "--box-thickness", "4",
+        "--box-confidence", "0.40",
         "--no-benchmark"
     };
     const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
@@ -79,12 +91,13 @@ static int pipeline_config_test_parse_args(void) {
 
     TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) == 0);
     TEST_ASSERT(strcmp(config.input_path, "input.mp4") == 0);
-    TEST_ASSERT(strcmp(config.output_path, "output.mp4") == 0);
+    TEST_ASSERT(strcmp(config.output_path, "output.mkv") == 0);
     TEST_ASSERT(strcmp(config.benchmark_path, "bench.csv") == 0);
     TEST_ASSERT(strcmp(config.detections_path, "benchmarks/detections.csv") == 0);
     TEST_ASSERT(strcmp(config.model_path, "models/custom.engine") == 0);
     TEST_ASSERT(strcmp(config.labels_path, "models/custom.names") == 0);
     TEST_ASSERT(strcmp(config.encoder_name, "h264_nvenc") == 0);
+    TEST_ASSERT(config.output_format == OUTPUT_FORMAT_MKV);
     TEST_ASSERT(config.task == PIPELINE_TASK_DETECT);
     TEST_ASSERT(config.mode == PROCESS_GPU);
     TEST_ASSERT(config.filter == FILTER_BLUR_13X13);
@@ -104,6 +117,11 @@ static int pipeline_config_test_parse_args(void) {
     TEST_ASSERT(strcmp(config.inference_precision, "fp16") == 0);
     TEST_ASSERT(config.progress_interval == 42);
     TEST_ASSERT(strcmp(config.ffmpeg_log_level, "error") == 0);
+    TEST_ASSERT(config.decoder_mode == VIDEO_DECODER_NVDEC);
+    TEST_ASSERT(config.decoder_fallback == DECODER_FALLBACK_NONE);
+    TEST_ASSERT(config.draw_boxes == 1);
+    TEST_ASSERT(config.box_thickness == 4);
+    TEST_ASSERT(config.box_confidence > 0.39f && config.box_confidence < 0.41f);
     return 0;
 }
 
@@ -176,6 +194,7 @@ static int pipeline_config_test_detect_summary(void) {
 
     TEST_ASSERT(pipeline_config_format_summary /* module: pipeline/pipeline_config */ (&config, summary, sizeof(summary)) == 0);
     TEST_ASSERT(strstr(summary, "task: detect") != NULL);
+    TEST_ASSERT(strstr(summary, "decoder: cpu") != NULL);
     TEST_ASSERT(strstr(summary, "model_path:") != NULL);
     TEST_ASSERT(strstr(summary, "labels_path:") != NULL);
     TEST_ASSERT(strstr(summary, "detections_path:") != NULL);
@@ -185,6 +204,23 @@ static int pipeline_config_test_detect_summary(void) {
     TEST_ASSERT(strstr(summary, "encoder:") == NULL);
     TEST_ASSERT(strstr(summary, "output_path:") == NULL);
     TEST_ASSERT(strstr(summary, "lossless_output:") == NULL);
+    return 0;
+}
+
+static int pipeline_config_test_detect_summary_with_boxes(void) {
+    PipelineConfig config;
+    char summary[4096];
+
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+    config.task = PIPELINE_TASK_DETECT;
+    config.decoder_mode = VIDEO_DECODER_NVDEC;
+    config.draw_boxes = 1;
+
+    TEST_ASSERT(pipeline_config_format_summary /* module: pipeline/pipeline_config */ (&config, summary, sizeof(summary)) == 0);
+    TEST_ASSERT(strstr(summary, "decoder: nvdec") != NULL);
+    TEST_ASSERT(strstr(summary, "draw_boxes: true") != NULL);
+    TEST_ASSERT(strstr(summary, "output_path:") != NULL);
+    TEST_ASSERT(strstr(summary, "box_thickness:") != NULL);
     return 0;
 }
 
@@ -227,6 +263,9 @@ int main(void) {
         return 1;
     }
     if (pipeline_config_test_detect_summary() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_detect_summary_with_boxes() != 0) {
         return 1;
     }
     if (pipeline_config_test_filter_summary() != 0) {

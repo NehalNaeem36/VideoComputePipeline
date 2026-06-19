@@ -15,6 +15,8 @@ typedef struct {
     double preprocess_ms;
     double inference_ms;
     double postprocess_ms;
+    double overlay_ms;
+    double mux_write_ms;
 } FrameTiming;
 
 typedef struct {
@@ -28,6 +30,10 @@ typedef struct {
     double preprocess_ms;
     double inference_ms;
     double postprocess_ms;
+    double download_ms;
+    double encode_ms;
+    double overlay_ms;
+    double mux_write_ms;
     double wall_clock_ms;
     void *csv_file;
 } Benchmark;

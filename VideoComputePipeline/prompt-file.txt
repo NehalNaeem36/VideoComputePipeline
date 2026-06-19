@@ -1,202 +1,441 @@
-You are working inside the Git repository `VideoComputePipeline`, specifically the branch:
+You are working inside the Git repository `VideoComputePipeline`, branch:
 
 `feature/cuda-yolo-nv12-inference`
 
-The project is a modular C/C++/CUDA video-processing pipeline. It already has a mature FFmpeg + CPU/OpenCL filter pipeline and a partially implemented CUDA/TensorRT YOLO detection backend.
+The project currently has:
 
-Your task is **not to immediately edit the code**. First, inspect the codebase deeply and create a clear implementation plan for integrating the object-detection path into the existing internal pipeline APIs.
+1. A mature FFmpeg CPU decode/process/encode filter pipeline.
+2. A working detection mode using CUDA/TensorRT YOLO inference.
+3. A detection CSV writer.
+4. Benchmarking for decode, upload, preprocess, inference, download, postprocess, encode, and wall-clock FPS.
+5. A TensorRT YOLO engine path built from YOLOv5s ONNX.
+6. Detection output already confirmed through CSV.
+7. The next goal is to add high-throughput annotated video output.
 
-Important current state:
+Do not edit code yet.
 
-1. The filter pipeline already works:
+Your task is to deeply inspect the current codebase and create a detailed technical implementation plan for the following final high-throughput architecture:
 
-   * FFmpeg video reader decodes video frames.
-   * Pipeline uses bounded reusable frame pools.
-   * Pipeline uses raw and processed queues.
-   * Processor workers run CPU/OpenCL filters.
-   * Encoder writes frames in global frame order.
-   * Benchmark CSV output is streamed.
-   * Wall-clock FPS and per-frame timings are reported.
+MP4 input
+→ FFmpeg demux compressed packets
+→ NVDEC hardware decode into CUDA/NV12 GPU-resident frames
+→ CUDA preprocessing from NV12 to TensorRT NCHW tensor
+→ TensorRT YOLO inference
+→ YOLO postprocess / NMS
+→ CUDA overlay kernel draws bounding boxes directly on the GPU NV12 frame
+→ NVENC encodes the annotated GPU frame
+→ FFmpeg muxer writes encoded packets to MP4/MKV
+→ detections.csv and benchmark.csv are written alongside the output video
 
-2. Object-detection modules already exist:
+Main goal:
 
-   * `include/inference/inference_engine.h`
-   * `src/inference/inference_engine_tensorrt.cpp`
-   * `src/inference/inference_engine_stub.c`
-   * `src/inference/cuda_preprocess.cu`
-   * `src/inference/yolo_postprocess.cpp`
-   * `include/inference/detection_result.h`
-   * `src/inference/detection_result.c`
-   * `include/inference/detection_writer.h`
-   * `src/inference/detection_writer.c`
+Avoid full-frame CPU↔GPU transfers.
 
-3. CLI/config support already exists or partially exists:
+The final performance target is above 45 FPS wall-clock throughput on high-resolution video, preferably 4K/60 input, using an NVIDIA RTX 3050 Laptop GPU.
 
-   * `--task filter|detect`
-   * `--model`
-   * `--labels`
-   * `--detections`
-   * `--confidence`
-   * `--iou-threshold`
-   * `--input-size`
-   * `--inference-backend tensorrt`
-   * `--precision fp16`
+Important design principle:
 
-4. The `Frame` structure now supports:
+Raw decoded video frames should stay on the GPU from decode through inference, overlay, and encode. CPU should handle control flow, metadata, CSV writing, demuxing/muxing, and small detection result data, but not full-frame RGB/NV12 copies unless a fallback path is explicitly requested.
 
-   * `FRAME_FORMAT_RGB24`
-   * `FRAME_FORMAT_GRAY8`
-   * `FRAME_FORMAT_NV12`
-   * `planes[]`
-   * `linesize[]`
+Current project facts to inspect:
 
-5. The video reader appears to support reading frames as different internal formats through something like:
+* `pipeline_runner.c` now has detection mode wired.
+* Detection currently reads frames as NV12 and runs `inference_engine_run_nv12`.
+* `inference_engine_tensorrt.cpp` uploads NV12 to CUDA internally.
+* `cuda_preprocess.cu` performs NV12 → NCHW preprocessing.
+* `yolo_postprocess.cpp` performs YOLO postprocessing and NMS.
+* `detection_writer.c` writes detection CSV.
+* `video_writer.c` currently writes encoded video, likely through CPU frames and FFmpeg.
+* Existing `Frame` supports RGB24, GRAY8, and NV12.
+* Existing CPU/OpenCL filter pipeline should not be broken.
+* Detection mode should continue to support the current CPU-decoded NV12 fallback path.
 
-   * `video_reader_read_frame_as(..., FRAME_FORMAT_NV12)`
+Create a structured Markdown plan with the following sections:
 
-6. The main missing issue:
+1. Current Architecture Audit
 
-   * `pipeline_runner.c` still appears wired mainly for the filter path.
-   * It likely does not yet branch properly on `PIPELINE_TASK_DETECT`.
-   * It likely does not call:
+Inspect and summarize:
 
-     * `inference_engine_create`
-     * `inference_engine_run_nv12`
-     * `detection_writer_open`
-     * `detection_writer_write_frame`
-     * `detection_writer_close`
-   * Detection benchmark fields exist but may not be fully populated from the pipeline.
+* Current filter pipeline.
+* Current detection pipeline.
+* Current video reader behavior.
+* Current video writer behavior.
+* Current inference engine behavior.
+* Current benchmark behavior.
+* Current frame representation.
+* Where CPU↔GPU full-frame copies currently happen.
 
-7. TensorRT engine-generation update:
+List exact files to inspect, including but not limited to:
 
-   * TensorRT 11.x `trtexec` no longer accepts `--fp16`.
-   * The old script/command using `--fp16` fails with:
-     `Unknown option: --fp16`
-   * The engine build command should be updated to remove `--fp16`, unless the ONNX model itself is explicitly converted/cast to FP16 before TensorRT build.
-   * The generated engine should probably be named something like:
-     `yolov5s_trt11.engine`
-     instead of:
-     `yolov5s_fp16.engine`
-   * Because TensorRT 11 is strongly typed, verify whether the current C++ inference backend assumes FP16 input/output tensors. If it does, the plan must include how to resolve that mismatch:
-     Option A: update C++ inference code to support FP32 input/output.
-     Option B: add a proper FP16 ONNX conversion/export path and document it clearly.
+* `src/pipeline/pipeline_runner.c`
+* `include/pipeline/pipeline_config.h`
+* `src/pipeline/pipeline_config.c`
+* `include/core/frame.h`
+* `src/core/frame.c`
+* `include/video/video_reader.h`
+* `src/video/video_reader.c`
+* `include/video/video_writer.h`
+* `src/video/video_writer.c`
+* `include/inference/inference_engine.h`
+* `src/inference/inference_engine_tensorrt.cpp`
+* `src/inference/cuda_preprocess.cu`
+* `src/inference/yolo_postprocess.cpp`
+* `include/inference/detection_result.h`
+* `src/inference/detection_result.c`
+* `include/inference/detection_writer.h`
+* `src/inference/detection_writer.c`
+* `include/benchmark/benchmark.h`
+* `src/benchmark/benchmark.c`
+* `CMakeLists.txt`
 
-Your task:
+2. New GPU-Resident Frame Abstraction
 
-Create a detailed integration plan, not code changes yet.
+Design a new representation for CUDA-resident NV12 frames.
 
-The plan must include:
+Propose a struct such as:
 
-1. Files to inspect
+`CudaNV12Frame`
 
-   * List every file that should be inspected before implementation.
-   * Include pipeline, config, benchmark, frame, video reader, inference, CMake, and tools scripts.
+It should include:
 
-2. Current architecture summary
+* device Y pointer
+* device UV pointer
+* pitch/linesize for Y
+* pitch/linesize for UV
+* width
+* height
+* frame index
+* PTS/timestamp
+* CUDA stream
+* ownership/lifetime rules
+* optional reference to FFmpeg `AVFrame` if using FFmpeg hardware frames
 
-   * Explain how the existing filter pipeline works.
-   * Explain how the current inference backend works.
-   * Explain where the two are disconnected.
+Decide whether this should live in:
 
-3. Detection integration design
+* `include/core`
+* `include/video`
+* `include/gpu`
+* or a new `include/video_hw`
 
-   * Propose the cleanest way to wire `--task detect`.
-   * Decide whether detection should be a separate runner function such as:
-     `run_detection_pipeline(const PipelineConfig *config)`
-   * Explain whether detection should initially be sequential or threaded.
-   * Prefer a simple sequential detection runner first unless the existing queue/pool system can be reused safely.
+Explain the tradeoff.
 
-4. API wiring plan
+3. NVDEC Reader Design
 
-   * Show the intended call flow:
+Plan a new hardware video reader backend.
 
-     * parse CLI config
-     * detect task branch
-     * open video reader
-     * read frames as NV12
-     * create inference engine
-     * open detection writer
-     * run inference per frame
-     * write detections
-     * add benchmark timing
-     * print detection summary
-     * cleanup resources safely
-   * Identify exact internal functions that should be called.
+Possible names:
 
-5. Benchmark integration plan
+* `video_hw_reader.h/.c`
+* `video_nvdec_reader.h/.c`
+* or integrated optional mode inside `video_reader`
 
-   * Explain how to fill:
+The reader should:
 
-     * `decode_ms`
-     * `upload_ms`
-     * `preprocess_ms`
-     * `inference_ms`
-     * `download_ms`
-     * `postprocess_ms`
-     * `total_ms`
-   * Explain how to use the existing benchmark CSV system.
-   * Explain how wall-clock FPS should be measured separately from summed per-frame latency.
+* use FFmpeg demuxing
+* select a CUDA/NVDEC hardware decoder
+* create an FFmpeg hardware device context using CUDA
+* decode compressed packets into hardware frames
+* expose CUDA/NV12 GPU-resident frames to the pipeline
+* preserve frame index and timestamps
+* avoid `av_hwframe_transfer_data` unless fallback/debug mode is requested
 
-6. TensorRT 11 engine compatibility plan
+Explain:
 
-   * Inspect the current TensorRT backend and determine whether it expects FP16 tensors.
-   * Inspect the current model-build script under `tools/`.
-   * Plan how to update the script for TensorRT 11:
+* how FFmpeg hardware frames work at a high level
+* how `AV_PIX_FMT_CUDA` frames differ from CPU `AVFrame`
+* how to map or access the decoded CUDA frame for CUDA kernels
+* what FFmpeg APIs must be investigated
+* how to handle H.264/H.265 input
+* how to fall back to CPU decode if NVDEC is unavailable
 
-     * remove `--fp16` from `trtexec`
-     * rename engine output
-     * optionally add a flag for FP32 vs FP16 engine generation
-   * Explain what code changes are needed if the engine input tensor is FP32 instead of FP16.
+4. TensorRT Inference Integration
 
-7. Error handling plan
+The current inference backend uploads CPU NV12 frames internally.
 
-   * Missing model path
-   * Missing labels path
-   * Missing detections output path
-   * TensorRT not enabled at build time
-   * TensorRT engine deserialization failure
-   * Unsupported input tensor shape
-   * Unsupported input tensor data type
-   * Video reader failing to produce NV12
-   * Detection writer failure
+Plan how to add a GPU-resident inference path:
 
-8. Minimal implementation sequence
+Current likely API:
+`inference_engine_run_nv12(...)`
 
-   * Break the work into small commits.
-   * Example:
+New possible API:
+`inference_engine_run_cuda_nv12(...)`
 
-     1. Inspect and document current API assumptions.
-     2. Fix TensorRT engine generation script for TensorRT 11.
-     3. Add `run_detection_pipeline`.
-     4. Wire `PIPELINE_TASK_DETECT` in `pipeline_run`.
-     5. Populate benchmark detection timings.
-     6. Add detection smoke-test command.
-     7. Update README.
+or:
+`inference_engine_run_device_nv12(...)`
 
-9. Validation plan
+It should accept a `CudaNV12Frame` and avoid uploading the frame again.
 
-   * Give exact commands to build with CUDA/TensorRT enabled.
-   * Give exact command to build the YOLOv5s TensorRT 11 engine.
-   * Give exact command to run detection on a small video.
-   * Give expected outputs:
+Explain how `cuda_preprocess.cu` should be reused or modified so it can read directly from the NVDEC CUDA frame.
 
-     * detections CSV exists
-     * benchmark CSV exists
-     * detection summary prints
-     * no encoded output video is required for first milestone
+Explain how timing fields should change:
 
-10. Deliverable format
+* upload_ms should be zero or not applicable for NVDEC path
+* preprocess_ms should measure CUDA preprocessing
+* inference_ms should measure TensorRT enqueue time
+* postprocess_ms should measure CPU/GPU postprocess depending on implementation
+* total_ms should include the full per-frame detection + overlay + encode path
 
-* Return the answer as a structured Markdown plan.
-* Do not edit files yet.
-* Do not produce code patches yet.
-* Be explicit about uncertainty. If a function name or API signature differs, mention the exact file and symbol that must be checked.
-* Prefer minimal, safe integration over large rewrites.
+5. CUDA Bounding Box Overlay Design
 
-Important goal:
+Plan a new CUDA overlay module.
 
-The first milestone should be:
+Possible files:
 
-`MP4 input → FFmpeg decode as NV12 → CUDA/TensorRT YOLO inference → YOLO postprocess/NMS → detections.csv → benchmark.csv → detection summary`
+* `include/inference/detection_overlay.h`
+* `src/inference/detection_overlay.cu`
 
-Do not attempt bounding-box video rendering yet. That can be a later milestone.
+or:
+
+* `include/gpu/cuda_overlay.h`
+* `src/gpu/cuda_overlay.cu`
+
+The first implementation should draw simple white bounding boxes directly on NV12 frames.
+
+Plan the API, for example:
+
+`detection_overlay_draw_nv12(CudaNV12Frame *frame, const DetectionResult *detections, int thickness, cudaStream_t stream)`
+
+It should:
+
+* clamp boxes to frame bounds
+* draw top, bottom, left, and right borders
+* support configurable thickness
+* optionally filter by confidence/class
+* avoid touching the whole frame when possible
+* initially draw white boxes by modifying the Y plane
+* optionally support colored boxes later by modifying UV plane too
+
+Explain the kernel launch strategy:
+
+* one block per detection
+* or one thread per border pixel
+* or a 2D grid over box perimeter
+* explain which is simplest and which is fastest
+
+6. NVENC GPU-Frame Writer Design
+
+Plan how to encode annotated CUDA/NV12 frames without downloading them to CPU.
+
+Investigate whether to:
+
+* extend existing `video_writer`
+* add `video_hw_writer`
+* or add a separate NVENC writer backend
+
+The writer should:
+
+* accept CUDA/NV12 GPU-resident frames
+* encode using NVENC
+* mux through FFmpeg
+* write MP4/MKV packets progressively
+* preserve timestamps/order
+* support streamable containers if possible
+
+Explain how FFmpeg hardware frames and NVENC interact:
+
+* CUDA hardware frame context
+* NVENC encoder pixel formats
+* whether `AV_PIX_FMT_CUDA` can be sent directly to encoder
+* whether frames need to be transferred into an encoder-compatible hardware frames context
+* how to handle `h264_nvenc` or `hevc_nvenc`
+* how to handle MP4 vs MKV output
+
+7. Pipeline Runner Design
+
+Design the new high-throughput detection pipeline.
+
+Suggested CLI:
+
+`--task detect`
+`--decoder cpu|nvdec`
+`--encoder h264_nvenc`
+`--draw-boxes`
+`--output data/output/annotated.mkv`
+`--detections data/output/detections.csv`
+`--benchmark benchmarks/detect.csv`
+`--model models/sack_yolov5s.engine`
+`--labels models/sack.names`
+`--confidence 0.25`
+`--iou-threshold 0.45`
+`--input-size 640`
+`--inference-backend tensorrt`
+`--precision fp32`
+
+The runner should support two detection backends:
+
+A. Existing fallback:
+CPU decode NV12
+→ upload to CUDA
+→ TensorRT
+→ detection CSV
+
+B. New high-throughput path:
+NVDEC decode CUDA/NV12
+→ TensorRT directly from CUDA frame
+→ CUDA overlay
+→ NVENC encode
+→ detection CSV + benchmark CSV
+
+Plan whether this should be:
+
+* a separate function like `run_detection_pipeline_nvdec`
+* or selected internally inside `run_detection_pipeline`
+
+Explain how to keep the existing filter pipeline untouched.
+
+8. Synchronization and Ownership Plan
+
+Define ownership rules for GPU frames.
+
+Explain:
+
+* when an NVDEC frame can be released
+* when TensorRT is done reading it
+* when overlay is done writing it
+* when NVENC is done consuming it
+* how CUDA streams/events should be used
+* whether the pipeline should start sequential first
+* how to later support multiple frames in flight
+
+Initial version may be sequential for correctness:
+decode one GPU frame
+→ infer
+→ overlay
+→ encode
+→ release frame
+
+Later version can use a ring buffer / slots:
+decode slot N
+→ preprocess/infer slot N
+→ overlay slot N
+→ encode slot N
+while next frames are in flight
+
+9. Benchmarking Plan
+
+Extend benchmark reporting to distinguish:
+
+* decode_ms
+* upload_ms
+* preprocess_ms
+* inference_ms
+* postprocess_ms
+* overlay_ms
+* encode_ms
+* mux_write_ms
+* total_ms
+* wall_clock_fps
+* latency_equivalent_fps
+
+For NVDEC path:
+
+* upload_ms should be 0 or N/A
+* download_ms should be 0 or N/A
+* overlay_ms should be measured with CUDA events
+* encode_ms should be measured separately
+* wall-clock FPS remains the main throughput metric
+
+Explain CSV column additions and backward compatibility with existing benchmark CSVs.
+
+10. CMake and Dependency Plan
+
+Plan CMake changes for:
+
+* CUDA
+* TensorRT
+* FFmpeg with CUDA/NVENC/NVDEC support
+* linking CUDA runtime
+* linking TensorRT libraries
+* linking FFmpeg libraries
+* optional hardware decode/encode feature flag
+
+Possible options:
+`ENABLE_CUDA_INFERENCE`
+`ENABLE_NVDEC`
+`ENABLE_NVENC`
+`ENABLE_HW_VIDEO`
+
+Explain whether these should be separate or one combined option.
+
+11. Validation Plan
+
+Give commands for staged testing.
+
+Stage 1:
+Build existing detection path.
+
+Stage 2:
+Test TensorRT engine loading.
+
+Stage 3:
+Test NVDEC decode only:
+input video → count decoded frames → no output
+
+Stage 4:
+Test CUDA overlay on synthetic NV12 frame.
+
+Stage 5:
+Test NVDEC → CUDA overlay → CPU debug download image.
+
+Stage 6:
+Test NVDEC → NVENC passthrough:
+decode hardware frame → encode hardware frame → output video
+
+Stage 7:
+Test full:
+NVDEC → TensorRT → overlay → NVENC → output video + CSV
+
+12. Risk Analysis
+
+Identify likely hard problems:
+
+* FFmpeg hardware frame API complexity
+* mapping `AV_PIX_FMT_CUDA` frames to raw CUDA pointers
+* pitch/stride mismatch
+* NV12 layout differences
+* TensorRT engine input datatype mismatch
+* TensorRT 11 strongly typed engines
+* synchronization between CUDA streams and FFmpeg/NVENC
+* encoder accepting CUDA frames
+* Windows vs Linux differences
+* MP4 not being easily viewable while still writing
+* memory pressure on RTX 3050 4GB
+
+13. Implementation Sequence
+
+Break the work into safe commits:
+
+1. Add config flags for `--decoder cpu|nvdec`, `--draw-boxes`, and optional annotated output behavior.
+
+2. Add `CudaNV12Frame` abstraction.
+
+3. Add CUDA overlay kernel and unit/smoke test.
+
+4. Add GPU-resident inference API that accepts `CudaNV12Frame`.
+
+5. Add NVDEC reader prototype that only counts frames.
+
+6. Add NVDEC reader returning `CudaNV12Frame`.
+
+7. Add NVENC writer prototype using CUDA frames.
+
+8. Add NVDEC → NVENC passthrough test.
+
+9. Add NVDEC → inference → detection CSV test.
+
+10. Add NVDEC → inference → overlay → NVENC annotated output.
+
+11. Extend benchmark CSV.
+
+12. Update README.
+
+13. Deliverable
+
+Return only a detailed Markdown plan.
+
+Do not modify files yet.
+Do not produce patches yet.
+Be explicit where API names must be verified in the codebase.
+Prefer a staged implementation with fallback paths over a risky full rewrite.
+Keep the current CPU/OpenCL filter pipeline working.
+Keep the current CPU-decoded TensorRT detection path working as fallback.

@@ -4,6 +4,7 @@
 #include "benchmark/benchmark.h"
 #include "config.h"
 #include "core/frame.h"
+#include "gpu/cuda_frame.h"
 #include "inference/detection_result.h"
 
 #ifdef __cplusplus
@@ -25,6 +26,7 @@ typedef struct {
 
 int inference_engine_create(InferenceEngine **engine, const InferenceConfig *config);
 int inference_engine_run_nv12(InferenceEngine *engine, const Frame *frame, DetectionResult *result, FrameTiming *timing);
+int inference_engine_run_cuda_nv12(InferenceEngine *engine, const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing);
 void inference_engine_destroy(InferenceEngine *engine);
 const char *inference_engine_last_error(void);
 

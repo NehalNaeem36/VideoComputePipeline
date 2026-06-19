@@ -11,6 +11,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
 option(BUILD_TESTING "Build tests" ON)
 option(ENABLE_CUDA_INFERENCE "Build CUDA/TensorRT inference backend" OFF)
+option(ENABLE_HW_VIDEO "Build NVDEC/NVENC CUDA hardware video path" OFF)
 set(FFMPEG_ROOT "" CACHE PATH "Optional FFmpeg installation root")
 set(OPENCL_ROOT "" CACHE PATH "Optional OpenCL installation root")
 set(TENSORRT_ROOT "" CACHE PATH "Optional TensorRT installation root")
@@ -27,6 +28,10 @@ function(vcp_reject_msys_path VAR_NAME)
         endif()
     endif()
 endfunction()
+
+if(ENABLE_HW_VIDEO AND NOT ENABLE_CUDA_INFERENCE)
+    message(FATAL_ERROR "ENABLE_HW_VIDEO=ON requires ENABLE_CUDA_INFERENCE=ON")
+endif()
 
 if(ENABLE_CUDA_INFERENCE)
     enable_language(CXX CUDA)
@@ -70,6 +75,7 @@ set(PROJECT_SOURCES
     src/gpu/opencl_context.c
     src/gpu/opencl_program.c
     src/gpu/gpu_filters.c
+    src/gpu/cuda_frame.c
     src/pipeline/pipeline_config.c
     src/pipeline/pipeline_runner.c
     src/pipeline/frame_slot.c
@@ -93,6 +99,20 @@ if(ENABLE_CUDA_INFERENCE)
 else()
     list(APPEND PROJECT_SOURCES
         src/inference/inference_engine_stub.c
+    )
+endif()
+
+if(ENABLE_HW_VIDEO)
+    list(APPEND PROJECT_SOURCES
+        src/gpu/cuda_overlay.cu
+        src/video/video_hw_reader.cpp
+        src/video/video_hw_writer.cpp
+    )
+else()
+    list(APPEND PROJECT_SOURCES
+        src/gpu/cuda_overlay_stub.c
+        src/video/video_hw_reader_stub.c
+        src/video/video_hw_writer_stub.c
     )
 endif()
 
@@ -213,6 +233,10 @@ if(ENABLE_CUDA_INFERENCE)
     target_link_libraries(vcp_core PUBLIC CUDA::cudart ${TENSORRT_NVINFER_LIBRARY})
 endif()
 
+if(ENABLE_HW_VIDEO)
+    target_compile_definitions(vcp_core PUBLIC VCP_ENABLE_HW_VIDEO=1)
+endif()
+
 if(MSVC)
     target_compile_options(vcp_core PRIVATE
         $<$<COMPILE_LANGUAGE:C>:/W4>
@@ -251,6 +275,7 @@ message(STATUS "C standard: C11")
 message(STATUS "FFmpeg found via pkg-config: ${FFMPEG_FOUND}")
 message(STATUS "OpenCL found: ${OpenCL_FOUND}")
 message(STATUS "CUDA inference enabled: ${ENABLE_CUDA_INFERENCE}")
+message(STATUS "Hardware video enabled: ${ENABLE_HW_VIDEO}")
 if(ENABLE_CUDA_INFERENCE)
     message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIR}")
     message(STATUS "TensorRT nvinfer: ${TENSORRT_NVINFER_LIBRARY}")

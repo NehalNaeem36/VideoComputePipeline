@@ -20,6 +20,10 @@ void benchmark_init(Benchmark *bench) {
     bench->preprocess_ms = 0.0;
     bench->inference_ms = 0.0;
     bench->postprocess_ms = 0.0;
+    bench->download_ms = 0.0;
+    bench->encode_ms = 0.0;
+    bench->overlay_ms = 0.0;
+    bench->mux_write_ms = 0.0;
     bench->wall_clock_ms = 0.0;
     bench->csv_file = NULL;
 }
@@ -33,11 +37,11 @@ void benchmark_set_wall_clock_ms(Benchmark *bench, double wall_clock_ms) {
 }
 
 static int write_csv_header(FILE *file) {
-    return fprintf(file, "frame_index,decode_ms,process_ms,upload_ms,kernel_ms,download_ms,encode_ms,total_ms,preprocess_ms,inference_ms,postprocess_ms\n") < 0 ? -1 : 0;
+    return fprintf(file, "frame_index,decode_ms,process_ms,upload_ms,kernel_ms,download_ms,encode_ms,total_ms,preprocess_ms,inference_ms,postprocess_ms,overlay_ms,mux_write_ms\n") < 0 ? -1 : 0;
 }
 
 static int write_csv_row(FILE *file, const FrameTiming *t) {
-    return fprintf(file, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+    return fprintf(file, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                    t->frame_index,
                    t->decode_ms,
                    t->process_ms,
@@ -48,7 +52,9 @@ static int write_csv_row(FILE *file, const FrameTiming *t) {
                    t->total_ms,
                    t->preprocess_ms,
                    t->inference_ms,
-                   t->postprocess_ms) < 0 ? -1 : 0;
+                   t->postprocess_ms,
+                   t->overlay_ms,
+                   t->mux_write_ms) < 0 ? -1 : 0;
 }
 
 int benchmark_open_csv(Benchmark *bench, const char *path) {
@@ -113,6 +119,10 @@ int benchmark_add_frame_result(Benchmark *bench, const FrameTiming *timing) {
     bench->preprocess_ms += timing->preprocess_ms;
     bench->inference_ms += timing->inference_ms;
     bench->postprocess_ms += timing->postprocess_ms;
+    bench->download_ms += timing->download_ms;
+    bench->encode_ms += timing->encode_ms;
+    bench->overlay_ms += timing->overlay_ms;
+    bench->mux_write_ms += timing->mux_write_ms;
     return 0;
 }
 
@@ -191,8 +201,15 @@ void benchmark_print_detection_summary(const Benchmark *bench) {
     printf("  avg_upload_ms: %.3f\n", bench->upload_ms / (double)bench->count);
     printf("  avg_preprocess_ms: %.3f\n", bench->preprocess_ms / (double)bench->count);
     printf("  avg_inference_ms: %.3f\n", bench->inference_ms / (double)bench->count);
+    printf("  avg_download_ms: %.3f\n", bench->download_ms / (double)bench->count);
     printf("  avg_postprocess_ms: %.3f\n", bench->postprocess_ms / (double)bench->count);
+    printf("  avg_overlay_ms: %.3f\n", bench->overlay_ms / (double)bench->count);
+    printf("  avg_encode_ms: %.3f\n", bench->encode_ms / (double)bench->count);
+    printf("  avg_mux_write_ms: %.3f\n", bench->mux_write_ms / (double)bench->count);
     printf("  avg_total_ms: %.3f\n", bench->total_ms / (double)bench->count);
+    if (bench->total_ms > 0.0) {
+        printf("  latency_equivalent_fps: %.3f\n", (double)bench->count * 1000.0 / bench->total_ms);
+    }
 }
 
 void benchmark_free(Benchmark *bench) {

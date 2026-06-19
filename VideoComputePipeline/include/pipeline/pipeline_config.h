@@ -30,6 +30,22 @@ typedef enum {
     MEMORY_PROFILE_MANUAL = 3
 } MemoryProfile;
 
+typedef enum {
+    VIDEO_DECODER_CPU = 0,
+    VIDEO_DECODER_NVDEC = 1
+} VideoDecoderMode;
+
+typedef enum {
+    DECODER_FALLBACK_NONE = 0,
+    DECODER_FALLBACK_CPU = 1
+} DecoderFallbackMode;
+
+typedef enum {
+    OUTPUT_FORMAT_AUTO = 0,
+    OUTPUT_FORMAT_MP4 = 1,
+    OUTPUT_FORMAT_MKV = 2
+} OutputFormat;
+
 typedef struct {
     char input_path[VCP_MAX_PATH_LENGTH];
     char output_path[VCP_MAX_PATH_LENGTH];
@@ -59,6 +75,12 @@ typedef struct {
     int max_detections_per_frame;
     int progress_interval;
     char ffmpeg_log_level[16];
+    VideoDecoderMode decoder_mode;
+    DecoderFallbackMode decoder_fallback;
+    OutputFormat output_format;
+    int draw_boxes;
+    int box_thickness;
+    float box_confidence;
 } PipelineConfig;
 
 void pipeline_config_default(PipelineConfig *config);

@@ -276,6 +276,112 @@ public:
         return 0;
     }
 
+    int run_device(const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing) {
+        if (!frame || !result || !timing || !cuda_nv12_frame_is_valid(frame)) {
+            g_last_error = "invalid CUDA NV12 frame for inference";
+            return -1;
+        }
+
+        CudaSlot &slot = slots_[(size_t)frame->index % slots_.size()];
+        const float scale = std::min((float)config_.input_width / (float)frame->width,
+                                     (float)config_.input_height / (float)frame->height);
+        const float resized_w = (float)frame->width * scale;
+        const float resized_h = (float)frame->height * scale;
+        const float pad_x = ((float)config_.input_width - resized_w) * 0.5f;
+        const float pad_y = ((float)config_.input_height - resized_h) * 0.5f;
+
+        cudaEventRecord(slot.start, slot.stream);
+        cudaEventRecord(slot.upload_done, slot.stream);
+        cudaError_t preprocess_result = cudaSuccess;
+        if (input_type_ == nvinfer1::DataType::kHALF) {
+            preprocess_result = vcp_cuda_preprocess_nv12_to_nchw_fp16(frame->d_y,
+                                                                      frame->d_uv,
+                                                                      frame->width,
+                                                                      frame->height,
+                                                                      frame->y_pitch,
+                                                                      frame->uv_pitch,
+                                                                      config_.input_width,
+                                                                      config_.input_height,
+                                                                      scale,
+                                                                      pad_x,
+                                                                      pad_y,
+                                                                      reinterpret_cast<__half *>(slot.d_input),
+                                                                      slot.stream);
+        } else {
+            preprocess_result = vcp_cuda_preprocess_nv12_to_nchw_fp32(frame->d_y,
+                                                                      frame->d_uv,
+                                                                      frame->width,
+                                                                      frame->height,
+                                                                      frame->y_pitch,
+                                                                      frame->uv_pitch,
+                                                                      config_.input_width,
+                                                                      config_.input_height,
+                                                                      scale,
+                                                                      pad_x,
+                                                                      pad_y,
+                                                                      reinterpret_cast<float *>(slot.d_input),
+                                                                      slot.stream);
+        }
+        if (preprocess_result != cudaSuccess) {
+            g_last_error = "failed to launch CUDA device NV12 preprocess kernel";
+            return -1;
+        }
+        cudaEventRecord(slot.preprocess_done, slot.stream);
+
+        if (!context_->setTensorAddress(input_name_.c_str(), slot.d_input) ||
+            !context_->setTensorAddress(output_name_.c_str(), slot.d_output) ||
+            !context_->enqueueV3(slot.stream)) {
+            g_last_error = "TensorRT enqueueV3 failed";
+            return -1;
+        }
+        cudaEventRecord(slot.inference_done, slot.stream);
+
+        if (cudaMemcpyAsync(slot.h_output_raw.data(),
+                            slot.d_output,
+                            output_bytes_,
+                            cudaMemcpyDeviceToHost,
+                            slot.stream) != cudaSuccess) {
+            g_last_error = "failed to copy TensorRT output to host";
+            return -1;
+        }
+        cudaEventRecord(slot.output_done, slot.stream);
+        if (cudaStreamSynchronize(slot.stream) != cudaSuccess) {
+            g_last_error = "CUDA inference stream synchronization failed";
+            return -1;
+        }
+
+        timing->upload_ms = 0.0;
+        timing->preprocess_ms = elapsed_event_ms(slot.upload_done, slot.preprocess_done);
+        timing->inference_ms = elapsed_event_ms(slot.preprocess_done, slot.inference_done);
+        timing->download_ms = elapsed_event_ms(slot.inference_done, slot.output_done);
+
+        auto post_start = std::chrono::high_resolution_clock::now();
+        convert_output_to_float(slot);
+        YoloPostprocessConfig post_config{};
+        post_config.frame_index = frame->index;
+        post_config.src_width = frame->width;
+        post_config.src_height = frame->height;
+        post_config.input_width = config_.input_width;
+        post_config.input_height = config_.input_height;
+        post_config.class_count = config_.class_count;
+        post_config.confidence_threshold = config_.confidence_threshold;
+        post_config.iou_threshold = config_.iou_threshold;
+        post_config.scale = scale;
+        post_config.pad_x = pad_x;
+        post_config.pad_y = pad_y;
+        int dims[8] = {0};
+        for (int i = 0; i < output_dims_.nbDims && i < 8; ++i) {
+            dims[i] = output_dims_.d[i];
+        }
+        if (yolo_postprocess(slot.h_output_float.data(), slot.h_output_float.size(), dims, output_dims_.nbDims, &post_config, result) != 0) {
+            g_last_error = "YOLOv5 postprocess failed";
+            return -1;
+        }
+        auto post_end = std::chrono::high_resolution_clock::now();
+        timing->postprocess_ms = std::chrono::duration<double, std::milli>(post_end - post_start).count();
+        return 0;
+    }
+
 private:
     int discover_io() {
         const int nb_tensors = engine_->getNbIOTensors();
@@ -460,6 +566,14 @@ extern "C" int inference_engine_run_nv12(InferenceEngine *engine, const Frame *f
         return -1;
     }
     return engine->impl->run(frame, result, timing);
+}
+
+extern "C" int inference_engine_run_cuda_nv12(InferenceEngine *engine, const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing) {
+    if (!engine || !engine->impl) {
+        g_last_error = "inference engine is not initialized";
+        return -1;
+    }
+    return engine->impl->run_device(frame, result, timing);
 }
 
 extern "C" void inference_engine_destroy(InferenceEngine *engine) {
