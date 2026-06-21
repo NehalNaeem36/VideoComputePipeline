@@ -27,8 +27,10 @@ typedef struct {
 } VideoReader;
 
 int video_reader_open_with_threads(VideoReader *reader, const char *input_path, int decoder_threads);
+int video_reader_read_frame_as(VideoReader *reader, Frame *out_frame, FrameFormat format);
 int video_reader_read_frame(VideoReader *reader, Frame *out_frame);
 void video_reader_close(VideoReader *reader);
 const VideoInfo *video_reader_get_info(const VideoReader *reader);
+int video_set_ffmpeg_log_level(const char *level);
 
 #endif

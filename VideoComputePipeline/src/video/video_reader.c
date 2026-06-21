@@ -5,6 +5,7 @@
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/log.h>
 #include <libavutil/rational.h>
 #include <libswscale/swscale.h>
 
@@ -20,6 +21,39 @@ static void log_ffmpeg_error(const char *message, int error_code) {
     log_error /* module: utils/logger */ ("%s: %s", message, buffer);
 }
 
+int video_set_ffmpeg_log_level(const char *level) {
+    if (!level) {
+        return -1;
+    }
+
+    if (strcmp(level, "quiet") == 0) {
+        av_log_set_level(AV_LOG_QUIET);
+    } else if (strcmp(level, "error") == 0) {
+        av_log_set_level(AV_LOG_ERROR);
+    } else if (strcmp(level, "warning") == 0) {
+        av_log_set_level(AV_LOG_WARNING);
+    } else if (strcmp(level, "info") == 0) {
+        av_log_set_level(AV_LOG_INFO);
+    } else if (strcmp(level, "debug") == 0) {
+        av_log_set_level(AV_LOG_DEBUG);
+    } else {
+        return -1;
+    }
+
+    return 0;
+}
+/*typedef struct {
+    void *format_ctx;
+    void *codec_ctx;
+    void *stream;
+    void *packet;
+    void *decoded_frame;
+    void *sws_ctx;
+    int video_stream_index;
+    int next_frame_index;
+    int decoder_flushed;
+    VideoInfo info;
+} VideoReader;*/
 int video_reader_open_with_threads(VideoReader *reader, const char *input_path, int decoder_threads) {
     if (!reader || !input_path) {
         return -1;
@@ -127,10 +161,40 @@ int video_reader_open_with_threads(VideoReader *reader, const char *input_path, 
     return 0;
 }
 
-static int receive_rgb_frame(VideoReader *reader, Frame *out_frame) {
+static enum AVPixelFormat frame_format_to_av_format(FrameFormat format) {
+    switch (format) {
+        case FRAME_FORMAT_RGB24:
+            return AV_PIX_FMT_RGB24;
+        case FRAME_FORMAT_NV12:
+            return AV_PIX_FMT_NV12;
+        case FRAME_FORMAT_GRAY8:
+            return AV_PIX_FMT_GRAY8;
+        default:
+            return AV_PIX_FMT_NONE;
+    }
+}
+
+static const char *frame_format_name(FrameFormat format) {
+    switch (format) {
+        case FRAME_FORMAT_RGB24:
+            return "RGB24";
+        case FRAME_FORMAT_NV12:
+            return "NV12";
+        case FRAME_FORMAT_GRAY8:
+            return "GRAY8";
+        default:
+            return "unknown";
+    }
+}
+
+static int receive_frame_as(VideoReader *reader, Frame *out_frame, FrameFormat format) {
     AVCodecContext *codec_ctx = (AVCodecContext *)reader->codec_ctx;
     AVFrame *decoded = (AVFrame *)reader->decoded_frame;
     struct SwsContext *sws = (struct SwsContext *)reader->sws_ctx;
+    const enum AVPixelFormat dst_format = frame_format_to_av_format /* module: video/video_reader */ (format);
+    if (dst_format == AV_PIX_FMT_NONE) {
+        return -1;
+    }
 
     const int receive_result = avcodec_receive_frame(codec_ctx, decoded);
     if (receive_result == AVERROR(EAGAIN)) {
@@ -147,18 +211,40 @@ static int receive_rgb_frame(VideoReader *reader, Frame *out_frame) {
     if (!frame_is_valid /* module: core/frame */ (out_frame) ||
         out_frame->width != codec_ctx->width ||
         out_frame->height != codec_ctx->height ||
-        out_frame->format != FRAME_FORMAT_RGB24) {
+        out_frame->format != format) {
         frame_free /* module: core/frame */ (out_frame);
-        if (frame_alloc /* module: core/frame */ (out_frame, codec_ctx->width, codec_ctx->height, FRAME_FORMAT_RGB24) != 0) {
-            log_error /* module: utils/logger */ ("failed to allocate decoded RGB24 frame: %dx%d", codec_ctx->width, codec_ctx->height);
+        if (frame_alloc /* module: core/frame */ (out_frame, codec_ctx->width, codec_ctx->height, format) != 0) {
+            log_error /* module: utils/logger */ ("failed to allocate decoded %s frame: %dx%d", frame_format_name /* module: video/video_reader */ (format), codec_ctx->width, codec_ctx->height);
             av_frame_unref(decoded);
             return -1;
         }
     }
 
     out_frame->index = reader->next_frame_index++;
-    uint8_t *dst_data[4] = { out_frame->data, NULL, NULL, NULL };
-    int dst_linesize[4] = { (int)out_frame->stride, 0, 0, 0 };
+    sws = sws_getCachedContext(sws,
+                               codec_ctx->width,
+                               codec_ctx->height,
+                               codec_ctx->pix_fmt,
+                               codec_ctx->width,
+                               codec_ctx->height,
+                               dst_format,
+                               SWS_BILINEAR,
+                               NULL,
+                               NULL,
+                               NULL);
+    if (!sws) {
+        av_frame_unref(decoded);
+        return -1;
+    }
+    reader->sws_ctx = sws;
+
+    uint8_t *dst_data[4] = { out_frame->planes[0], out_frame->planes[1], out_frame->planes[2], out_frame->planes[3] };
+    int dst_linesize[4] = {
+        (int)out_frame->linesize[0],
+        (int)out_frame->linesize[1],
+        (int)out_frame->linesize[2],
+        (int)out_frame->linesize[3]
+    };
     sws_scale(sws,
               (const uint8_t * const *)decoded->data,
               decoded->linesize,
@@ -170,12 +256,12 @@ static int receive_rgb_frame(VideoReader *reader, Frame *out_frame) {
     return 1;
 }
 
-int video_reader_read_frame(VideoReader *reader, Frame *out_frame) {
+int video_reader_read_frame_as(VideoReader *reader, Frame *out_frame, FrameFormat format) {
     if (!reader || !out_frame || !reader->codec_ctx) {
         return -1;
     }
 
-    int result = receive_rgb_frame /* module: video/video_reader */ (reader, out_frame);
+    int result = receive_frame_as /* module: video/video_reader */ (reader, out_frame, format);
     if (result == 1) {
         return 1;
     }
@@ -204,7 +290,7 @@ int video_reader_read_frame(VideoReader *reader, Frame *out_frame) {
             for (;;) {
                 const int send_result = avcodec_send_packet(codec_ctx, packet);
                 if (send_result == AVERROR(EAGAIN)) {
-                    result = receive_rgb_frame /* module: video/video_reader */ (reader, out_frame);
+                    result = receive_frame_as /* module: video/video_reader */ (reader, out_frame, format);
                     if (result == 1) {
                         av_packet_unref(packet);
                         return 1;
@@ -229,7 +315,7 @@ int video_reader_read_frame(VideoReader *reader, Frame *out_frame) {
                 break;
             }
 
-            result = receive_rgb_frame /* module: video/video_reader */ (reader, out_frame);
+            result = receive_frame_as /* module: video/video_reader */ (reader, out_frame, format);
             if (result == 1) {
                 return 1;
             }
@@ -253,7 +339,7 @@ int video_reader_read_frame(VideoReader *reader, Frame *out_frame) {
         }
     }
 
-    result = receive_rgb_frame /* module: video/video_reader */ (reader, out_frame);
+    result = receive_frame_as /* module: video/video_reader */ (reader, out_frame, format);
     if (result == 1) {
         return 1;
     }
@@ -261,6 +347,10 @@ int video_reader_read_frame(VideoReader *reader, Frame *out_frame) {
         return -1;
     }
     return 0;
+}
+
+int video_reader_read_frame(VideoReader *reader, Frame *out_frame) {
+    return video_reader_read_frame_as /* module: video/video_reader */ (reader, out_frame, FRAME_FORMAT_RGB24);
 }
 
 void video_reader_close(VideoReader *reader) {

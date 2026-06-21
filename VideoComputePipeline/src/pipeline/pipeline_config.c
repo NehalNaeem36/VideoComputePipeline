@@ -1,8 +1,23 @@
 #include "pipeline/pipeline_config.h"
 
+#include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static char g_parse_error[256];
+
+static void clear_parse_error(void) {
+    g_parse_error[0] = '\0';
+}
+
+static void set_parse_error(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(g_parse_error, sizeof(g_parse_error), fmt, args);
+    va_end(args);
+}
 
 static int copy_path(char *dst, size_t dst_size, const char *src) {
     /*basic wrapper for "strcpy" used for path copying */
@@ -16,6 +31,10 @@ static int copy_path(char *dst, size_t dst_size, const char *src) {
 
 static const char *mode_to_string(ProcessMode mode) {
     return mode == PROCESS_GPU ? "gpu" : "cpu";
+}
+
+static const char *task_to_string(PipelineTask task) {
+    return task == PIPELINE_TASK_DETECT ? "detect" : "filter";
 }
 
 static const char *filter_to_string(FilterType filter) {
@@ -43,6 +62,20 @@ static int parse_mode(const char *value, ProcessMode *mode) {
 
     if (strcmp(value, "gpu") == 0) {
         *mode = PROCESS_GPU;
+        return 0;
+    }
+
+    return -1;
+}
+
+static int parse_task(const char *value, PipelineTask *task) {
+    if (strcmp(value, "filter") == 0) {
+        *task = PIPELINE_TASK_FILTER;
+        return 0;
+    }
+
+    if (strcmp(value, "detect") == 0) {
+        *task = PIPELINE_TASK_DETECT;
         return 0;
     }
 
@@ -95,6 +128,75 @@ static const char *memory_profile_to_string(MemoryProfile profile) {
     }
 }
 
+static const char *decoder_mode_to_string(VideoDecoderMode mode) {
+    return mode == VIDEO_DECODER_NVDEC ? "nvdec" : "cpu";
+}
+
+static const char *decoder_fallback_to_string(DecoderFallbackMode fallback) {
+    return fallback == DECODER_FALLBACK_NONE ? "none" : "cpu";
+}
+
+static const char *output_format_to_string(OutputFormat format) {
+    switch (format) {
+        case OUTPUT_FORMAT_MP4:
+            return "mp4";
+        case OUTPUT_FORMAT_MKV:
+            return "mkv";
+        case OUTPUT_FORMAT_AUTO:
+        default:
+            return "auto";
+    }
+}
+
+static int parse_output_format(const char *value, OutputFormat *format) {
+    if (strcmp(value, "auto") == 0) {
+        *format = OUTPUT_FORMAT_AUTO;
+        return 0;
+    }
+    if (strcmp(value, "mp4") == 0) {
+        *format = OUTPUT_FORMAT_MP4;
+        return 0;
+    }
+    if (strcmp(value, "mkv") == 0) {
+        *format = OUTPUT_FORMAT_MKV;
+        return 0;
+    }
+    return -1;
+}
+
+static int apply_output_format_extension(PipelineConfig *config) {
+    const char *extension = NULL;
+    char *last_dot = NULL;
+    char *last_slash = NULL;
+    char *last_backslash = NULL;
+    char *path_end = NULL;
+    size_t prefix_len = 0;
+    size_t extension_len = 0;
+
+    if (!config || config->output_format == OUTPUT_FORMAT_AUTO) {
+        return 0;
+    }
+
+    extension = config->output_format == OUTPUT_FORMAT_MKV ? ".mkv" : ".mp4";
+    last_dot = strrchr(config->output_path, '.');
+    last_slash = strrchr(config->output_path, '/');
+    last_backslash = strrchr(config->output_path, '\\');
+    path_end = config->output_path + strlen(config->output_path);
+    if (!last_dot || (last_slash && last_dot < last_slash) || (last_backslash && last_dot < last_backslash)) {
+        last_dot = path_end;
+    }
+
+    prefix_len = (size_t)(last_dot - config->output_path);
+    extension_len = strlen(extension);
+    if (prefix_len + extension_len >= sizeof(config->output_path)) {
+        set_parse_error /* module: pipeline/pipeline_config */ ("output path is too long after applying --output-format");
+        return -1;
+    }
+
+    memcpy(config->output_path + prefix_len, extension, extension_len + 1u);
+    return 0;
+}
+
 static int parse_memory_profile(const char *value, MemoryProfile *profile) {
     if (strcmp(value, "auto") == 0) {
         *profile = MEMORY_PROFILE_AUTO;
@@ -115,6 +217,84 @@ static int parse_memory_profile(const char *value, MemoryProfile *profile) {
     return -1;
 }
 
+static int parse_decoder_mode(const char *value, VideoDecoderMode *mode) {
+    if (strcmp(value, "cpu") == 0) {
+        *mode = VIDEO_DECODER_CPU;
+        return 0;
+    }
+    if (strcmp(value, "nvdec") == 0) {
+        *mode = VIDEO_DECODER_NVDEC;
+        return 0;
+    }
+    return -1;
+}
+
+static int parse_decoder_fallback(const char *value, DecoderFallbackMode *fallback) {
+    if (strcmp(value, "cpu") == 0) {
+        *fallback = DECODER_FALLBACK_CPU;
+        return 0;
+    }
+    if (strcmp(value, "none") == 0) {
+        *fallback = DECODER_FALLBACK_NONE;
+        return 0;
+    }
+    return -1;
+}
+
+static int parse_int_value(const char *value, int *out) {
+    char *end = NULL;
+    long parsed = 0;
+
+    if (!value || !out) {
+        return -1;
+    }
+
+    errno = 0;
+    parsed = strtol(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' || parsed < -2147483647L - 1L || parsed > 2147483647L) {
+        return -1;
+    }
+
+    *out = (int)parsed;
+    return 0;
+}
+
+static int parse_float_value(const char *value, float *out) {
+    char *end = NULL;
+    float parsed = 0.0f;
+
+    if (!value || !out) {
+        return -1;
+    }
+
+    errno = 0;
+    parsed = strtof(value, &end);
+    if (errno != 0 || end == value || *end != '\0') {
+        return -1;
+    }
+
+    *out = parsed;
+    return 0;
+}
+
+static int parse_ffmpeg_log_level(const char *value) {
+    return value &&
+           (strcmp(value, "quiet") == 0 ||
+            strcmp(value, "error") == 0 ||
+            strcmp(value, "warning") == 0 ||
+            strcmp(value, "info") == 0 ||
+            strcmp(value, "debug") == 0);
+}
+
+static int require_value(int argc, char **argv, int index, const char *option) {
+    (void)argv;
+    if (index + 1 >= argc) {
+        set_parse_error /* module: pipeline/pipeline_config */ ("missing value for %s", option);
+        return -1;
+    }
+    return 0;
+}
+
 void pipeline_config_default(PipelineConfig *config) {
     if (!config) {
         return;
@@ -123,7 +303,13 @@ void pipeline_config_default(PipelineConfig *config) {
     copy_path /* module: pipeline/pipeline_config */ (config->input_path, sizeof(config->input_path), DEFAULT_INPUT_PATH);
     copy_path /* module: pipeline/pipeline_config */ (config->output_path, sizeof(config->output_path), DEFAULT_OUTPUT_PATH);
     copy_path /* module: pipeline/pipeline_config */ (config->benchmark_path, sizeof(config->benchmark_path), DEFAULT_BENCHMARK_PATH);
+    copy_path /* module: pipeline/pipeline_config */ (config->detections_path, sizeof(config->detections_path), DEFAULT_DETECTIONS_PATH);
+    copy_path /* module: pipeline/pipeline_config */ (config->model_path, sizeof(config->model_path), DEFAULT_MODEL_PATH);
+    copy_path /* module: pipeline/pipeline_config */ (config->labels_path, sizeof(config->labels_path), DEFAULT_LABELS_PATH);
+    copy_path /* module: pipeline/pipeline_config */ (config->inference_backend, sizeof(config->inference_backend), DEFAULT_INFERENCE_BACKEND);
+    copy_path /* module: pipeline/pipeline_config */ (config->inference_precision, sizeof(config->inference_precision), DEFAULT_INFERENCE_PRECISION);
     copy_path /* module: pipeline/pipeline_config */ (config->encoder_name, sizeof(config->encoder_name), DEFAULT_ENCODER_NAME);
+    config->task = PIPELINE_TASK_FILTER;
     config->mode = PROCESS_CPU;
     config->filter = FILTER_GRAYSCALE;
     config->max_frames = DEFAULT_MAX_FRAMES;
@@ -135,70 +321,250 @@ void pipeline_config_default(PipelineConfig *config) {
     config->decoder_threads = DEFAULT_DECODER_THREADS;
     config->encoder_threads = DEFAULT_ENCODER_THREADS;
     config->processor_workers = DEFAULT_PROCESSOR_WORKERS;
+    config->confidence_threshold = DEFAULT_DETECTION_CONFIDENCE;
+    config->iou_threshold = DEFAULT_DETECTION_IOU_THRESHOLD;
+    config->inference_input_size = DEFAULT_INFERENCE_INPUT_SIZE;
+    config->detection_class_count = DEFAULT_DETECTION_CLASS_COUNT;
+    config->max_detections_per_frame = DEFAULT_MAX_DETECTIONS_PER_FRAME;
+    config->progress_interval = DEFAULT_PROGRESS_INTERVAL;
+    copy_path /* module: pipeline/pipeline_config */ (config->ffmpeg_log_level, sizeof(config->ffmpeg_log_level), DEFAULT_FFMPEG_LOG_LEVEL);
+    config->decoder_mode = VIDEO_DECODER_CPU;
+    config->decoder_fallback = DECODER_FALLBACK_CPU;
+    config->output_format = OUTPUT_FORMAT_AUTO;
+    config->draw_boxes = DEFAULT_DRAW_BOXES;
+    config->box_thickness = DEFAULT_BOX_THICKNESS;
+    config->box_confidence = DEFAULT_BOX_CONFIDENCE;
 }
 
 int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
     if (!config) {
         return -1;
     }
+    clear_parse_error /* module: pipeline/pipeline_config */ ();
 
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
 
-        if (strcmp(arg, "--input") == 0 && i + 1 < argc) {
+        if (strcmp(arg, "--input") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
             if (copy_path /* module: pipeline/pipeline_config */ (config->input_path, sizeof(config->input_path), argv[++i]) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("value for --input is too long");
                 return -1;
             }
-        } else if (strcmp(arg, "--output") == 0 && i + 1 < argc) {
+        } else if (strcmp(arg, "--output") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
             if (copy_path /* module: pipeline/pipeline_config */ (config->output_path, sizeof(config->output_path), argv[++i]) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("value for --output is too long");
                 return -1;
             }
-        } else if (strcmp(arg, "--benchmark") == 0 && i + 1 < argc) {
+        } else if (strcmp(arg, "--benchmark") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
             if (copy_path /* module: pipeline/pipeline_config */ (config->benchmark_path, sizeof(config->benchmark_path), argv[++i]) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("value for --benchmark is too long");
                 return -1;
             }
-        } else if (strcmp(arg, "--encoder") == 0 && i + 1 < argc) {
+        } else if (strcmp(arg, "--task") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *value = argv[++i];
+            if (parse_task /* module: pipeline/pipeline_config */ (value, &config->task) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown task: %s", value);
+                return -1;
+            }
+        } else if (strcmp(arg, "--model") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (copy_path /* module: pipeline/pipeline_config */ (config->model_path, sizeof(config->model_path), argv[++i]) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("value for --model is too long");
+                return -1;
+            }
+        } else if (strcmp(arg, "--labels") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (copy_path /* module: pipeline/pipeline_config */ (config->labels_path, sizeof(config->labels_path), argv[++i]) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("value for --labels is too long");
+                return -1;
+            }
+        } else if (strcmp(arg, "--detections") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (copy_path /* module: pipeline/pipeline_config */ (config->detections_path, sizeof(config->detections_path), argv[++i]) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("value for --detections is too long");
+                return -1;
+            }
+        } else if (strcmp(arg, "--confidence") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_float_value /* module: pipeline/pipeline_config */ (argv[++i], &config->confidence_threshold) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--confidence must be a number between 0 and 1");
+                return -1;
+            }
+            if (config->confidence_threshold < 0.0f || config->confidence_threshold > 1.0f) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--confidence must be between 0 and 1");
+                return -1;
+            }
+        } else if (strcmp(arg, "--iou-threshold") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_float_value /* module: pipeline/pipeline_config */ (argv[++i], &config->iou_threshold) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--iou-threshold must be a number between 0 and 1");
+                return -1;
+            }
+            if (config->iou_threshold < 0.0f || config->iou_threshold > 1.0f) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--iou-threshold must be between 0 and 1");
+                return -1;
+            }
+        } else if (strcmp(arg, "--input-size") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_int_value /* module: pipeline/pipeline_config */ (argv[++i], &config->inference_input_size) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--input-size must be a positive integer");
+                return -1;
+            }
+            if (config->inference_input_size <= 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--input-size must be greater than 0");
+                return -1;
+            }
+        } else if (strcmp(arg, "--inference-backend") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *backend = argv[++i];
+            if (strcmp(backend, "tensorrt") != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown inference backend: %s", backend);
+                return -1;
+            }
+            if (copy_path /* module: pipeline/pipeline_config */ (config->inference_backend, sizeof(config->inference_backend), backend) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("value for --inference-backend is too long");
+                return -1;
+            }
+        } else if (strcmp(arg, "--precision") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *precision = argv[++i];
+            if (strcmp(precision, "fp16") != 0 && strcmp(precision, "fp32") != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown precision: %s", precision);
+                return -1;
+            }
+            if (copy_path /* module: pipeline/pipeline_config */ (config->inference_precision, sizeof(config->inference_precision), precision) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("value for --precision is too long");
+                return -1;
+            }
+        } else if (strcmp(arg, "--encoder") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
             const char *encoder = argv[++i];
             if (strcmp(encoder, "libx264") != 0 &&
                 strcmp(encoder, "libx264rgb") != 0 &&
                 strcmp(encoder, "h264_nvenc") != 0 &&
                 strcmp(encoder, "mpeg4") != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown encoder: %s", encoder);
                 return -1;
             }
             if (copy_path /* module: pipeline/pipeline_config */ (config->encoder_name, sizeof(config->encoder_name), encoder) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("value for --encoder is too long");
                 return -1;
             }
-        } else if (strcmp(arg, "--mode") == 0 && i + 1 < argc) {
-            if (parse_mode /* module: pipeline/pipeline_config */ (argv[++i], &config->mode) != 0) {
+        } else if (strcmp(arg, "--output-format") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
                 return -1;
             }
-        } else if (strcmp(arg, "--filter") == 0 && i + 1 < argc) {
-            if (parse_filter /* module: pipeline/pipeline_config */ (argv[++i], &config->filter) != 0) {
+            const char *value = argv[++i];
+            if (parse_output_format /* module: pipeline/pipeline_config */ (value, &config->output_format) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown output format: %s", value);
                 return -1;
             }
-        } else if (strcmp(arg, "--max-frames") == 0 && i + 1 < argc) {
-            config->max_frames = atoi(argv[++i]);
+        } else if (strcmp(arg, "--mode") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *value = argv[++i];
+            if (parse_mode /* module: pipeline/pipeline_config */ (value, &config->mode) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown mode: %s", value);
+                return -1;
+            }
+        } else if (strcmp(arg, "--filter") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *value = argv[++i];
+            if (parse_filter /* module: pipeline/pipeline_config */ (value, &config->filter) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown filter: %s", value);
+                return -1;
+            }
+        } else if (strcmp(arg, "--max-frames") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_int_value /* module: pipeline/pipeline_config */ (argv[++i], &config->max_frames) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--max-frames must be a non-negative integer");
+                return -1;
+            }
             if (config->max_frames < 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--max-frames must be 0 or greater");
                 return -1;
             }
-        } else if (strcmp(arg, "--frame-slots") == 0 && i + 1 < argc) {
-            config->frame_slots = atoi(argv[++i]);
+        } else if (strcmp(arg, "--frame-slots") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_int_value /* module: pipeline/pipeline_config */ (argv[++i], &config->frame_slots) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--frame-slots must be a positive integer");
+                return -1;
+            }
             if (config->frame_slots <= 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--frame-slots must be greater than 0");
                 return -1;
             }
-        } else if (strcmp(arg, "--decoder-threads") == 0 && i + 1 < argc) {
-            config->decoder_threads = atoi(argv[++i]);
+        } else if (strcmp(arg, "--decoder-threads") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_int_value /* module: pipeline/pipeline_config */ (argv[++i], &config->decoder_threads) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--decoder-threads must be a positive integer");
+                return -1;
+            }
             if (config->decoder_threads <= 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--decoder-threads must be greater than 0");
                 return -1;
             }
-        } else if (strcmp(arg, "--encoder-threads") == 0 && i + 1 < argc) {
-            config->encoder_threads = atoi(argv[++i]);
+        } else if (strcmp(arg, "--encoder-threads") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_int_value /* module: pipeline/pipeline_config */ (argv[++i], &config->encoder_threads) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--encoder-threads must be a positive integer");
+                return -1;
+            }
             if (config->encoder_threads <= 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--encoder-threads must be greater than 0");
                 return -1;
             }
-        } else if (strcmp(arg, "--processor-workers") == 0 && i + 1 < argc) {
-            config->processor_workers = atoi(argv[++i]);
+        } else if (strcmp(arg, "--processor-workers") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_int_value /* module: pipeline/pipeline_config */ (argv[++i], &config->processor_workers) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--processor-workers must be a positive integer");
+                return -1;
+            }
             if (config->processor_workers <= 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--processor-workers must be greater than 0");
                 return -1;
             }
         } else if (strcmp(arg, "--no-benchmark") == 0) {
@@ -207,18 +573,204 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
             config->lossless_output = 1;
         } else if (strcmp(arg, "--lossy") == 0) {
             config->lossless_output = 0;
-        } else if (strcmp(arg, "--memory-profile") == 0 && i + 1 < argc) {
-            if (parse_memory_profile /* module: pipeline/pipeline_config */ (argv[++i], &config->memory_profile) != 0) {
+        } else if (strcmp(arg, "--memory-profile") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
                 return -1;
             }
-        } else if (strcmp(arg, "--memory-budget-mb") == 0 && i + 1 < argc) {
-            config->memory_budget_mb = atoi(argv[++i]);
+            const char *value = argv[++i];
+            if (parse_memory_profile /* module: pipeline/pipeline_config */ (value, &config->memory_profile) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown memory profile: %s", value);
+                return -1;
+            }
+        } else if (strcmp(arg, "--memory-budget-mb") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_int_value /* module: pipeline/pipeline_config */ (argv[++i], &config->memory_budget_mb) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--memory-budget-mb must be a non-negative integer");
+                return -1;
+            }
             if (config->memory_budget_mb < 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--memory-budget-mb must be 0 or greater");
+                return -1;
+            }
+        } else if (strcmp(arg, "--progress-interval") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_int_value /* module: pipeline/pipeline_config */ (argv[++i], &config->progress_interval) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--progress-interval must be a non-negative integer");
+                return -1;
+            }
+            if (config->progress_interval < 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--progress-interval must be 0 or greater");
+                return -1;
+            }
+        } else if (strcmp(arg, "--no-progress") == 0) {
+            config->progress_interval = 0;
+        } else if (strcmp(arg, "--ffmpeg-log-level") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *level = argv[++i];
+            if (!parse_ffmpeg_log_level /* module: pipeline/pipeline_config */ (level)) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown FFmpeg log level: %s", level);
+                return -1;
+            }
+            if (copy_path /* module: pipeline/pipeline_config */ (config->ffmpeg_log_level, sizeof(config->ffmpeg_log_level), level) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("value for --ffmpeg-log-level is too long");
+                return -1;
+            }
+        } else if (strcmp(arg, "--decoder") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *value = argv[++i];
+            if (parse_decoder_mode /* module: pipeline/pipeline_config */ (value, &config->decoder_mode) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown decoder: %s", value);
+                return -1;
+            }
+        } else if (strcmp(arg, "--decoder-fallback") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *value = argv[++i];
+            if (parse_decoder_fallback /* module: pipeline/pipeline_config */ (value, &config->decoder_fallback) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown decoder fallback: %s", value);
+                return -1;
+            }
+        } else if (strcmp(arg, "--no-decoder-fallback") == 0) {
+            config->decoder_fallback = DECODER_FALLBACK_NONE;
+        } else if (strcmp(arg, "--draw-boxes") == 0) {
+            config->draw_boxes = 1;
+        } else if (strcmp(arg, "--no-draw-boxes") == 0) {
+            config->draw_boxes = 0;
+        } else if (strcmp(arg, "--box-thickness") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_int_value /* module: pipeline/pipeline_config */ (argv[++i], &config->box_thickness) != 0 || config->box_thickness <= 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--box-thickness must be a positive integer");
+                return -1;
+            }
+        } else if (strcmp(arg, "--box-confidence") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_float_value /* module: pipeline/pipeline_config */ (argv[++i], &config->box_confidence) != 0 ||
+                config->box_confidence < 0.0f ||
+                config->box_confidence > 1.0f) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--box-confidence must be a number between 0 and 1");
                 return -1;
             }
         } else {
+            set_parse_error /* module: pipeline/pipeline_config */ ("unknown option: %s", arg);
             return -1;
         }
+    }
+
+    return apply_output_format_extension /* module: pipeline/pipeline_config */ (config);
+}
+
+const char *pipeline_config_last_error(void) {
+    return g_parse_error[0] != '\0' ? g_parse_error : "invalid command-line arguments";
+}
+
+static int append_summary(char *buffer, size_t buffer_size, size_t *offset, const char *fmt, ...) {
+    int written = 0;
+    va_list args;
+
+    if (!buffer || !offset || *offset >= buffer_size) {
+        return -1;
+    }
+
+    va_start(args, fmt);
+    written = vsnprintf(buffer + *offset, buffer_size - *offset, fmt, args);
+    va_end(args);
+    if (written < 0 || (size_t)written >= buffer_size - *offset) {
+        if (buffer_size > 0) {
+            buffer[buffer_size - 1u] = '\0';
+        }
+        return -1;
+    }
+
+    *offset += (size_t)written;
+    return 0;
+}
+
+int pipeline_config_format_summary(const PipelineConfig *config, char *buffer, size_t buffer_size) {
+    size_t offset = 0;
+
+    if (!config || !buffer || buffer_size == 0) {
+        return -1;
+    }
+
+    buffer[0] = '\0';
+    if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "task: %s\n", task_to_string /* module: pipeline/pipeline_config */ (config->task)) != 0 ||
+        append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "input:\n") != 0 ||
+        append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  input_path: %s\n", config->input_path) != 0 ||
+        append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  max_frames: %d\n", config->max_frames) != 0 ||
+        append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  decoder_threads: %d\n", config->decoder_threads) != 0) {
+        return -1;
+    }
+
+    if (config->task == PIPELINE_TASK_DETECT) {
+        if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "inference:\n") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  decoder: %s\n", decoder_mode_to_string /* module: pipeline/pipeline_config */ (config->decoder_mode)) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  decoder_fallback: %s\n", decoder_fallback_to_string /* module: pipeline/pipeline_config */ (config->decoder_fallback)) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  backend: %s\n", config->inference_backend) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  precision: %s\n", config->inference_precision) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  model_path: %s\n", config->model_path) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  labels_path: %s\n", config->labels_path) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  input_size: %d\n", config->inference_input_size) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  confidence: %.3f\n", config->confidence_threshold) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  iou_threshold: %.3f\n", config->iou_threshold) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "outputs:\n") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  detections_path: %s\n", config->detections_path) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  draw_boxes: %s\n", config->draw_boxes ? "true" : "false") != 0) {
+            return -1;
+        }
+        if (config->draw_boxes &&
+            (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  output_path: %s\n", config->output_path) != 0 ||
+             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  output_format: %s\n", output_format_to_string /* module: pipeline/pipeline_config */ (config->output_format)) != 0 ||
+             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  encoder: %s\n", config->encoder_name) != 0 ||
+             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  box_thickness: %d\n", config->box_thickness) != 0 ||
+             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  box_confidence: %.3f\n", config->box_confidence) != 0)) {
+            return -1;
+        }
+    } else {
+        if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "processing:\n") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  mode: %s\n", mode_to_string /* module: pipeline/pipeline_config */ (config->mode)) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  filter: %s\n", filter_to_string /* module: pipeline/pipeline_config */ (config->filter)) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "output:\n") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  output_path: %s\n", config->output_path) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  output_format: %s\n", output_format_to_string /* module: pipeline/pipeline_config */ (config->output_format)) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  encoder: %s\n", config->encoder_name) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  lossless_output: %s\n", config->lossless_output ? "true" : "false") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "workers:\n") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  frame_slots: %d\n", config->frame_slots) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  encoder_threads: %d\n", config->encoder_threads) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  processor_workers: %d\n", config->processor_workers) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "memory:\n") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  memory_profile: %s\n", memory_profile_to_string /* module: pipeline/pipeline_config */ (config->memory_profile)) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  memory_budget_mb: %d\n", config->memory_budget_mb) != 0) {
+            return -1;
+        }
+    }
+
+    if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "benchmark:\n") != 0 ||
+        append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  enabled: %s\n", config->enable_benchmark ? "true" : "false") != 0) {
+        return -1;
+    }
+    if (config->enable_benchmark &&
+        append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  benchmark_path: %s\n", config->benchmark_path) != 0) {
+        return -1;
+    }
+
+    if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "runtime:\n") != 0 ||
+        append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  progress_interval: %d\n", config->progress_interval) != 0 ||
+        append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  ffmpeg_log_level: %s\n", config->ffmpeg_log_level) != 0) {
+        return -1;
     }
 
     return 0;
@@ -232,19 +784,8 @@ void pipeline_config_print(const PipelineConfig *config) {
         return;
     }
 
-    printf("input_path: %s\n", config->input_path);
-    printf("output_path: %s\n", config->output_path);
-    printf("benchmark_path: %s\n", config->benchmark_path);
-    printf("encoder: %s\n", config->encoder_name);
-    printf("mode: %s\n", mode_to_string(config->mode));
-    printf("filter: %s\n", filter_to_string(config->filter));
-    printf("max_frames: %d\n", config->max_frames);
-    printf("enable_benchmark: %s\n", config->enable_benchmark ? "true" : "false");
-    printf("lossless_output: %s\n", config->lossless_output ? "true" : "false");
-    printf("memory_profile: %s\n", memory_profile_to_string(config->memory_profile));
-    printf("memory_budget_mb: %d\n", config->memory_budget_mb);
-    printf("frame_slots: %d\n", config->frame_slots);
-    printf("decoder_threads: %d\n", config->decoder_threads);
-    printf("encoder_threads: %d\n", config->encoder_threads);
-    printf("processor_workers: %d\n", config->processor_workers);
+    char summary[4096];
+    if (pipeline_config_format_summary /* module: pipeline/pipeline_config */ (config, summary, sizeof(summary)) == 0) {
+        fputs(summary, stdout);
+    }
 }

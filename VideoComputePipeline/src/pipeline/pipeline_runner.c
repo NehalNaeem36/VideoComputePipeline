@@ -4,9 +4,16 @@
 #include "benchmark/timer.h"
 #include "cpu/cpu_filters.h"
 #include "gpu/gpu_filters.h"
+#include "gpu/cuda_overlay.h"
+#include "inference/detection_result.h"
+#include "inference/detection_writer.h"
+#include "inference/inference_engine.h"
 #include "pipeline/frame_pool.h"
+#include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "video/video_reader.h"
+#include "video/video_hw_reader.h"
+#include "video/video_hw_writer.h"
 #include "video/video_writer.h"
 
 #include <stdlib.h>
@@ -17,6 +24,11 @@
 #else
 #include <pthread.h>
 #endif
+
+static int run_filter_pipeline(const PipelineConfig *config);
+static int run_detection_pipeline(const PipelineConfig *config);
+static int run_detection_pipeline_cpu(const PipelineConfig *config);
+static int run_detection_pipeline_nvdec(const PipelineConfig *config);
 
 typedef struct {
     Frame frame;
@@ -63,6 +75,7 @@ typedef struct {
     int effective_decoder_threads;
     int effective_encoder_threads;
     int failed;
+    Timer progress_timer;
 #ifdef _WIN32
     volatile LONG active_processors;
 #else
@@ -181,6 +194,7 @@ static int packet_queue_push(PacketQueue *queue, PipelinePacket *packet) {
 
 #ifdef _WIN32
     EnterCriticalSection(&queue->lock);
+    /* lets you enter only if queue is  */
     while (!queue->closed && queue->count == queue->capacity) {
         SleepConditionVariableCS(&queue->not_full, &queue->lock, INFINITE);
     }
@@ -583,6 +597,14 @@ static int write_packet(PipelineContext *ctx, PipelinePacket *packet) {
             return -1;
         }
     }
+    if (ctx->config->progress_interval > 0) {
+        const int completed_frames = packet->frame.index + 1;
+        if (completed_frames > 0 && completed_frames % ctx->config->progress_interval == 0) {
+            const double wall_ms = timer_stop_ms /* module: benchmark/timer */ (&ctx->progress_timer);
+            const double fps = wall_ms > 0.0 ? (double)completed_frames * 1000.0 / wall_ms : 0.0;
+            log_info /* module: utils/logger */ ("progress: completed %d filter frames, wall_clock_fps=%.3f", completed_frames, fps);
+        }
+    }
     return 0;
 }
 
@@ -603,6 +625,404 @@ static int write_available_ordered(PipelineContext *ctx, PendingNode **pending, 
         (*next_frame_id)++;
         packet_free /* module: pipeline/pipeline_runner */ (&packet);
     }
+}
+
+static int run_detection_pipeline_cpu(const PipelineConfig *config) {
+    if (!config) {
+        return -1;
+    }
+
+    if (config->model_path[0] == '\0' || !file_exists /* module: utils/file_utils */ (config->model_path)) {
+        log_error /* module: utils/logger */ ("missing TensorRT model: %s", config->model_path);
+        return -1;
+    }
+    if (config->labels_path[0] == '\0' || !file_exists /* module: utils/file_utils */ (config->labels_path)) {
+        log_error /* module: utils/logger */ ("missing labels file: %s", config->labels_path);
+        return -1;
+    }
+    if (config->detections_path[0] == '\0') {
+        log_error /* module: utils/logger */ ("detections output path is empty");
+        return -1;
+    }
+
+    int result_code = -1;
+    int reader_opened = 0;
+    int benchmark_opened = 0;
+    int detections_opened = 0;
+    VideoReader reader;
+    Benchmark benchmark;
+    DetectionWriter detections;
+    InferenceEngine *engine = NULL;
+    Frame frame;
+    DetectionResult detection_result;
+    Timer wall_timer;
+
+    memset(&reader, 0, sizeof(reader));
+    benchmark_init /* module: benchmark/benchmark */ (&benchmark);
+    detection_writer_init /* module: inference/detection_writer */ (&detections);
+    frame_init /* module: core/frame */ (&frame);
+    detection_result_init /* module: inference/detection_result */ (&detection_result);
+
+    int effective_decoder_threads = config->decoder_threads;
+    if ((config->memory_profile == MEMORY_PROFILE_LOW || config->memory_profile == MEMORY_PROFILE_AUTO) &&
+        effective_decoder_threads > 2) {
+        effective_decoder_threads = 2;
+    }
+
+    if (video_set_ffmpeg_log_level /* module: video/video_reader */ (config->ffmpeg_log_level) != 0) {
+        log_error /* module: utils/logger */ ("invalid FFmpeg log level: %s", config->ffmpeg_log_level);
+        goto cleanup;
+    }
+
+    if (video_reader_open_with_threads /* module: video/video_reader */ (&reader, config->input_path, effective_decoder_threads) != 0) {
+        log_error /* module: utils/logger */ ("failed to open input video: %s", config->input_path);
+        goto cleanup;
+    }
+    reader_opened = 1;
+
+    const VideoInfo *info = video_reader_get_info /* module: video/video_reader */ (&reader);
+    if (!info) {
+        log_error /* module: utils/logger */ ("failed to read input video info");
+        goto cleanup;
+    }
+
+    if (frame_alloc /* module: core/frame */ (&frame, info->width, info->height, FRAME_FORMAT_NV12) != 0) {
+        log_error /* module: utils/logger */ ("failed to allocate reusable NV12 frame: %dx%d", info->width, info->height);
+        goto cleanup;
+    }
+
+    if (detection_result_alloc /* module: inference/detection_result */ (&detection_result, (size_t)config->max_detections_per_frame) != 0) {
+        log_error /* module: utils/logger */ ("failed to allocate detection result capacity: %d", config->max_detections_per_frame);
+        goto cleanup;
+    }
+
+    if (detection_writer_open /* module: inference/detection_writer */ (&detections, config->detections_path, config->labels_path) != 0) {
+        log_error /* module: utils/logger */ ("failed to open detections CSV: %s", config->detections_path);
+        goto cleanup;
+    }
+    detections_opened = 1;
+
+    if (config->enable_benchmark &&
+        benchmark_open_csv /* module: benchmark/benchmark */ (&benchmark, config->benchmark_path) != 0) {
+        log_error /* module: utils/logger */ ("failed to open benchmark CSV: %s", config->benchmark_path);
+        goto cleanup;
+    }
+    benchmark_opened = config->enable_benchmark ? 1 : 0;
+
+    InferenceConfig inference_config;
+    memset(&inference_config, 0, sizeof(inference_config));
+    strncpy(inference_config.model_path, config->model_path, sizeof(inference_config.model_path) - 1u);
+    strncpy(inference_config.labels_path, config->labels_path, sizeof(inference_config.labels_path) - 1u);
+    inference_config.input_width = config->inference_input_size;
+    inference_config.input_height = config->inference_input_size;
+    inference_config.class_count = config->detection_class_count;
+    inference_config.confidence_threshold = config->confidence_threshold;
+    inference_config.iou_threshold = config->iou_threshold;
+    inference_config.use_fp16 = strcmp(config->inference_precision, "fp16") == 0;
+
+    if (inference_engine_create /* module: inference/inference_engine */ (&engine, &inference_config) != 0) {
+        log_error /* module: utils/logger */ ("failed to create inference engine: %s", inference_engine_last_error /* module: inference/inference_engine */ ());
+        goto cleanup;
+    }
+
+    log_info /* module: utils/logger */ ("detection pipeline: decoder_stage=1 ffmpeg_decoder_threads=%d inference_workers=1 encoder_stage=0", effective_decoder_threads);
+    timer_start /* module: benchmark/timer */ (&wall_timer);
+
+    int frame_id = 0;
+    for (;;) {
+        FrameTiming timing;
+        Timer decode_timer;
+        memset(&timing, 0, sizeof(timing));
+
+        if (config->max_frames > 0 && frame_id >= config->max_frames) {
+            break;
+        }
+
+        timer_start /* module: benchmark/timer */ (&decode_timer);
+        const int read_result = video_reader_read_frame_as /* module: video/video_reader */ (&reader, &frame, FRAME_FORMAT_NV12);
+        timing.decode_ms = timer_stop_ms /* module: benchmark/timer */ (&decode_timer);
+        if (read_result == 0) {
+            break;
+        }
+        if (read_result < 0) {
+            log_error /* module: utils/logger */ ("failed to decode NV12 frame %d", frame_id);
+            goto cleanup;
+        }
+
+        frame.index = frame_id;
+        timing.frame_index = frame_id;
+        detection_result_clear /* module: inference/detection_result */ (&detection_result);
+        if (inference_engine_run_nv12 /* module: inference/inference_engine */ (engine, &frame, &detection_result, &timing) != 0) {
+            log_error /* module: utils/logger */ ("inference failed on frame %d: %s", frame_id, inference_engine_last_error /* module: inference/inference_engine */ ());
+            goto cleanup;
+        }
+
+        const double timestamp_ms = info->fps > 0.0 ? (double)frame_id * 1000.0 / info->fps : 0.0;
+        for (size_t i = 0; i < detection_result.count; ++i) {
+            detection_result.items[i].timestamp_ms = timestamp_ms;
+        }
+
+        timing.process_ms = timing.upload_ms + timing.preprocess_ms + timing.inference_ms + timing.download_ms + timing.postprocess_ms;
+        timing.total_ms = timing.decode_ms + timing.process_ms;
+
+        if (detection_writer_write_frame /* module: inference/detection_writer */ (&detections, &detection_result) != 0) {
+            log_error /* module: utils/logger */ ("failed to write detections for frame %d", frame_id);
+            goto cleanup;
+        }
+
+        if (config->enable_benchmark &&
+            benchmark_add_frame_result /* module: benchmark/benchmark */ (&benchmark, &timing) != 0) {
+            log_error /* module: utils/logger */ ("failed to write benchmark timing for frame %d", frame_id);
+            goto cleanup;
+        }
+
+        frame_id++;
+        if (config->progress_interval > 0 && frame_id % config->progress_interval == 0) {
+            const double wall_ms = timer_stop_ms /* module: benchmark/timer */ (&wall_timer);
+            const double fps = wall_ms > 0.0 ? (double)frame_id * 1000.0 / wall_ms : 0.0;
+            log_info /* module: utils/logger */ ("progress: completed %d detection frames, wall_clock_fps=%.3f", frame_id, fps);
+        }
+    }
+
+    if (config->enable_benchmark) {
+        benchmark_set_wall_clock_ms /* module: benchmark/benchmark */ (&benchmark, timer_stop_ms /* module: benchmark/timer */ (&wall_timer));
+        if (benchmark_close_csv /* module: benchmark/benchmark */ (&benchmark) != 0) {
+            log_error /* module: utils/logger */ ("failed to close benchmark CSV: %s", config->benchmark_path);
+            goto cleanup;
+        }
+        benchmark_opened = 0;
+        benchmark_print_detection_summary /* module: benchmark/benchmark */ (&benchmark);
+    }
+
+    result_code = 0;
+
+cleanup:
+    if (benchmark_opened) {
+        benchmark_close_csv /* module: benchmark/benchmark */ (&benchmark);
+    }
+    if (detections_opened) {
+        detection_writer_close /* module: inference/detection_writer */ (&detections);
+    }
+    inference_engine_destroy /* module: inference/inference_engine */ (engine);
+    detection_result_free /* module: inference/detection_result */ (&detection_result);
+    frame_free /* module: core/frame */ (&frame);
+    benchmark_free /* module: benchmark/benchmark */ (&benchmark);
+    if (reader_opened) {
+        video_reader_close /* module: video/video_reader */ (&reader);
+    }
+    return result_code;
+}
+
+static int run_detection_pipeline_nvdec(const PipelineConfig *config) {
+    if (!config) {
+        return -1;
+    }
+    if (config->model_path[0] == '\0' || !file_exists /* module: utils/file_utils */ (config->model_path)) {
+        log_error /* module: utils/logger */ ("missing TensorRT model: %s", config->model_path);
+        return -1;
+    }
+    if (config->labels_path[0] == '\0' || !file_exists /* module: utils/file_utils */ (config->labels_path)) {
+        log_error /* module: utils/logger */ ("missing labels file: %s", config->labels_path);
+        return -1;
+    }
+
+    int result_code = -1;
+    int reader_opened = 0;
+    int writer_opened = 0;
+    int benchmark_opened = 0;
+    int detections_opened = 0;
+    VideoHWReader reader;
+    VideoHWWriter writer;
+    Benchmark benchmark;
+    DetectionWriter detections;
+    InferenceEngine *engine = NULL;
+    DetectionResult detection_result;
+    CudaNV12Frame frame;
+    Timer wall_timer;
+
+    memset(&reader, 0, sizeof(reader));
+    memset(&writer, 0, sizeof(writer));
+    benchmark_init /* module: benchmark/benchmark */ (&benchmark);
+    detection_writer_init /* module: inference/detection_writer */ (&detections);
+    detection_result_init /* module: inference/detection_result */ (&detection_result);
+    cuda_nv12_frame_init /* module: gpu/cuda_frame */ (&frame);
+
+    if (video_set_ffmpeg_log_level /* module: video/video_reader */ (config->ffmpeg_log_level) != 0) {
+        log_error /* module: utils/logger */ ("invalid FFmpeg log level: %s", config->ffmpeg_log_level);
+        goto cleanup;
+    }
+
+    if (video_hw_reader_open /* module: video/video_hw_reader */ (&reader, config->input_path, config->decoder_threads) != 0) {
+        log_error /* module: utils/logger */ ("failed to open NVDEC reader: %s", video_hw_reader_last_error /* module: video/video_hw_reader */ ());
+        goto cleanup;
+    }
+    reader_opened = 1;
+
+    const VideoInfo *info = video_hw_reader_get_info /* module: video/video_hw_reader */ (&reader);
+    if (!info) {
+        log_error /* module: utils/logger */ ("failed to read hardware input video info");
+        goto cleanup;
+    }
+
+    if (detection_result_alloc /* module: inference/detection_result */ (&detection_result, (size_t)config->max_detections_per_frame) != 0) {
+        log_error /* module: utils/logger */ ("failed to allocate detection result capacity: %d", config->max_detections_per_frame);
+        goto cleanup;
+    }
+    if (detection_writer_open /* module: inference/detection_writer */ (&detections, config->detections_path, config->labels_path) != 0) {
+        log_error /* module: utils/logger */ ("failed to open detections CSV: %s", config->detections_path);
+        goto cleanup;
+    }
+    detections_opened = 1;
+    if (config->enable_benchmark &&
+        benchmark_open_csv /* module: benchmark/benchmark */ (&benchmark, config->benchmark_path) != 0) {
+        log_error /* module: utils/logger */ ("failed to open benchmark CSV: %s", config->benchmark_path);
+        goto cleanup;
+    }
+    benchmark_opened = config->enable_benchmark ? 1 : 0;
+
+    InferenceConfig inference_config;
+    memset(&inference_config, 0, sizeof(inference_config));
+    strncpy(inference_config.model_path, config->model_path, sizeof(inference_config.model_path) - 1u);
+    strncpy(inference_config.labels_path, config->labels_path, sizeof(inference_config.labels_path) - 1u);
+    inference_config.input_width = config->inference_input_size;
+    inference_config.input_height = config->inference_input_size;
+    inference_config.class_count = config->detection_class_count;
+    inference_config.confidence_threshold = config->confidence_threshold;
+    inference_config.iou_threshold = config->iou_threshold;
+    inference_config.use_fp16 = strcmp(config->inference_precision, "fp16") == 0;
+    if (inference_engine_create /* module: inference/inference_engine */ (&engine, &inference_config) != 0) {
+        log_error /* module: utils/logger */ ("failed to create inference engine: %s", inference_engine_last_error /* module: inference/inference_engine */ ());
+        goto cleanup;
+    }
+
+    if (config->draw_boxes) {
+        if (video_hw_writer_open /* module: video/video_hw_writer */ (&writer, config->output_path, info, config->encoder_name, config->lossless_output) != 0) {
+            log_error /* module: utils/logger */ ("failed to open NVENC writer: %s", video_hw_writer_last_error /* module: video/video_hw_writer */ ());
+            goto cleanup;
+        }
+        writer_opened = 1;
+    }
+
+    log_info /* module: utils/logger */ ("hardware detection pipeline: decoder=nvdec inference=tensorrt draw_boxes=%s encoder=%s",
+             config->draw_boxes ? "true" : "false",
+             config->draw_boxes ? config->encoder_name : "none");
+    timer_start /* module: benchmark/timer */ (&wall_timer);
+
+    int frame_id = 0;
+    for (;;) {
+        FrameTiming timing;
+        Timer decode_timer;
+        memset(&timing, 0, sizeof(timing));
+
+        if (config->max_frames > 0 && frame_id >= config->max_frames) {
+            break;
+        }
+
+        timer_start /* module: benchmark/timer */ (&decode_timer);
+        const int read_result = video_hw_reader_read_cuda_nv12 /* module: video/video_hw_reader */ (&reader, &frame);
+        timing.decode_ms = timer_stop_ms /* module: benchmark/timer */ (&decode_timer);
+        if (read_result == 0) {
+            break;
+        }
+        if (read_result < 0) {
+            log_error /* module: utils/logger */ ("failed to decode CUDA/NV12 frame %d: %s", frame_id, video_hw_reader_last_error /* module: video/video_hw_reader */ ());
+            goto cleanup;
+        }
+
+        frame.index = frame_id;
+        timing.frame_index = frame_id;
+        detection_result_clear /* module: inference/detection_result */ (&detection_result);
+        if (inference_engine_run_cuda_nv12 /* module: inference/inference_engine */ (engine, &frame, &detection_result, &timing) != 0) {
+            log_error /* module: utils/logger */ ("device inference failed on frame %d: %s", frame_id, inference_engine_last_error /* module: inference/inference_engine */ ());
+            video_hw_reader_release_frame /* module: video/video_hw_reader */ (&reader, &frame);
+            goto cleanup;
+        }
+
+        const double timestamp_ms = frame.timestamp_ms > 0.0 ? frame.timestamp_ms : (info->fps > 0.0 ? (double)frame_id * 1000.0 / info->fps : 0.0);
+        for (size_t i = 0; i < detection_result.count; ++i) {
+            detection_result.items[i].timestamp_ms = timestamp_ms;
+        }
+
+        if (detection_writer_write_frame /* module: inference/detection_writer */ (&detections, &detection_result) != 0) {
+            log_error /* module: utils/logger */ ("failed to write detections for frame %d", frame_id);
+            video_hw_reader_release_frame /* module: video/video_hw_reader */ (&reader, &frame);
+            goto cleanup;
+        }
+
+        if (config->draw_boxes) {
+            if (cuda_overlay_draw_nv12_boxes /* module: gpu/cuda_overlay */ (&frame,
+                                                                              &detection_result,
+                                                                              config->box_thickness,
+                                                                              config->box_confidence,
+                                                                              -1,
+                                                                              frame.cuda_stream,
+                                                                              &timing.overlay_ms) != 0) {
+                log_error /* module: utils/logger */ ("CUDA overlay failed on frame %d: %s", frame_id, cuda_overlay_last_error /* module: gpu/cuda_overlay */ ());
+                video_hw_reader_release_frame /* module: video/video_hw_reader */ (&reader, &frame);
+                goto cleanup;
+            }
+            if (video_hw_writer_write_cuda_nv12 /* module: video/video_hw_writer */ (&writer, &frame, &timing) != 0) {
+                log_error /* module: utils/logger */ ("NVENC encode failed on frame %d: %s", frame_id, video_hw_writer_last_error /* module: video/video_hw_writer */ ());
+                video_hw_reader_release_frame /* module: video/video_hw_reader */ (&reader, &frame);
+                goto cleanup;
+            }
+        }
+
+        timing.process_ms = timing.preprocess_ms + timing.inference_ms + timing.download_ms + timing.postprocess_ms + timing.overlay_ms;
+        timing.total_ms = timing.decode_ms + timing.process_ms + timing.encode_ms + timing.mux_write_ms;
+        if (config->enable_benchmark &&
+            benchmark_add_frame_result /* module: benchmark/benchmark */ (&benchmark, &timing) != 0) {
+            log_error /* module: utils/logger */ ("failed to write benchmark timing for frame %d", frame_id);
+            video_hw_reader_release_frame /* module: video/video_hw_reader */ (&reader, &frame);
+            goto cleanup;
+        }
+
+        video_hw_reader_release_frame /* module: video/video_hw_reader */ (&reader, &frame);
+        frame_id++;
+        if (config->progress_interval > 0 && frame_id % config->progress_interval == 0) {
+            const double wall_ms = timer_stop_ms /* module: benchmark/timer */ (&wall_timer);
+            const double fps = wall_ms > 0.0 ? (double)frame_id * 1000.0 / wall_ms : 0.0;
+            log_info /* module: utils/logger */ ("progress: completed %d hardware detection frames, wall_clock_fps=%.3f", frame_id, fps);
+        }
+    }
+
+    if (writer_opened && video_hw_writer_flush /* module: video/video_hw_writer */ (&writer) != 0) {
+        log_error /* module: utils/logger */ ("hardware writer flush failed: %s", video_hw_writer_last_error /* module: video/video_hw_writer */ ());
+        goto cleanup;
+    }
+
+    if (config->enable_benchmark) {
+        benchmark_set_wall_clock_ms /* module: benchmark/benchmark */ (&benchmark, timer_stop_ms /* module: benchmark/timer */ (&wall_timer));
+        if (benchmark_close_csv /* module: benchmark/benchmark */ (&benchmark) != 0) {
+            log_error /* module: utils/logger */ ("failed to close benchmark CSV: %s", config->benchmark_path);
+            goto cleanup;
+        }
+        benchmark_opened = 0;
+        benchmark_print_detection_summary /* module: benchmark/benchmark */ (&benchmark);
+    }
+
+    result_code = 0;
+
+cleanup:
+    if (cuda_nv12_frame_is_valid /* module: gpu/cuda_frame */ (&frame)) {
+        video_hw_reader_release_frame /* module: video/video_hw_reader */ (&reader, &frame);
+    }
+    if (benchmark_opened) {
+        benchmark_close_csv /* module: benchmark/benchmark */ (&benchmark);
+    }
+    if (detections_opened) {
+        detection_writer_close /* module: inference/detection_writer */ (&detections);
+    }
+    if (writer_opened) {
+        video_hw_writer_close /* module: video/video_hw_writer */ (&writer);
+    }
+    inference_engine_destroy /* module: inference/inference_engine */ (engine);
+    detection_result_free /* module: inference/detection_result */ (&detection_result);
+    benchmark_free /* module: benchmark/benchmark */ (&benchmark);
+    if (reader_opened) {
+        video_hw_reader_close /* module: video/video_hw_reader */ (&reader);
+    }
+    return result_code;
 }
 
 #ifdef _WIN32
@@ -662,7 +1082,7 @@ static void *encoder_thread_main(void *arg)
 #endif
 }
 
-int pipeline_run(const PipelineConfig *config) {
+static int run_filter_pipeline(const PipelineConfig *config) {
     /* initial entry to pipeline runner module */
     if (!config) {  //check config is not null
         return -1;
@@ -691,6 +1111,7 @@ int pipeline_run(const PipelineConfig *config) {
     benchmark_init /* module: benchmark/benchmark */ (&ctx.benchmark);
     Timer pipeline_wall_timer;
     timer_start /* module: benchmark/timer */ (&pipeline_wall_timer);
+    timer_start /* module: benchmark/timer */ (&ctx.progress_timer);
 
 #ifndef _WIN32
     pthread_mutex_init(&ctx.active_lock, NULL);
@@ -717,12 +1138,17 @@ int pipeline_run(const PipelineConfig *config) {
     } else if (config->memory_profile == MEMORY_PROFILE_BALANCED && config->mode == PROCESS_CPU && effective_processor_workers > 2) {
         effective_processor_workers = 2;
     }
-
+/* allocates effective threads for processor workers, effective frame slots, effective decoder/encoder*/
     const int processor_workers = config->mode == PROCESS_GPU ? 1 : effective_processor_workers;
     ctx.processor_workers = processor_workers > 0 ? processor_workers : 1;
     ctx.effective_frame_slots = effective_frame_slots;
     ctx.effective_decoder_threads = effective_decoder_threads;
     ctx.effective_encoder_threads = effective_encoder_threads;
+
+    if (video_set_ffmpeg_log_level /* module: video/video_reader */ (config->ffmpeg_log_level) != 0) {
+        log_error /* module: utils/logger */ ("invalid FFmpeg log level: %s", config->ffmpeg_log_level);
+        return -1;
+    }
 
     if (video_reader_open_with_threads /* module: video/video_reader */ (&ctx.reader, config->input_path, effective_decoder_threads) != 0) {
         log_error /* module: utils/logger */ ("failed to open input video: %s", config->input_path);
@@ -934,4 +1360,32 @@ int pipeline_run(const PipelineConfig *config) {
 #endif
 
     return ctx.failed ? -1 : 0;
+}
+
+static int run_detection_pipeline(const PipelineConfig *config) {
+    if (!config) {
+        return -1;
+    }
+
+    if (config->decoder_mode == VIDEO_DECODER_NVDEC) {
+        const int result = run_detection_pipeline_nvdec /* module: pipeline/pipeline_runner */ (config);
+        if (result == 0 || config->decoder_fallback != DECODER_FALLBACK_CPU) {
+            return result;
+        }
+        log_warn /* module: utils/logger */ ("NVDEC detection path failed; falling back to CPU-decoded NV12 detection");
+    }
+
+    return run_detection_pipeline_cpu /* module: pipeline/pipeline_runner */ (config);
+}
+
+int pipeline_run(const PipelineConfig *config) {
+    if (!config) {
+        return -1;
+    }
+
+    if (config->task == PIPELINE_TASK_DETECT) {
+        return run_detection_pipeline /* module: pipeline/pipeline_runner */ (config);
+    }
+
+    return run_filter_pipeline /* module: pipeline/pipeline_runner */ (config);
 }

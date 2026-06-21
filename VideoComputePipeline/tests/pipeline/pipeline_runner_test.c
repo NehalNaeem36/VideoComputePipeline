@@ -28,6 +28,12 @@ int main(void) {
     config.mode = PROCESS_CPU;
     config.filter = FILTER_GRAYSCALE;
 
+    PipelineConfig detect_config;
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&detect_config);
+    detect_config.task = PIPELINE_TASK_DETECT;
+    detect_config.enable_benchmark = 0;
+    TEST_ASSERT(pipeline_run /* module: pipeline/pipeline_runner */ (&detect_config) != 0);
+
     if (!file_exists /* module: utils/file_utils */ (config.input_path)) {
         printf("pipeline_runner_test skipped: input video not available\n");
         return 0;
