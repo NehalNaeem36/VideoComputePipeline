@@ -711,6 +711,10 @@ static int run_detection_pipeline(const PipelineConfig *config) {
     inference_config.input_width = config->inference_input_size;
     inference_config.input_height = config->inference_input_size;
     inference_config.class_count = config->detection_class_count;
+    inference_config.class_filter_id_count = config->class_filter_id_count;
+    memcpy(inference_config.class_filter_ids, config->class_filter_ids, sizeof(inference_config.class_filter_ids));
+    inference_config.class_filter_name_count = config->class_filter_name_count;
+    memcpy(inference_config.class_filter_names, config->class_filter_names, sizeof(inference_config.class_filter_names));
     inference_config.confidence_threshold = config->confidence_threshold;
     inference_config.iou_threshold = config->iou_threshold;
     inference_config.use_fp16 = strcmp(config->inference_precision, "fp16") == 0;

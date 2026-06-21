@@ -40,9 +40,11 @@ If your pipeline binary is in `build-msvc` or `build-msvc-hw`, edit the Pipeline
 - NVDEC/NVENC Stress Test: hardware decode/encode, no CPU decoder fallback.
 - Custom: selected automatically when you edit fields manually.
 
+Detection presets load the labels file into a searchable class list. Leaving the class selection empty detects every class. Selecting one or more labels makes the UI emit `--class-ids`, so CSV output and annotated boxes contain only the selected classes.
+
 ## Tabs
 
-- Run Config: presets, paths, model/labels, decoder/encoder, thresholds, command preview, Run/Stop.
+- Run Config: presets, paths, model/labels, class selection, decoder/encoder, thresholds, command preview, Run/Stop.
 - Monitor: process status, elapsed time, parsed frame count, FPS, output size when available.
 - Logs: live stdout/stderr, filtering, highlighting for errors/warnings/TensorRT lines, save/clear.
 - Help: short explanations for pipeline modes and common failures.

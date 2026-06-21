@@ -37,6 +37,9 @@ static int pipeline_config_test_defaults(void) {
     TEST_ASSERT(config.confidence_threshold == DEFAULT_DETECTION_CONFIDENCE);
     TEST_ASSERT(config.iou_threshold == DEFAULT_DETECTION_IOU_THRESHOLD);
     TEST_ASSERT(config.inference_input_size == DEFAULT_INFERENCE_INPUT_SIZE);
+    TEST_ASSERT(config.detection_class_count == DEFAULT_DETECTION_CLASS_COUNT);
+    TEST_ASSERT(config.class_filter_id_count == 0);
+    TEST_ASSERT(config.class_filter_name_count == 0);
     TEST_ASSERT(config.progress_interval == DEFAULT_PROGRESS_INTERVAL);
     TEST_ASSERT(strcmp(config.ffmpeg_log_level, DEFAULT_FFMPEG_LOG_LEVEL) == 0);
     TEST_ASSERT(config.decoder_mode == VIDEO_DECODER_CPU);
@@ -61,6 +64,8 @@ static int pipeline_config_test_parse_args(void) {
         "--confidence", "0.35",
         "--iou-threshold", "0.50",
         "--input-size", "512",
+        "--class-ids", "0,2,5",
+        "--classes", "person,traffic light",
         "--inference-backend", "tensorrt",
         "--precision", "fp16",
         "--encoder", "h264_nvenc",
@@ -113,6 +118,13 @@ static int pipeline_config_test_parse_args(void) {
     TEST_ASSERT(config.confidence_threshold > 0.34f && config.confidence_threshold < 0.36f);
     TEST_ASSERT(config.iou_threshold > 0.49f && config.iou_threshold < 0.51f);
     TEST_ASSERT(config.inference_input_size == 512);
+    TEST_ASSERT(config.class_filter_id_count == 3);
+    TEST_ASSERT(config.class_filter_ids[0] == 0);
+    TEST_ASSERT(config.class_filter_ids[1] == 2);
+    TEST_ASSERT(config.class_filter_ids[2] == 5);
+    TEST_ASSERT(config.class_filter_name_count == 2);
+    TEST_ASSERT(strcmp(config.class_filter_names[0], "person") == 0);
+    TEST_ASSERT(strcmp(config.class_filter_names[1], "traffic light") == 0);
     TEST_ASSERT(strcmp(config.inference_backend, "tensorrt") == 0);
     TEST_ASSERT(strcmp(config.inference_precision, "fp16") == 0);
     TEST_ASSERT(config.progress_interval == 42);
@@ -185,12 +197,31 @@ static int pipeline_config_test_missing_value_error_message(void) {
     return 0;
 }
 
+static int pipeline_config_test_bad_class_ids(void) {
+    char *argv[] = {
+        "VideoComputePipeline",
+        "--class-ids", "0,nope"
+    };
+    const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+
+    PipelineConfig config;
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+
+    TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) != 0);
+    TEST_ASSERT(strstr(pipeline_config_last_error /* module: pipeline/pipeline_config */ (), "--class-ids") != NULL);
+    return 0;
+}
+
 static int pipeline_config_test_detect_summary(void) {
     PipelineConfig config;
     char summary[4096];
 
     pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
     config.task = PIPELINE_TASK_DETECT;
+    config.class_filter_id_count = 1;
+    config.class_filter_ids[0] = 0;
+    config.class_filter_name_count = 1;
+    strcpy(config.class_filter_names[0], "car");
 
     TEST_ASSERT(pipeline_config_format_summary /* module: pipeline/pipeline_config */ (&config, summary, sizeof(summary)) == 0);
     TEST_ASSERT(strstr(summary, "task: detect") != NULL);
@@ -200,7 +231,8 @@ static int pipeline_config_test_detect_summary(void) {
     TEST_ASSERT(strstr(summary, "detections_path:") != NULL);
     TEST_ASSERT(strstr(summary, "confidence:") != NULL);
     TEST_ASSERT(strstr(summary, "input_size:") != NULL);
-    TEST_ASSERT(strstr(summary, "filter:") == NULL);
+    TEST_ASSERT(strstr(summary, "class_filter: ids=0 names=car") != NULL);
+    TEST_ASSERT(strstr(summary, "\n  filter:") == NULL);
     TEST_ASSERT(strstr(summary, "encoder:") == NULL);
     TEST_ASSERT(strstr(summary, "output_path:") == NULL);
     TEST_ASSERT(strstr(summary, "lossless_output:") == NULL);
@@ -260,6 +292,9 @@ int main(void) {
         return 1;
     }
     if (pipeline_config_test_missing_value_error_message() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_bad_class_ids() != 0) {
         return 1;
     }
     if (pipeline_config_test_detect_summary() != 0) {

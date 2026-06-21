@@ -72,6 +72,10 @@ typedef struct {
     float iou_threshold;
     int inference_input_size;
     int detection_class_count;
+    int class_filter_id_count;
+    int class_filter_ids[VCP_MAX_CLASS_FILTERS];
+    int class_filter_name_count;
+    char class_filter_names[VCP_MAX_CLASS_FILTERS][VCP_MAX_CLASS_NAME_LENGTH];
     int max_detections_per_frame;
     int progress_interval;
     char ffmpeg_log_level[16];

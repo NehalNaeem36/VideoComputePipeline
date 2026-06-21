@@ -1,4 +1,5 @@
 build*/
 *.user
 *.log
+imgui.ini
 VideoComputePipelineUI_logs.txt

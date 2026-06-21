@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -78,6 +79,38 @@ std::vector<char> read_file(const char *path) {
     return file ? data : std::vector<char>{};
 }
 
+std::string trim_copy(const std::string &value) {
+    size_t begin = 0;
+    size_t end = value.size();
+    while (begin < end && std::isspace((unsigned char)value[begin])) {
+        ++begin;
+    }
+    while (end > begin && std::isspace((unsigned char)value[end - 1u])) {
+        --end;
+    }
+    return value.substr(begin, end - begin);
+}
+
+std::string lower_copy(std::string value) {
+    for (char &ch : value) {
+        ch = (char)std::tolower((unsigned char)ch);
+    }
+    return value;
+}
+
+std::vector<std::string> read_labels(const char *path) {
+    std::ifstream file(path);
+    std::vector<std::string> labels;
+    std::string line;
+    while (std::getline(file, line)) {
+        std::string label = trim_copy(line);
+        if (!label.empty()) {
+            labels.push_back(label);
+        }
+    }
+    return labels;
+}
+
 float elapsed_event_ms(cudaEvent_t start, cudaEvent_t end) {
     float ms = 0.0f;
     if (cudaEventElapsedTime(&ms, start, end) != cudaSuccess) {
@@ -132,6 +165,10 @@ public:
         context_.reset(engine_->createExecutionContext());
         if (!context_) {
             g_last_error = "failed to create TensorRT execution context";
+            return -1;
+        }
+
+        if (resolve_class_configuration() != 0) {
             return -1;
         }
 
@@ -258,6 +295,10 @@ public:
         post_config.input_width = config_.input_width;
         post_config.input_height = config_.input_height;
         post_config.class_count = config_.class_count;
+        post_config.class_filter_id_count = config_.class_filter_id_count;
+        std::copy(config_.class_filter_ids,
+                  config_.class_filter_ids + config_.class_filter_id_count,
+                  post_config.class_filter_ids);
         post_config.confidence_threshold = config_.confidence_threshold;
         post_config.iou_threshold = config_.iou_threshold;
         post_config.scale = scale;
@@ -364,6 +405,10 @@ public:
         post_config.input_width = config_.input_width;
         post_config.input_height = config_.input_height;
         post_config.class_count = config_.class_count;
+        post_config.class_filter_id_count = config_.class_filter_id_count;
+        std::copy(config_.class_filter_ids,
+                  config_.class_filter_ids + config_.class_filter_id_count,
+                  post_config.class_filter_ids);
         post_config.confidence_threshold = config_.confidence_threshold;
         post_config.iou_threshold = config_.iou_threshold;
         post_config.scale = scale;
@@ -383,6 +428,63 @@ public:
     }
 
 private:
+    int add_resolved_class_id(int class_id) {
+        if (class_id < 0 || class_id >= config_.class_count) {
+            g_last_error = "class filter ID is outside the configured label range";
+            return -1;
+        }
+        for (int i = 0; i < config_.class_filter_id_count; ++i) {
+            if (config_.class_filter_ids[i] == class_id) {
+                return 0;
+            }
+        }
+        if (config_.class_filter_id_count >= VCP_MAX_CLASS_FILTERS) {
+            g_last_error = "too many class filters";
+            return -1;
+        }
+        config_.class_filter_ids[config_.class_filter_id_count++] = class_id;
+        return 0;
+    }
+
+    int resolve_class_configuration() {
+        std::vector<std::string> labels = read_labels(config_.labels_path);
+        if (config_.class_count <= 0) {
+            if (labels.empty()) {
+                g_last_error = "class count is not configured and labels file is empty or unreadable";
+                return -1;
+            }
+            config_.class_count = (int)labels.size();
+        }
+
+        const int initial_id_count = config_.class_filter_id_count;
+        config_.class_filter_id_count = 0;
+        for (int i = 0; i < initial_id_count; ++i) {
+            if (add_resolved_class_id(config_.class_filter_ids[i]) != 0) {
+                return -1;
+            }
+        }
+
+        for (int i = 0; i < config_.class_filter_name_count; ++i) {
+            const std::string wanted = lower_copy(trim_copy(config_.class_filter_names[i]));
+            int found = -1;
+            for (size_t label_index = 0; label_index < labels.size(); ++label_index) {
+                if (lower_copy(labels[label_index]) == wanted) {
+                    found = (int)label_index;
+                    break;
+                }
+            }
+            if (found < 0) {
+                g_last_error = "class filter name was not found in labels file: " + std::string(config_.class_filter_names[i]);
+                return -1;
+            }
+            if (add_resolved_class_id(found) != 0) {
+                return -1;
+            }
+        }
+
+        return 0;
+    }
+
     int discover_io() {
         const int nb_tensors = engine_->getNbIOTensors();
         for (int i = 0; i < nb_tensors; ++i) {

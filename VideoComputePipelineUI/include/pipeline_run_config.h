@@ -33,6 +33,7 @@ struct PipelineRunConfig {
     std::string detectionsCsvPath = "benchmarks\\people_detections.csv";
     std::string benchmarkCsvPath = "benchmarks\\people_full_inference.csv";
     std::string ffmpegLogLevel = "error";
+    std::vector<int> selectedClassIds;
 
     Preset preset = Preset::PeopleDetectionAnnotatedVideo;
     Task task = Task::Detect;

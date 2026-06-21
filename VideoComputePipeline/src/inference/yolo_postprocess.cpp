@@ -22,6 +22,18 @@ static float box_iou(const Detection &a, const Detection &b) {
     return denom > 0.0f ? intersection / denom : 0.0f;
 }
 
+static bool class_filter_contains(const YoloPostprocessConfig *config, int class_id) {
+    if (!config || config->class_filter_id_count <= 0) {
+        return true;
+    }
+    for (int i = 0; i < config->class_filter_id_count; ++i) {
+        if (config->class_filter_ids[i] == class_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static int parse_output_shape(const int *dims,
                               int nb_dims,
                               int attributes,
@@ -82,16 +94,30 @@ int yolo_postprocess(const float *output,
 
         int best_class = -1;
         float best_score = 0.0f;
-        for (int c = 0; c < config->class_count; ++c) {
-            const float score = read_prediction_value(output, i, 5 + c, prediction_count, attributes, transposed);
-            if (score > best_score) {
-                best_score = score;
-                best_class = c;
+        if (config->class_filter_id_count > 0) {
+            for (int f = 0; f < config->class_filter_id_count; ++f) {
+                const int c = config->class_filter_ids[f];
+                if (c < 0 || c >= config->class_count) {
+                    continue;
+                }
+                const float score = read_prediction_value(output, i, 5 + c, prediction_count, attributes, transposed);
+                if (score > best_score) {
+                    best_score = score;
+                    best_class = c;
+                }
+            }
+        } else {
+            for (int c = 0; c < config->class_count; ++c) {
+                const float score = read_prediction_value(output, i, 5 + c, prediction_count, attributes, transposed);
+                if (score > best_score) {
+                    best_score = score;
+                    best_class = c;
+                }
             }
         }
 
         const float confidence = objectness * best_score;
-        if (best_class < 0 || confidence < config->confidence_threshold) {
+        if (best_class < 0 || !class_filter_contains(config, best_class) || confidence < config->confidence_threshold) {
             continue;
         }
 

@@ -1,6 +1,7 @@
 #ifndef VIDEOCOMPUTEPIPELINE_INFERENCE_YOLO_POSTPROCESS_H
 #define VIDEOCOMPUTEPIPELINE_INFERENCE_YOLO_POSTPROCESS_H
 
+#include "config.h"
 #include "inference/detection_result.h"
 
 #include <stddef.h>
@@ -12,6 +13,8 @@ typedef struct {
     int input_width;
     int input_height;
     int class_count;
+    int class_filter_id_count;
+    int class_filter_ids[VCP_MAX_CLASS_FILTERS];
     float confidence_threshold;
     float iou_threshold;
     float scale;

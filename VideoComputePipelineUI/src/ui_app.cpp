@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <vector>
 
 namespace vcpui {
@@ -66,6 +67,27 @@ void help_section(const char *title, const char *body) {
     if (ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::TextWrapped("%s", body);
     }
+}
+
+std::string trim_copy(const std::string &value) {
+    size_t begin = 0;
+    size_t end = value.size();
+    while (begin < end && (value[begin] == ' ' || value[begin] == '\t' || value[begin] == '\r' || value[begin] == '\n')) {
+        ++begin;
+    }
+    while (end > begin && (value[end - 1u] == ' ' || value[end - 1u] == '\t' || value[end - 1u] == '\r' || value[end - 1u] == '\n')) {
+        --end;
+    }
+    return value.substr(begin, end - begin);
+}
+
+std::string lower_copy(std::string value) {
+    for (char &ch : value) {
+        if (ch >= 'A' && ch <= 'Z') {
+            ch = (char)(ch - 'A' + 'a');
+        }
+    }
+    return value;
 }
 
 }  // namespace
@@ -282,6 +304,42 @@ void UiApp::render_run_config_tab() {
     render_tooltip("Controls non-maximum suppression. Lower values remove overlapping boxes more aggressively.");
     if (ImGui::InputInt("Input size", &config_.inputSize)) mark_custom();
     render_tooltip("Model input resolution. YOLOv5s commonly uses 640.");
+
+    refresh_labels_if_needed();
+    ImGui::SeparatorText("Class filter");
+    ImGui::Text("Selected: %zu", config_.selectedClassIds.size());
+    ImGui::SameLine();
+    if (ImGui::Button("Detect all classes")) {
+        config_.selectedClassIds.clear();
+        mark_custom();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reload labels")) {
+        loadedLabelsPath_.clear();
+        refresh_labels_if_needed();
+    }
+    input_text_string("Search classes", classSearch_);
+    render_tooltip("Leave the selection empty to detect every class. Select one or more labels to emit --class-ids.");
+    if (classLabels_.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.24f, 1.0f), "No labels loaded from the labels path.");
+    } else {
+        const std::string search = lower_copy(classSearch_);
+        ImGui::BeginChild("class-filter-list", ImVec2(-1.0f, 150.0f), true);
+        for (int classId = 0; classId < (int)classLabels_.size(); ++classId) {
+            const std::string &label = classLabels_[(size_t)classId];
+            if (!search.empty() && lower_copy(label).find(search) == std::string::npos) {
+                continue;
+            }
+            bool selected = class_id_selected(classId);
+            char itemLabel[256];
+            std::snprintf(itemLabel, sizeof(itemLabel), "%d: %s", classId, label.c_str());
+            if (ImGui::Checkbox(itemLabel, &selected)) {
+                set_class_id_selected(classId, selected);
+                mark_custom();
+            }
+        }
+        ImGui::EndChild();
+    }
     ImGui::EndDisabled();
     if (ImGui::InputInt("Max frames", &config_.maxFrames)) mark_custom();
     render_tooltip("0 means full video.");
@@ -409,6 +467,8 @@ void UiApp::render_help_tab() {
                  "Detection needs a TensorRT engine file and a labels file. The engine precision must be compatible with the runtime precision and GPU.");
     help_section("Confidence, IoU, and input size",
                  "Confidence filters weak detections. IoU controls overlap suppression. YOLOv5s commonly uses input size 640; larger values cost more FPS.");
+    help_section("Class filtering",
+                 "By default detection keeps every class the model can output. Select one or more labels in the Run Config tab to emit class IDs and keep only those classes in CSV and annotated output.");
     help_section("MKV vs MP4",
                  "MKV is more tolerant while files are being written or if a run is interrupted. MP4 is often not playable until the trailer is finalized.");
     help_section("Common errors",
@@ -472,6 +532,46 @@ void UiApp::normalize_default_paths() {
             break;
         }
         cursor = parent;
+    }
+}
+
+void UiApp::refresh_labels_if_needed() {
+    const std::string labelPath = resolve_path(config_.workingDirectory, config_.labelsPath);
+    if (labelPath == loadedLabelsPath_) {
+        return;
+    }
+
+    loadedLabelsPath_ = labelPath;
+    classLabels_.clear();
+
+    std::ifstream file(labelPath);
+    std::string line;
+    while (std::getline(file, line)) {
+        const std::string label = trim_copy(line);
+        if (!label.empty()) {
+            classLabels_.push_back(label);
+        }
+    }
+
+    config_.selectedClassIds.erase(
+        std::remove_if(config_.selectedClassIds.begin(),
+                       config_.selectedClassIds.end(),
+                       [this](int id) { return id < 0 || id >= (int)classLabels_.size(); }),
+        config_.selectedClassIds.end());
+}
+
+bool UiApp::class_id_selected(int class_id) const {
+    return std::find(config_.selectedClassIds.begin(), config_.selectedClassIds.end(), class_id) != config_.selectedClassIds.end();
+}
+
+void UiApp::set_class_id_selected(int class_id, bool selected) {
+    if (selected) {
+        if (!class_id_selected(class_id)) {
+            config_.selectedClassIds.push_back(class_id);
+        }
+    } else {
+        config_.selectedClassIds.erase(std::remove(config_.selectedClassIds.begin(), config_.selectedClassIds.end(), class_id),
+                                       config_.selectedClassIds.end());
     }
 }
 
