@@ -57,6 +57,7 @@ Testing/
 *.gcno
 coverage/
 *.log
+errorLOG.txt
 
 # Data and benchmarks
 data/input/*
