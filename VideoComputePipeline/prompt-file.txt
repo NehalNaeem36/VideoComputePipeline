@@ -1,726 +1,541 @@
-# VideoComputePipeline - Windows Implementation Prompt for Codex
-
-You are implementing a C11 project called VideoComputePipeline on Windows.
-
-The user has already installed:
-- FFmpeg development libraries and runtime
-- OpenCL headers/runtime
-- GCC
-- CMake
-- Make / MinGW make
-
-Assume Windows using MSYS2 UCRT64 or MinGW-style GCC unless the local setup indicates otherwise.
-
-Project goal:
-Build a modular CPU/GPU video-processing benchmark pipeline.
-
-The program must:
-1. Read an MP4 using FFmpeg libraries, not FFmpeg CLI.
-2. Decode video frame by frame.
-3. Convert decoded frames into an internal RGB24 Frame structure.
-4. Process each frame using either CPU filters or OpenCL GPU kernels.
-5. Encode processed RGB24 frames back into an MP4 using FFmpeg libraries.
-6. Generate benchmark CSV files comparing CPU and GPU performance.
-7. Keep the code clean, modular, and employer-presentable.
-
-Do not use FFmpeg command-line calls.
-Do not shell out to ffmpeg.exe.
-
-Use FFmpeg libraries directly:
-- libavformat
-- libavcodec
-- libavutil
-- libswscale
-
-Use OpenCL for GPU work.
-
-Use C11.
-Use CMake.
-
-Target filters:
-- grayscale
-- 3x3 box blur
-- 5x5 box blur
-- 9x9 box blur
-
-The CPU implementation should be direct C.
-The GPU implementation should use OpenCL kernels.
-
-The benchmark input video is expected to be around 4 minutes 20 seconds long, but the program should work with any valid MP4 input.
-
-============================================================
-HIGH-LEVEL PIPELINE
-============================================================
-
-First implementation should be sequential:
-
-decode one frame
-    -> process frame on CPU or GPU
-    -> encode processed frame
-    -> record timing
-    -> repeat until end of video
-
-The design should allow a later threaded/interleaved version:
-
-decoder thread
-    -> raw frame queue
-    -> CPU/GPU processing worker
-    -> processed frame queue
-    -> ordered writer thread
-
-Important:
-- Do not decode the whole video before processing.
-- Process frames as they become available.
-- Preserve frame.index for ordering and benchmarking.
-- The first version may be sequential, but the modules should not block future pipelining.
-
-============================================================
-STRICT MODULE RULE
-============================================================
-
-Every module must use a 3-file structure:
-
-module_name.h
-module_name.c
-module_name_test.c
-
-Headers go under include/.
-Implementations go under src/.
-Tests go under tests/.
-
-============================================================
-DIRECTORY STRUCTURE
-============================================================
-
-Create/maintain this structure:
-
-VideoComputePipeline/
-├── include/
-│   ├── core/
-│   ├── video/
-│   ├── cpu/
-│   ├── gpu/
-│   ├── pipeline/
-│   ├── benchmark/
-│   └── utils/
-├── src/
-│   ├── core/
-│   ├── video/
-│   ├── cpu/
-│   ├── gpu/
-│   ├── pipeline/
-│   ├── benchmark/
-│   └── utils/
-├── tests/
-│   ├── core/
-│   ├── video/
-│   ├── cpu/
-│   ├── gpu/
-│   ├── pipeline/
-│   ├── benchmark/
-│   └── utils/
-├── kernels/
-│   ├── grayscale.cl
-│   ├── blur3x3.cl
-│   ├── blur5x5.cl
-│   └── blur9x9.cl
-├── data/
-│   ├── input/
-│   └── output/
-├── benchmarks/
-├── main.c
-├── config.h
-├── CMakeLists.txt
-├── README.md
-└── .gitignore
-
-============================================================
-CORE FRAME MODULE
-============================================================
-
-Files:
-- include/core/frame.h
-- src/core/frame.c
-- tests/core/frame_test.c
-
-Purpose:
-The frame module defines and manages the internal frame representation used across the project.
-
-It must not contain:
-- FFmpeg logic
-- OpenCL logic
-- CPU filter logic
-- benchmark logic
-- threading logic
-
-It only manages frame memory and metadata.
-
-Define:
-
-typedef enum {
-    FRAME_FORMAT_RGB24 = 0,
-    FRAME_FORMAT_GRAY8 = 1
-} FrameFormat;
-
-typedef struct {
-    int index;
-    int width;
-    int height;
-    int channels;
-    FrameFormat format;
-    size_t stride;
-    size_t size;
-    uint8_t* data;
-} Frame;
-
-Implement:
-
-void frame_init(Frame* frame);
-
-int frame_alloc(Frame* frame, int width, int height, FrameFormat format);
-
-void frame_free(Frame* frame);
-
-int frame_copy(Frame* dst, const Frame* src);
-
-int frame_move(Frame* dst, Frame* src);
-
-int frame_is_valid(const Frame* frame);
-
-size_t frame_calculate_stride(int width, FrameFormat format);
-
-size_t frame_calculate_size(int width, int height, FrameFormat format);
-
-Rules:
-- RGB24 has 3 channels.
-- GRAY8 has 1 channel.
-- stride = width * channels for now.
-- size = stride * height.
-- frame_copy must deep copy the pixel buffer.
-- frame_move must transfer ownership and clear the source.
-- frame_free must free data and reset all fields safely.
-
-============================================================
-VIDEO MODULES
-============================================================
-
-video_reader files:
-- include/video/video_reader.h
-- src/video/video_reader.c
-- tests/video/video_reader_test.c
-
-Purpose:
-Use FFmpeg libraries to open an MP4 file and decode frames one by one.
-
-Use internally:
-- AVFormatContext
-- AVCodecContext
-- AVStream
-- AVPacket
-- AVFrame
-- SwsContext
-
-video_reader should:
-- open input with avformat_open_input()
-- read stream info with avformat_find_stream_info()
-- find the best video stream
-- create/open decoder
-- read packets with av_read_frame()
-- send packets with avcodec_send_packet()
-- receive decoded frames with avcodec_receive_frame()
-- convert decoded frames to RGB24 using sws_scale()
-- allocate/fill internal Frame
-- assign frame.index
-- return frames one at a time
-
-Define:
-
-typedef struct {
-    int width;
-    int height;
-    double fps;
-    int64_t total_frames;
-    double duration_sec;
-} VideoInfo;
-
-Public functions:
-
-int video_reader_open(VideoReader* reader, const char* input_path);
-int video_reader_read_frame(VideoReader* reader, Frame* out_frame);
-void video_reader_close(VideoReader* reader);
-const VideoInfo* video_reader_get_info(const VideoReader* reader);
-
-Return convention for video_reader_read_frame:
-- 1 means a frame was decoded successfully
-- 0 means end of stream
-- negative means error
-
-video_writer files:
-- include/video/video_writer.h
-- src/video/video_writer.c
-- tests/video/video_writer_test.c
-
-Purpose:
-Use FFmpeg libraries to encode processed RGB24 Frame objects back into an MP4 file.
-
-video_writer should:
-- create output context
-- create video stream
-- create encoder context
-- prefer H.264 if available, otherwise use MPEG-4 fallback
-- convert RGB24 Frame to YUV420P using sws_scale()
-- set PTS correctly
-- send frames to encoder using avcodec_send_frame()
-- receive packets using avcodec_receive_packet()
-- write packets using av_interleaved_write_frame()
-- flush encoder at the end
-
-Public functions:
-
-int video_writer_open(VideoWriter* writer, const char* output_path, int width, int height, double fps);
-int video_writer_write_frame(VideoWriter* writer, const Frame* frame);
-int video_writer_flush(VideoWriter* writer);
-void video_writer_close(VideoWriter* writer);
-
-============================================================
-CPU FILTERS MODULE
-============================================================
-
-Files:
-- include/cpu/cpu_filters.h
-- src/cpu/cpu_filters.c
-- tests/cpu/cpu_filters_test.c
-
-Functions:
-
-int cpu_grayscale(const Frame* input, Frame* output);
-int cpu_blur3x3(const Frame* input, Frame* output);
-int cpu_blur5x5(const Frame* input, Frame* output);
-int cpu_blur9x9(const Frame* input, Frame* output);
-
-Rules:
-- Input is RGB24.
-- Output is RGB24.
-- Output should be allocated if needed.
-- Output frame index should match input frame index.
-- Borders should use clamping.
-- Do not modify the input frame.
-
-Grayscale:
-gray = 0.299R + 0.587G + 0.114B
-Output remains RGB24.
-
-Blur:
-Use box blur, not Gaussian.
-3x3 reads 9 pixels per output pixel.
-5x5 reads 25 pixels per output pixel.
-9x9 reads 81 pixels per output pixel.
-
-============================================================
-GPU / OPENCL MODULES
-============================================================
-
-opencl_context files:
-- include/gpu/opencl_context.h
-- src/gpu/opencl_context.c
-- tests/gpu/opencl_context_test.c
-
-Use:
-#define CL_TARGET_OPENCL_VERSION 300
-#include <CL/cl.h>
-
-Functions:
-int opencl_context_init(OpenCLContext* ctx);
-void opencl_context_print_info(const OpenCLContext* ctx);
-void opencl_context_release(OpenCLContext* ctx);
-
-Rules:
-- prefer GPU
-- fall back to CPU device
-- create context and command queue
-- print platform/device info
-- release resources safely
-
-opencl_program files:
-- include/gpu/opencl_program.h
-- src/gpu/opencl_program.c
-- tests/gpu/opencl_program_test.c
-
-Functions:
-int opencl_program_build(OpenCLProgram* program, OpenCLContext* ctx, const char* kernel_path);
-void opencl_program_release(OpenCLProgram* program);
-
-Rules:
-- read .cl source file
-- create program with clCreateProgramWithSource()
-- build with clBuildProgram()
-- print build log on failure
-
-gpu_filters files:
-- include/gpu/gpu_filters.h
-- src/gpu/gpu_filters.c
-- tests/gpu/gpu_filters_test.c
-
-Functions:
-int gpu_filters_init(GPUFilterContext* gpu);
-void gpu_filters_release(GPUFilterContext* gpu);
-int gpu_grayscale(GPUFilterContext* gpu, const Frame* input, Frame* output);
-int gpu_blur3x3(GPUFilterContext* gpu, const Frame* input, Frame* output);
-int gpu_blur5x5(GPUFilterContext* gpu, const Frame* input, Frame* output);
-int gpu_blur9x9(GPUFilterContext* gpu, const Frame* input, Frame* output);
-
-Rules:
-- hide OpenCL details from pipeline_runner
-- accept RGB24 input and produce RGB24 output
-- preserve frame index
-- reuse GPU buffers when possible
-- blocking upload/kernel/download is acceptable for first version
-- use clEnqueueNDRangeKernel() to launch kernels
-
-GPU flow:
-1. Allocate output Frame if needed.
-2. Ensure cl_mem input/output buffers are large enough.
-3. Upload input with clEnqueueWriteBuffer().
-4. Set kernel args.
-5. Run clEnqueueNDRangeKernel().
-6. Download output with clEnqueueReadBuffer().
-7. Ensure completion with blocking read or clFinish().
-
-OpenCL kernel files:
-- kernels/grayscale.cl
-- kernels/blur3x3.cl
-- kernels/blur5x5.cl
-- kernels/blur9x9.cl
-
-Kernel names:
-- grayscale_rgb24
-- blur3x3_rgb24
-- blur5x5_rgb24
-- blur9x9_rgb24
-
-Each kernel:
-- input uchar*
-- output uchar*
-- width
-- height
-- stride
-- global[0] = width
-- global[1] = height
-- one work item processes one pixel
-- clamp borders
-
-============================================================
-PIPELINE MODULES
-============================================================
-
-pipeline_config files:
-- include/pipeline/pipeline_config.h
-- src/pipeline/pipeline_config.c
-- tests/pipeline/pipeline_config_test.c
-
-Define:
-
-typedef enum {
-    PROCESS_CPU = 0,
-    PROCESS_GPU = 1
-} ProcessMode;
-
-typedef enum {
-    FILTER_GRAYSCALE = 0,
-    FILTER_BLUR_3X3 = 1,
-    FILTER_BLUR_5X5 = 2,
-    FILTER_BLUR_9X9 = 3
-} FilterType;
-
-PipelineConfig fields:
-- char input_path[1024]
-- char output_path[1024]
-- char benchmark_path[1024]
-- ProcessMode mode
-- FilterType filter
-- int max_frames
-- int enable_benchmark
-- int frame_slots
-
-Functions:
-void pipeline_config_default(PipelineConfig* config);
-int pipeline_config_parse_args(PipelineConfig* config, int argc, char** argv);
-void pipeline_config_print(const PipelineConfig* config);
-
-Parse:
---input path
---output path
---benchmark path
---mode cpu|gpu
---filter grayscale|blur3x3|blur5x5|blur9x9
---max-frames N
---no-benchmark
-
-pipeline_runner files:
-- include/pipeline/pipeline_runner.h
-- src/pipeline/pipeline_runner.c
-- tests/pipeline/pipeline_runner_test.c
-
-Function:
-int pipeline_run(const PipelineConfig* config);
-
-Sequential first version:
-1. Open VideoReader.
-2. Get VideoInfo.
-3. Open VideoWriter using input width/height/fps.
-4. Initialize Benchmark.
-5. If GPU mode, initialize GPUFilterContext.
-6. Loop over frames:
-   - read next Frame
-   - stop at end of stream
-   - start total frame timer
-   - process using selected mode/filter
-   - write processed frame
-   - record timing
-   - free input and output frames
-   - respect max_frames if set
-7. Flush writer.
-8. Write benchmark CSV.
-9. Print summary.
-10. Release all resources.
-
-Keep pipeline_runner clean:
-- no FFmpeg internals here
-- no OpenCL internals here
-- use module APIs
-
-Later modules:
-frame_slot and frame_queue may be added for threaded/interleaved pipeline.
-
-============================================================
-BENCHMARK MODULES
-============================================================
-
-timer files:
-- include/benchmark/timer.h
-- src/benchmark/timer.c
-- tests/benchmark/timer_test.c
-
-Purpose:
-High-resolution timing.
-
-On Windows:
-Use QueryPerformanceFrequency and QueryPerformanceCounter.
-
-Functions:
-void timer_start(Timer* timer);
-double timer_stop_ms(Timer* timer);
-
-benchmark files:
-- include/benchmark/benchmark.h
-- src/benchmark/benchmark.c
-- tests/benchmark/benchmark_test.c
-
-Define:
-
-typedef struct {
-    int frame_index;
-    double decode_ms;
-    double process_ms;
-    double upload_ms;
-    double kernel_ms;
-    double download_ms;
-    double encode_ms;
-    double total_ms;
-} FrameTiming;
-
-Benchmark should store a dynamic list of FrameTiming.
-
-Functions:
-void benchmark_init(Benchmark* bench);
-int benchmark_add_frame_result(Benchmark* bench, const FrameTiming* timing);
-int benchmark_write_csv(const Benchmark* bench, const char* path);
-void benchmark_print_summary(const Benchmark* bench);
-void benchmark_free(Benchmark* bench);
-
-CSV columns:
-frame_index,decode_ms,process_ms,upload_ms,kernel_ms,download_ms,encode_ms,total_ms
-
-matrix_report files:
-- include/benchmark/matrix_report.h
-- src/benchmark/matrix_report.c
-- tests/benchmark/matrix_report_test.c
-
-Purpose:
-Generate CPU vs GPU summary tables from benchmark CSV files.
-
-Can be implemented after the core pipeline works.
-
-Calculate:
-- total frames
-- total time
-- average ms/frame
-- processed FPS
-- speedup
-
-============================================================
-UTILS MODULES
-============================================================
-
-logger files:
-- include/utils/logger.h
-- src/utils/logger.c
-- tests/utils/logger_test.c
-
-Functions:
-void log_info(const char* fmt, ...);
-void log_warn(const char* fmt, ...);
-void log_error(const char* fmt, ...);
-
-file_utils files:
-- include/utils/file_utils.h
-- src/utils/file_utils.c
-- tests/utils/file_utils_test.c
-
-Functions:
-int file_exists(const char* path);
-int create_directory_if_missing(const char* path);
-void build_output_path(...);
-
-============================================================
-CMAKE BUILD REQUIREMENTS
-============================================================
-
-CMake should:
-- Set C standard to C11.
-- Build executable VideoComputePipeline.
-- Add include/ as include directory.
-- Compile source files from src/.
-- Link FFmpeg:
-  - avformat
-  - avcodec
-  - avutil
-  - swscale
-- Link OpenCL:
-  - OpenCL
-
-Since this is Windows/MSYS2 style, try find_package/pkg-config if useful.
-Also allow manual paths through variables if needed:
-
-FFMPEG_ROOT
-OPENCL_ROOT
+You are working in this workspace:
+
+`E:\wAI\first_task`
+
+There are two sibling projects:
+
+`E:\wAI\first_task\VideoComputePipeline`
+
+`E:\wAI\first_task\VideoComputePipelineUI`
+
+The main pipeline project is:
+
+`VideoComputePipeline`
+
+The YOLO/TensorRT/NVDEC/NVENC detection branch has already been merged into `main` and pushed. The UI must target the current `main` branch, not the old feature branch.
+
+The UI project is a separate lightweight wrapper project in:
+
+`VideoComputePipelineUI`
+
+Goal:
+
+Create a detailed implementation plan for a minimal, low-resource desktop UI wrapper for `VideoComputePipeline.exe`.
+
+Do not edit files yet. Do not write code yet. First inspect the current `main` branch of `VideoComputePipeline`, especially the README, CLI/config parsing code, pipeline runner, and CMake build options. Then inspect the current `VideoComputePipelineUI` folder structure and create a complete staged implementation plan.
+
+Preferred UI stack:
+
+* Dear ImGui
+* SDL2
+* OpenGL3
+* CMake
+* C++17
+* Windows first
+
+The UI should not directly link against FFmpeg, CUDA, TensorRT, NVDEC, NVENC, or the internal pipeline source code. It should stay lightweight and launch the pipeline executable as a subprocess.
+
+The UI executable should be:
+
+`VideoComputePipelineUI.exe`
+
+It should launch the main pipeline executable from:
+
+`..\VideoComputePipeline\build-win\bin\VideoComputePipeline.exe`
+
+The UI should set the subprocess working directory to:
+
+`..\VideoComputePipeline`
+
+so that existing relative paths such as `data\input`, `models`, `data\output`, and `benchmarks` continue to work.
+
+Main design principle:
+
+The user should not need to manually remember or type CLI arguments. The UI should expose meaningful run configuration options, generate the correct command, preview the command, run it, and monitor progress/logs.
+
+Before planning UI implementation, inspect these files from `VideoComputePipeline` main branch:
+
+* `README.md`
+* `CMakeLists.txt`
+* `include/pipeline/pipeline_config.h`
+* `src/pipeline/pipeline_config.c`
+* `src/pipeline/pipeline_runner.c`
+* `include/video/video_reader.h`
+* `include/video/video_hw_reader.h`
+* `include/video/video_writer.h`
+* `include/video/video_hw_writer.h`
+* `include/inference/inference_engine.h`
+* `include/gpu/cuda_frame.h`
+* `include/gpu/cuda_overlay.h`
+* `include/benchmark/benchmark.h`
+
+Use the actual CLI flags and config fields found in the code. Do not assume stale feature-branch names if main has changed.
+
+Required UI sections:
+
+1. Run Config tab
+
+This tab should let the user configure the full pipeline run.
+
+It should include:
+
+* Preset selector
+* Input video path
+* Model engine path
+* Labels file path
+* Output video path
+* Detections CSV path
+* Benchmark CSV path
+* Task selector: `filter` or `detect`
+* Decoder selector: `cpu` or `nvdec`, only if supported by main
+* Encoder selector: `none` or `h264_nvenc`, only if supported by main
+* Inference backend selector, such as `tensorrt`, if supported by main
+* Precision selector: `fp32` or `fp16`, if supported by main
+* Draw boxes checkbox, if supported by main
+* Box thickness input, if supported by main
+* Confidence slider/input
+* IoU threshold slider/input
+* Input size input/dropdown
+* Max frames input, where `0` means full video if supported
+* Generated command preview
+* Copy command button
+* Run button
+* Stop button
+
+The UI should have presets that automatically fill sensible defaults.
+
+Required presets:
+
+* People Detection - CSV Only
+* People Detection - Annotated Video
+* Fast GPU Annotated Video
+* Safe CPU Detection
+* NVDEC/NVENC Stress Test
+* Custom
+
+Example preset behavior for People Detection - Annotated Video should be based on the actual main-branch CLI, but likely maps to something similar to:
+
+* `--task detect`
+* `--decoder nvdec`
+* `--encoder h264_nvenc`
+* `--input data\input\people_4k_30min_stream_test.mp4`
+* `--model models\yolov5s.engine`
+* `--labels models\coco.names`
+* `--detections data\output\people_detections.csv`
+* `--output data\output\people_annotated_live.mkv`
+* `--benchmark benchmarks\people_full_inference.csv`
+* `--draw-boxes`
+* `--box-thickness 3`
+* `--confidence 0.25`
+* `--iou-threshold 0.45`
+* `--input-size 640`
+* `--inference-backend tensorrt`
+* `--precision fp32`
+
+Only include flags that actually exist on `main`.
+
+CSV-only detection should omit output video, encoder, and draw-box flags unless the user explicitly enables annotated output.
+
+The generated command should always be visible and copyable.
+
+2. Monitor tab
+
+This tab should show a clean visual representation of a running pipeline.
+
+It should include:
+
+* Overall progress bar
+* Percentage complete
+* Frames processed / total frames
+* Video timestamp processed / total duration
+* Elapsed time
+* Estimated remaining time
+* Current FPS
+* Speed multiplier
+* Total detections count
+* Input data processed estimate
+* Input data left estimate
+* Output file size if available
+* Current status: idle, running, stopping, completed, failed
+* Last important status line
+
+The UI should calculate ETA using progress and elapsed time.
+
+Suggested ETA formula:
+
+`eta_seconds = elapsed_seconds * ((1.0 - progress) / progress)`
+
+The UI should support progress from either frame count or timestamp.
+
+Preferred progress source:
+
+Structured progress lines printed by `VideoComputePipeline.exe`.
+
+If the pipeline does not currently print machine-readable progress lines, plan a small optional addition to the pipeline later:
+
+`--progress-format kv`
+
+Example line:
+
+`PROGRESS frame=67392 total_frames=108000 timestamp_ms=1123000 duration_ms=1800000 fps=119.7 speed=2.0 detections=4821 output_bytes=1932735283`
+
+The UI should parse lines beginning with `PROGRESS`.
+
+If structured progress is not available yet, the UI should still show logs and elapsed running time.
+
+3. Logs tab
+
+This tab should show stdout and stderr from the subprocess.
+
+It should include:
+
+* Scrollable log window
+* Auto-scroll checkbox
+* Clear logs button
+* Save logs button
+* Filter/search text box
+* Highlight errors/warnings if possible
+
+The UI should capture subprocess output asynchronously so that the UI remains responsive.
+
+4. Help tab
+
+The UI should include an in-depth built-in help section.
+
+It should explain:
+
+* What `VideoComputePipeline` does
+* Difference between filter mode and detection mode
+* CPU decoder vs NVDEC
+* No encoder / CPU encoder / NVENC
+* TensorRT inference
+* YOLO model engine
+* Labels file
+* Detections CSV
+* Benchmark CSV
+* Confidence threshold
+* IoU threshold
+* Input size
+* Draw boxes
+* Box thickness
+* Precision fp32 vs fp16
+* Why MKV is better for live/streaming output than MP4
+* What full video means
+* What max frames means
+* Common errors:
+
+  * missing DLLs
+  * missing TensorRT engine
+  * missing labels file
+  * FFmpeg/NVDEC/NVENC unavailable
+  * TensorRT engine precision mismatch
+  * wrong working directory
+  * output file already open/locked
+  * pipeline executable not found
+
+5. Tooltips
+
+Every important option should have a small tooltip using ImGui hover behavior.
 
 Examples:
--DFFMPEG_ROOT=C:/ffmpeg
--DOPENCL_ROOT=C:/OpenCL-SDK
 
-If using MSYS2 packages, normal linker names may work:
--lavformat -lavcodec -lavutil -lswscale -lOpenCL
+Decoder tooltip:
 
-============================================================
-WINDOWS NOTES
-============================================================
+`CPU decodes video frames in system RAM. NVDEC uses NVIDIA hardware decoding and can keep frames on GPU. Use NVDEC for the high-throughput GPU path.`
 
-The user is using Windows and has already installed FFmpeg, OpenCL, GCC, CMake, and Make.
+Encoder tooltip:
 
-Use portable C where possible.
+`h264_nvenc uses NVIDIA hardware encoding. Use this for annotated video output with low CPU load.`
 
-For timer:
-- Use QueryPerformanceCounter on Windows.
+Confidence tooltip:
 
-For OpenCL:
-- Use #define CL_TARGET_OPENCL_VERSION 300 before including CL/cl.h.
-- Include <CL/cl.h>.
+`Minimum detection confidence. Higher values reduce false detections but may miss weak objects. Typical range: 0.25 to 0.50.`
 
-For FFmpeg:
-Include as needed:
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libswscale/swscale.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/opt.h>
+IoU tooltip:
 
-============================================================
-CODING STYLE
-============================================================
+`Controls non-maximum suppression. Lower values remove overlapping boxes more aggressively. Typical YOLO value: 0.45.`
 
-Keep code:
-- readable
-- defensive
-- modular
-- easy to explain
-- employer-presentable
+Input size tooltip:
 
-Use:
-- clear names
-- resource cleanup paths
-- error codes
-- small functions where reasonable
+`Model input resolution. YOLOv5s commonly uses 640. Higher values may improve small-object detection but reduce FPS.`
 
-Avoid:
-- global mutable state
-- giant single-file code
-- mixing FFmpeg code into pipeline_runner
-- mixing OpenCL code into pipeline_runner
-- decoding the whole video before processing
-- using FFmpeg CLI commands
+Precision tooltip:
 
-============================================================
-IMPLEMENTATION ORDER
-============================================================
+`fp32 is safest and most compatible. fp16 can be faster only if the TensorRT engine and GPU support it.`
 
-Implement in this order:
+Output format tooltip:
 
-1. Skeleton directory structure
-2. frame module
-3. timer module
-4. logger module
-5. pipeline_config
-6. pipeline_runner skeleton
-7. CPU filters
-8. benchmark module
-9. video_reader using FFmpeg libraries
-10. video_writer using FFmpeg libraries
-11. sequential CPU pipeline
-12. opencl_context
-13. opencl_program
-14. OpenCL kernels
-15. gpu_filters
-16. sequential GPU pipeline
-17. matrix_report
-18. frame_slot and frame_queue for later threaded/interleaved pipeline
+`MKV is better for viewing while the pipeline is still writing. MP4 may not be playable until finalized.`
 
-============================================================
-FIRST IMPLEMENTATION TASK
-============================================================
+6. Command builder
 
-When first reading this file, do not implement the entire project at once.
+Plan a clean command builder module.
 
-First implement only:
+Suggested files:
 
-1. Project skeleton
-2. CMakeLists.txt
-3. README.md
-4. .gitignore
-5. config.h
-6. main.c
-7. frame module
-8. timer module
-9. logger module
-10. pipeline_config module
-11. pipeline_runner skeleton that prints "pipeline not implemented yet"
+* `include/command_builder.h`
+* `src/command_builder.cpp`
 
-Do not implement yet:
-- FFmpeg video_reader
-- FFmpeg video_writer
-- CPU filters
-- OpenCL
-- benchmark CSV
-- matrix_report
-- threaded queues
+It should take a `PipelineRunConfig` struct and produce a command string and/or argument vector.
 
-The first milestone is:
-- The project builds.
-- The executable runs.
-- The config prints.
-- The pipeline runner prints "pipeline not implemented yet".
-- Frame tests can allocate/copy/move/free frames.
-- Timer test measures elapsed time.
-- Logger test prints info/warn/error.
+Avoid unsafe string concatenation where possible.
 
-After milestone 1 is complete and compiling, stop and wait for the next instruction.
+The command builder should quote paths safely.
+
+It should omit options that do not apply.
+
+Example rules:
+
+* If `encoder == none`, do not emit `--encoder`.
+* If `draw_boxes == false`, do not emit `--draw-boxes` or `--box-thickness`.
+* If `max_frames == 0`, do not emit `--max-frames`.
+* If CSV-only mode, omit `--output`.
+* If a main-branch option is not supported, do not emit it.
+
+7. Run config model
+
+Plan a central config struct.
+
+Suggested file:
+
+* `include/pipeline_run_config.h`
+
+Fields should include:
+
+* pipeline executable path
+* working directory
+* preset enum
+* input video path
+* output video path
+* detections CSV path
+* benchmark CSV path
+* model path
+* labels path
+* task enum
+* decoder enum
+* encoder enum
+* inference backend enum
+* precision enum
+* draw boxes bool
+* box thickness int
+* confidence float
+* IoU threshold float
+* input size int
+* max frames int
+* generated command buffer/string
+
+Add helper functions:
+
+* apply preset
+* validate config
+* generate default output paths
+* normalize paths
+* detect missing required files
+* check that `VideoComputePipeline.exe` exists
+* check that model/labels/input paths exist before run
+
+8. Process runner
+
+Plan a Windows subprocess runner.
+
+Suggested files:
+
+* `include/process_runner.h`
+* `src/process_runner_win32.cpp`
+
+It should:
+
+* launch `VideoComputePipeline.exe`
+* set working directory to `..\VideoComputePipeline`
+* capture stdout
+* capture stderr
+* expose process status
+* support stop/terminate
+* avoid blocking the UI thread
+* store recent log lines in a bounded log buffer
+* parse progress lines
+* return exit code when process finishes
+
+Use Win32 APIs such as:
+
+* `CreateProcessW`
+* pipes for stdout/stderr
+* background thread reading
+* `TerminateProcess` for stop, at least in first version
+
+Plan for Unicode-safe Windows paths where reasonable.
+
+9. Progress parser
+
+Plan a progress parser module.
+
+Suggested files:
+
+* `include/progress_parser.h`
+* `src/progress_parser.cpp`
+
+It should parse lines such as:
+
+`PROGRESS frame=1200 total_frames=108000 timestamp_ms=20000 duration_ms=1800000 fps=118.4 speed=1.97 detections=283 output_bytes=123456789`
+
+It should update a `RunProgress` struct.
+
+Suggested fields:
+
+* running bool
+* frame index
+* total frames
+* timestamp ms
+* duration ms
+* progress 0.0 to 1.0
+* fps
+* speed
+* elapsed seconds
+* eta seconds
+* input bytes
+* estimated processed bytes
+* estimated left bytes
+* output bytes
+* total detections
+
+Also plan a fallback mode that estimates progress only from elapsed time if no progress lines are available.
+
+10. UI source layout
+
+Plan the UI source layout.
+
+Suggested layout:
+
+`VideoComputePipelineUI/`
+
+* `CMakeLists.txt`
+* `README.md`
+* `src/main.cpp`
+* `src/ui_app.cpp`
+* `src/command_builder.cpp`
+* `src/process_runner_win32.cpp`
+* `src/progress_parser.cpp`
+* `src/path_utils.cpp`
+* `include/ui_app.h`
+* `include/pipeline_run_config.h`
+* `include/command_builder.h`
+* `include/process_runner.h`
+* `include/progress_parser.h`
+* `include/path_utils.h`
+* `third_party/imgui/`
+
+11. CMake plan
+
+Plan the CMake configuration for:
+
+* C++17
+* Dear ImGui vendored in `third_party/imgui`
+* SDL2 from vcpkg
+* OpenGL
+* Windows console subsystem for first version so debug output remains visible
+* Release build output as `build-win\Release\VideoComputePipelineUI.exe`
+
+Mention that the UI should not link against VideoComputePipeline internals.
+
+12. Validation plan
+
+Create staged validation steps.
+
+Stage 1:
+
+Build and launch empty ImGui window.
+
+Stage 2:
+
+Show Run Config tab with dummy fields and generated command preview.
+
+Stage 3:
+
+Implement presets and command builder.
+
+Stage 4:
+
+Implement tooltips and Help tab.
+
+Stage 5:
+
+Launch pipeline subprocess with `--help`.
+
+Stage 6:
+
+Launch CSV-only detection command.
+
+Stage 7:
+
+Capture stdout/stderr logs.
+
+Stage 8:
+
+Parse structured `PROGRESS` lines if available.
+
+Stage 9:
+
+Run annotated video command.
+
+Stage 10:
+
+Show ETA, FPS, processed data, and final status.
+
+13. Minimal first version
+
+Clearly separate MVP from later improvements.
+
+MVP should include:
+
+* Run Config tab
+* Preset selector
+* Path fields
+* Detection options
+* Generated command preview
+* Run button
+* Stop button
+* Logs tab
+* Basic Help tab
+
+Later improvements:
+
+* file picker
+* save/load presets
+* progress parser
+* ETA display
+* benchmark CSV viewer
+* open output folder button
+* nicer visual styling
+* pipeline-side `--progress-format kv`
+* auto-detect VideoComputePipeline.exe
+* validate model/labels/input paths before run
+* preset JSON file
+
+14. Important constraints
+
+Keep the UI:
+
+* minimal
+* low-resource
+* separate from the pipeline
+* Windows-first
+* simple to build
+* safe to run from any shell
+* independent of CUDA/TensorRT DLLs except when launching the pipeline executable
+* based on command generation and subprocess execution
+
+Do not turn the UI into a video processing engine.
+
+Do not implement real-time video preview in the first version.
+
+Do not require FFmpeg/TensorRT/CUDA headers in the UI project.
+
+15. Deliverable
+
+Return only a detailed Markdown implementation plan.
+
+Do not edit files yet.
+
+Do not write code yet.
+
+Be specific about files, structs, modules, stages, validation commands, and any main-branch CLI flags that must be verified before implementation.
