@@ -960,19 +960,3 @@ Near the bottom, it also says detection mode skips video encoding. That should b
 > CSV-only detection mode skips video encoding. Hardware annotated detection can create output video when `--decoder nvdec`, `--draw-boxes`, `--output`, and an NVENC encoder are used.
 
 ---
-
-# Suggested Location in Repo
-
-Recommended path:
-
-```text
-docs/architecture_diagrams.md
-```
-
-Then add this link to `README.md`:
-
-```markdown
-## Architecture Diagrams
-
-Detailed component, flow, memory, and sequence diagrams are available in [docs/architecture_diagrams.md](docs/architecture_diagrams.md).
-```
