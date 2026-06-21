@@ -273,4 +273,4 @@ VideoComputePipeline/benchmarks
 
 FFmpeg code is isolated in video modules. OpenCL code is isolated in GPU modules. Frame memory is isolated in core/pipeline frame modules. Timing and benchmark output are isolated in benchmark modules.
 
-Detection mode skips video encoding and does not create an output MP4. It decodes NV12 frames, runs TensorRT inference, writes `detections.csv`, and records detection timing fields in the benchmark CSV.
+Detection mode is CSV-only by default: it decodes NV12 frames, runs TensorRT inference, writes `detections.csv`, and records detection timing fields in the benchmark CSV. Annotated video output is enabled only when `--draw-boxes` and `--output` are provided, with `--output-format mkv` recommended for hardware-video smoke tests.
