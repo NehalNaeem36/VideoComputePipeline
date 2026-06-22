@@ -150,6 +150,7 @@ Detection smoke test:
   --benchmark benchmarks\detection_benchmark.csv `
   --confidence 0.25 `
   --iou-threshold 0.45 `
+  --classes person,car `
   --input-size 640 `
   --max-frames 300
 ```
@@ -191,6 +192,8 @@ Experimental annotated detection without full-frame CPU transfers:
 --box-confidence value
 --confidence value
 --iou-threshold value
+--classes person,car
+--class-ids 0,2
 --input-size N
 --inference-backend tensorrt
 --precision fp16|fp32

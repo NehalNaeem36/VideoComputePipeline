@@ -286,6 +286,111 @@ static int parse_ffmpeg_log_level(const char *value) {
             strcmp(value, "debug") == 0);
 }
 
+static void trim_span(const char **begin, const char **end) {
+    while (*begin < *end && (**begin == ' ' || **begin == '\t' || **begin == '\r' || **begin == '\n')) {
+        ++(*begin);
+    }
+    while (*end > *begin && ((*end)[-1] == ' ' || (*end)[-1] == '\t' || (*end)[-1] == '\r' || (*end)[-1] == '\n')) {
+        --(*end);
+    }
+}
+
+static int add_class_filter_id(PipelineConfig *config, int class_id) {
+    if (!config || class_id < 0) {
+        return -1;
+    }
+    for (int i = 0; i < config->class_filter_id_count; ++i) {
+        if (config->class_filter_ids[i] == class_id) {
+            return 0;
+        }
+    }
+    if (config->class_filter_id_count >= VCP_MAX_CLASS_FILTERS) {
+        return -1;
+    }
+    config->class_filter_ids[config->class_filter_id_count++] = class_id;
+    return 0;
+}
+
+static int add_class_filter_name(PipelineConfig *config, const char *begin, const char *end) {
+    size_t len = 0;
+    if (!config || !begin || !end || end < begin) {
+        return -1;
+    }
+    trim_span /* module: pipeline/pipeline_config */ (&begin, &end);
+    len = (size_t)(end - begin);
+    if (len == 0) {
+        return 0;
+    }
+    if (len >= VCP_MAX_CLASS_NAME_LENGTH || config->class_filter_name_count >= VCP_MAX_CLASS_FILTERS) {
+        return -1;
+    }
+    for (int i = 0; i < config->class_filter_name_count; ++i) {
+        if (strlen(config->class_filter_names[i]) == len &&
+            strncmp(config->class_filter_names[i], begin, len) == 0) {
+            return 0;
+        }
+    }
+    memcpy(config->class_filter_names[config->class_filter_name_count], begin, len);
+    config->class_filter_names[config->class_filter_name_count][len] = '\0';
+    config->class_filter_name_count++;
+    return 0;
+}
+
+static int parse_class_id_list(PipelineConfig *config, const char *value) {
+    const char *cursor = value;
+    const char *token = value;
+    if (!config || !value || value[0] == '\0') {
+        return -1;
+    }
+    for (;;) {
+        if (*cursor == ',' || *cursor == '\0') {
+            char temp[32];
+            const char *begin = token;
+            const char *end = cursor;
+            int id = -1;
+            size_t len = 0;
+            trim_span /* module: pipeline/pipeline_config */ (&begin, &end);
+            len = (size_t)(end - begin);
+            if (len == 0 || len >= sizeof(temp)) {
+                return -1;
+            }
+            memcpy(temp, begin, len);
+            temp[len] = '\0';
+            if (parse_int_value /* module: pipeline/pipeline_config */ (temp, &id) != 0 ||
+                add_class_filter_id /* module: pipeline/pipeline_config */ (config, id) != 0) {
+                return -1;
+            }
+            if (*cursor == '\0') {
+                break;
+            }
+            token = cursor + 1;
+        }
+        ++cursor;
+    }
+    return 0;
+}
+
+static int parse_class_name_list(PipelineConfig *config, const char *value) {
+    const char *cursor = value;
+    const char *token = value;
+    if (!config || !value || value[0] == '\0') {
+        return -1;
+    }
+    for (;;) {
+        if (*cursor == ',' || *cursor == '\0') {
+            if (add_class_filter_name /* module: pipeline/pipeline_config */ (config, token, cursor) != 0) {
+                return -1;
+            }
+            if (*cursor == '\0') {
+                break;
+            }
+            token = cursor + 1;
+        }
+        ++cursor;
+    }
+    return 0;
+}
+
 static int require_value(int argc, char **argv, int index, const char *option) {
     (void)argv;
     if (index + 1 >= argc) {
@@ -325,6 +430,10 @@ void pipeline_config_default(PipelineConfig *config) {
     config->iou_threshold = DEFAULT_DETECTION_IOU_THRESHOLD;
     config->inference_input_size = DEFAULT_INFERENCE_INPUT_SIZE;
     config->detection_class_count = DEFAULT_DETECTION_CLASS_COUNT;
+    config->class_filter_id_count = 0;
+    memset(config->class_filter_ids, 0, sizeof(config->class_filter_ids));
+    config->class_filter_name_count = 0;
+    memset(config->class_filter_names, 0, sizeof(config->class_filter_names));
     config->max_detections_per_frame = DEFAULT_MAX_DETECTIONS_PER_FRAME;
     config->progress_interval = DEFAULT_PROGRESS_INTERVAL;
     copy_path /* module: pipeline/pipeline_config */ (config->ffmpeg_log_level, sizeof(config->ffmpeg_log_level), DEFAULT_FFMPEG_LOG_LEVEL);
@@ -436,6 +545,24 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
             }
             if (config->inference_input_size <= 0) {
                 set_parse_error /* module: pipeline/pipeline_config */ ("--input-size must be greater than 0");
+                return -1;
+            }
+        } else if (strcmp(arg, "--class-ids") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *value = argv[++i];
+            if (parse_class_id_list /* module: pipeline/pipeline_config */ (config, value) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--class-ids must be a comma-separated list of non-negative class IDs");
+                return -1;
+            }
+        } else if (strcmp(arg, "--classes") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *value = argv[++i];
+            if (parse_class_name_list /* module: pipeline/pipeline_config */ (config, value) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--classes must be a comma-separated list of class names shorter than %d characters", VCP_MAX_CLASS_NAME_LENGTH);
                 return -1;
             }
         } else if (strcmp(arg, "--inference-backend") == 0) {
@@ -725,7 +852,29 @@ int pipeline_config_format_summary(const PipelineConfig *config, char *buffer, s
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  input_size: %d\n", config->inference_input_size) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  confidence: %.3f\n", config->confidence_threshold) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  iou_threshold: %.3f\n", config->iou_threshold) != 0 ||
-            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "outputs:\n") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  class_filter: ") != 0) {
+            return -1;
+        }
+        if (config->class_filter_id_count == 0 && config->class_filter_name_count == 0) {
+            if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "all\n") != 0) {
+                return -1;
+            }
+        } else {
+            for (int i = 0; i < config->class_filter_id_count; ++i) {
+                if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "%s%d", i > 0 ? "," : "ids=", config->class_filter_ids[i]) != 0) {
+                    return -1;
+                }
+            }
+            for (int i = 0; i < config->class_filter_name_count; ++i) {
+                if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "%s%s", i > 0 ? "," : (config->class_filter_id_count > 0 ? " names=" : "names="), config->class_filter_names[i]) != 0) {
+                    return -1;
+                }
+            }
+            if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "\n") != 0) {
+                return -1;
+            }
+        }
+        if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "outputs:\n") != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  detections_path: %s\n", config->detections_path) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  draw_boxes: %s\n", config->draw_boxes ? "true" : "false") != 0) {
             return -1;

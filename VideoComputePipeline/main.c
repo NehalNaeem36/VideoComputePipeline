@@ -74,6 +74,8 @@ static void print_detect_usage(const char *program_name) {
     printf("  --box-confidence value       Minimum confidence for drawing boxes\n");
     printf("  --confidence value           Detection confidence threshold, 0.0 to 1.0\n");
     printf("  --iou-threshold value        Detection NMS IoU threshold, 0.0 to 1.0\n");
+    printf("  --classes names              Comma-separated label names to keep, for example person,car\n");
+    printf("  --class-ids ids              Comma-separated numeric class IDs to keep, for example 0,2\n");
     printf("  --input-size N               Detector input size, default 640\n");
     printf("  --inference-backend name     tensorrt\n");
     printf("  --precision name             fp16 or fp32 runtime label\n");

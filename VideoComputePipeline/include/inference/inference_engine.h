@@ -19,6 +19,10 @@ typedef struct {
     int input_width;
     int input_height;
     int class_count;
+    int class_filter_id_count;
+    int class_filter_ids[VCP_MAX_CLASS_FILTERS];
+    int class_filter_name_count;
+    char class_filter_names[VCP_MAX_CLASS_FILTERS][VCP_MAX_CLASS_NAME_LENGTH];
     float confidence_threshold;
     float iou_threshold;
     int use_fp16;

@@ -24,10 +24,16 @@ private:
     void stop_pipeline();
     void refresh_command();
     void normalize_default_paths();
+    void refresh_labels_if_needed();
+    bool class_id_selected(int class_id) const;
+    void set_class_id_selected(int class_id, bool selected);
 
     PipelineRunConfig config_{};
     BuiltCommand command_{};
     ProcessRunner runner_;
+    std::vector<std::string> classLabels_;
+    std::string loadedLabelsPath_;
+    std::string classSearch_;
     std::string logFilter_;
     bool autoScroll_ = true;
     bool validationEnabled_ = true;

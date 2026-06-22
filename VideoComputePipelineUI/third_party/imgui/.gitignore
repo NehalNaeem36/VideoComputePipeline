@@ -1,0 +1,25 @@
+# This UI vendors only the Dear ImGui files it builds.
+# Keep this allowlist narrow so a blanket `git add VideoComputePipelineUI`
+# does not stage examples, docs, or unused platform backends.
+*
+
+!.gitignore
+!LICENSE.txt
+!imconfig.h
+!imgui.cpp
+!imgui_draw.cpp
+!imgui_tables.cpp
+!imgui_widgets.cpp
+!imgui.h
+!imgui_internal.h
+!imstb_rectpack.h
+!imstb_textedit.h
+!imstb_truetype.h
+
+!backends/
+backends/*
+!backends/imgui_impl_sdl2.cpp
+!backends/imgui_impl_sdl2.h
+!backends/imgui_impl_opengl3.cpp
+!backends/imgui_impl_opengl3.h
+!backends/imgui_impl_opengl3_loader.h

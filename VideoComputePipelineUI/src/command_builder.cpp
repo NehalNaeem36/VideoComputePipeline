@@ -2,6 +2,7 @@
 
 #include "path_utils.h"
 
+#include <algorithm>
 #include <sstream>
 
 namespace vcpui {
@@ -42,6 +43,24 @@ void add_arg(std::vector<std::string> &args, const char *name, float value) {
     out << value;
     args.emplace_back(name);
     args.emplace_back(out.str());
+}
+
+std::string join_class_ids(const std::vector<int> &ids) {
+    std::vector<int> sorted = ids;
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+
+    std::ostringstream out;
+    for (size_t i = 0; i < sorted.size(); ++i) {
+        if (sorted[i] < 0) {
+            continue;
+        }
+        if (out.tellp() > 0) {
+            out << ',';
+        }
+        out << sorted[i];
+    }
+    return out.str();
 }
 
 }  // namespace
@@ -116,6 +135,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
     config.benchmarkEnabled = true;
     config.lossless = false;
     config.decoderFallbackCpu = true;
+    config.selectedClassIds.clear();
 
     switch (preset) {
         case Preset::PeopleDetectionCsvOnly:
@@ -267,6 +287,10 @@ BuiltCommand build_command(const PipelineRunConfig &config) {
         add_arg(command.args, "--input-size", config.inputSize);
         add_arg(command.args, "--inference-backend", "tensorrt");
         add_arg(command.args, "--precision", to_cli(config.precision));
+        const std::string classIds = join_class_ids(config.selectedClassIds);
+        if (!classIds.empty()) {
+            add_arg(command.args, "--class-ids", classIds);
+        }
 
         if (config.drawBoxes) {
             command.args.emplace_back("--draw-boxes");
