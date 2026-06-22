@@ -1,3 +1,6 @@
 .viComp/
 /build/
 .vscode/
+
+# Local prompt/spec scratch files
+VideoComputePipeline/prompt-file.txt
