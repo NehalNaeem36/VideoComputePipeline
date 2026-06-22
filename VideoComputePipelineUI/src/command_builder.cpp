@@ -24,6 +24,8 @@ const std::vector<const char *> kPrecisionNames = {"fp32", "fp16"};
 const std::vector<const char *> kOutputFormatNames = {"auto", "mp4", "mkv"};
 const std::vector<const char *> kFilterNames = {"grayscale", "blur3x3", "blur5x5", "blur9x9", "blur13x13"};
 const std::vector<const char *> kProcessModeNames = {"cpu", "gpu"};
+const std::vector<const char *> kAutoIntModeNames = {"manual", "auto"};
+const std::vector<const char *> kFeatureModeNames = {"auto", "on", "off"};
 const std::vector<const char *> kFfmpegLogLevelNames = {"quiet", "error", "warning", "info", "debug"};
 
 void add_arg(std::vector<std::string> &args, const char *name, const std::string &value) {
@@ -63,6 +65,21 @@ std::string join_class_ids(const std::vector<int> &ids) {
     return out.str();
 }
 
+void finalize_command(BuiltCommand &command) {
+    std::ostringstream preview;
+    std::wstring win32;
+    for (size_t i = 0; i < command.args.size(); ++i) {
+        if (i > 0) {
+            preview << ' ';
+            win32 += L" ";
+        }
+        preview << quote_arg_for_preview(command.args[i]);
+        win32 += quote_arg_for_win32(utf8_to_wide(command.args[i]));
+    }
+    command.preview = preview.str();
+    command.win32CommandLine = win32;
+}
+
 }  // namespace
 
 const std::vector<const char *> &preset_names() { return kPresetNames; }
@@ -73,6 +90,8 @@ const std::vector<const char *> &precision_names() { return kPrecisionNames; }
 const std::vector<const char *> &output_format_names() { return kOutputFormatNames; }
 const std::vector<const char *> &filter_names() { return kFilterNames; }
 const std::vector<const char *> &process_mode_names() { return kProcessModeNames; }
+const std::vector<const char *> &auto_int_mode_names() { return kAutoIntModeNames; }
+const std::vector<const char *> &feature_mode_names() { return kFeatureModeNames; }
 const std::vector<const char *> &ffmpeg_log_level_names() { return kFfmpegLogLevelNames; }
 
 const char *to_cli(Task value) { return value == Task::Detect ? "detect" : "filter"; }
@@ -97,6 +116,15 @@ const char *to_cli(Filter value) {
     }
 }
 const char *to_cli(ProcessMode value) { return value == ProcessMode::Gpu ? "gpu" : "cpu"; }
+const char *to_cli(AutoIntMode value) { return value == AutoIntMode::Auto ? "auto" : "manual"; }
+const char *to_cli(FeatureMode value) {
+    switch (value) {
+        case FeatureMode::On: return "on";
+        case FeatureMode::Off: return "off";
+        case FeatureMode::Auto:
+        default: return "auto";
+    }
+}
 const char *to_cli(Encoder value) {
     switch (value) {
         case Encoder::H264Nvenc: return "h264_nvenc";
@@ -114,7 +142,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
         return;
     }
 
-    config.pipelineExePath = "..\\VideoComputePipeline\\build-win\\bin\\VideoComputePipeline.exe";
+    config.pipelineExePath = "..\\VideoComputePipeline\\build-msvc-hw\\bin\\VideoComputePipeline.exe";
     config.workingDirectory = "..\\VideoComputePipeline";
     config.inputVideoPath = "data\\input\\people_4k_30min_stream_test.mp4";
     config.modelPath = "models\\yolov5s_trt11.engine";
@@ -136,6 +164,19 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
     config.lossless = false;
     config.decoderFallbackCpu = true;
     config.selectedClassIds.clear();
+    config.autoTune = false;
+    config.profileHardwareOnly = false;
+    config.batchSizeMode = AutoIntMode::Manual;
+    config.batchSize = 1;
+    config.inflightBatchesMode = AutoIntMode::Manual;
+    config.inflightBatches = 1;
+    config.pipelineOverlap = FeatureMode::Auto;
+    config.parallelInference = FeatureMode::Auto;
+    config.inferenceContextsMode = AutoIntMode::Auto;
+    config.inferenceContexts = 1;
+    config.targetFps = 0.0f;
+    config.vramBudgetRatio = 0.375f;
+    config.vramReserveMb = 0;
 
     switch (preset) {
         case Preset::PeopleDetectionCsvOnly:
@@ -153,6 +194,9 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.outputFormat = OutputFormat::Mkv;
             config.drawBoxes = true;
             config.maxFrames = 0;
+            config.autoTune = true;
+            config.batchSizeMode = AutoIntMode::Auto;
+            config.inflightBatchesMode = AutoIntMode::Auto;
             break;
         case Preset::FastGpuAnnotatedVideo:
             config.decoder = Decoder::Nvdec;
@@ -161,6 +205,10 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.outputFormat = OutputFormat::Mkv;
             config.drawBoxes = true;
             config.maxFrames = 0;
+            config.autoTune = true;
+            config.batchSizeMode = AutoIntMode::Auto;
+            config.inflightBatchesMode = AutoIntMode::Auto;
+            config.targetFps = 60.0f;
             break;
         case Preset::SafeCpuDetection:
             config.decoder = Decoder::Cpu;
@@ -178,6 +226,11 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.outputFormat = OutputFormat::Mkv;
             config.drawBoxes = true;
             config.maxFrames = 0;
+            config.autoTune = true;
+            config.batchSizeMode = AutoIntMode::Auto;
+            config.inflightBatchesMode = AutoIntMode::Auto;
+            config.pipelineOverlap = FeatureMode::On;
+            config.targetFps = 60.0f;
             break;
         case Preset::Custom:
         default:
@@ -192,6 +245,9 @@ std::vector<std::string> validate_config(const PipelineRunConfig &config) {
     }
     if (!directory_exists(config.workingDirectory)) {
         issues.emplace_back("Working directory was not found.");
+    }
+    if (config.task == Task::Detect && config.profileHardwareOnly) {
+        return issues;
     }
     if (!file_exists(resolve_path(config.workingDirectory, config.inputVideoPath))) {
         issues.emplace_back("Input video was not found relative to the pipeline working directory.");
@@ -266,6 +322,14 @@ BuiltCommand build_command(const PipelineRunConfig &config) {
     BuiltCommand command;
     command.args.emplace_back(config.pipelineExePath);
     add_arg(command.args, "--task", to_cli(config.task));
+
+    if (config.task == Task::Detect && config.profileHardwareOnly) {
+        command.args.emplace_back("--profile-hardware");
+        add_arg(command.args, "--ffmpeg-log-level", config.ffmpegLogLevel);
+        finalize_command(command);
+        return command;
+    }
+
     add_arg(command.args, "--input", config.inputVideoPath);
     if (config.benchmarkEnabled) {
         add_arg(command.args, "--benchmark", config.benchmarkCsvPath);
@@ -287,6 +351,35 @@ BuiltCommand build_command(const PipelineRunConfig &config) {
         add_arg(command.args, "--input-size", config.inputSize);
         add_arg(command.args, "--inference-backend", "tensorrt");
         add_arg(command.args, "--precision", to_cli(config.precision));
+        if (config.autoTune) {
+            command.args.emplace_back("--auto-tune");
+        }
+        if (config.batchSizeMode == AutoIntMode::Auto) {
+            add_arg(command.args, "--batch-size", "auto");
+        } else {
+            add_arg(command.args, "--batch-size", config.batchSize);
+        }
+        if (config.inflightBatchesMode == AutoIntMode::Auto) {
+            add_arg(command.args, "--inflight-batches", "auto");
+        } else {
+            add_arg(command.args, "--inflight-batches", config.inflightBatches);
+        }
+        if (config.targetFps > 0.0f) {
+            add_arg(command.args, "--target-fps", config.targetFps);
+        }
+        if (config.vramBudgetRatio != 0.375f) {
+            add_arg(command.args, "--vram-budget-ratio", config.vramBudgetRatio);
+        }
+        if (config.vramReserveMb > 0) {
+            add_arg(command.args, "--vram-reserve-mb", config.vramReserveMb);
+        }
+        add_arg(command.args, "--pipeline-overlap", to_cli(config.pipelineOverlap));
+        add_arg(command.args, "--parallel-inference", to_cli(config.parallelInference));
+        if (config.inferenceContextsMode == AutoIntMode::Auto) {
+            add_arg(command.args, "--inference-contexts", "auto");
+        } else {
+            add_arg(command.args, "--inference-contexts", config.inferenceContexts);
+        }
         const std::string classIds = join_class_ids(config.selectedClassIds);
         if (!classIds.empty()) {
             add_arg(command.args, "--class-ids", classIds);
@@ -321,18 +414,7 @@ BuiltCommand build_command(const PipelineRunConfig &config) {
     add_arg(command.args, "--ffmpeg-log-level", config.ffmpegLogLevel);
     add_arg(command.args, "--progress-interval", config.progressInterval);
 
-    std::ostringstream preview;
-    std::wstring win32;
-    for (size_t i = 0; i < command.args.size(); ++i) {
-        if (i > 0) {
-            preview << ' ';
-            win32 += L" ";
-        }
-        preview << quote_arg_for_preview(command.args[i]);
-        win32 += quote_arg_for_win32(utf8_to_wide(command.args[i]));
-    }
-    command.preview = preview.str();
-    command.win32CommandLine = win32;
+    finalize_command(command);
     return command;
 }
 

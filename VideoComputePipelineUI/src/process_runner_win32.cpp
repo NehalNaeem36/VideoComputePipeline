@@ -110,6 +110,7 @@ bool ProcessRunner::start(const std::wstring &commandLine, const std::wstring &w
     }
 
     startSeconds_ = now_seconds();
+    finishSeconds_ = 0.0;
     exitCode_ = 0;
     progress_ = {};
     progress_.running = true;
@@ -182,6 +183,9 @@ double ProcessRunner::elapsed_seconds() const {
     if (startSeconds_ <= 0.0) {
         return 0.0;
     }
+    if (finishSeconds_ > 0.0) {
+        return finishSeconds_ - startSeconds_;
+    }
     return now_seconds() - startSeconds_;
 }
 
@@ -238,7 +242,9 @@ void ProcessRunner::wait_loop() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         exitCode_ = (int)code;
+        finishSeconds_ = now_seconds();
         status_ = code == 0 ? ProcessStatus::Completed : ProcessStatus::Failed;
+        progress_.elapsedSeconds = finishSeconds_ - startSeconds_;
         progress_.running = false;
     }
 #endif

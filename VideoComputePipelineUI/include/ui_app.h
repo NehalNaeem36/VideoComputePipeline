@@ -37,6 +37,10 @@ private:
     std::string logFilter_;
     bool autoScroll_ = true;
     bool validationEnabled_ = true;
+    bool logShowErrors_ = true;
+    bool logShowWarnings_ = true;
+    bool logShowTensorRt_ = true;
+    bool logShowExecutionPlan_ = true;
 };
 
 }  // namespace vcpui

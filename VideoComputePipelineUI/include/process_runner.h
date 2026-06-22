@@ -60,6 +60,7 @@ private:
     int exitCode_ = 0;
     std::string lastError_;
     double startSeconds_ = 0.0;
+    double finishSeconds_ = 0.0;
 
 #ifdef _WIN32
     PROCESS_INFORMATION processInfo_{};

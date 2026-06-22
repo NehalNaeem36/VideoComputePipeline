@@ -25,6 +25,28 @@ int parse_int(const std::string &text, int fallback = 0) {
     }
 }
 
+bool parse_bool(const std::string &text, bool fallback = false) {
+    if (text == "true" || text == "1" || text == "yes") {
+        return true;
+    }
+    if (text == "false" || text == "0" || text == "no") {
+        return false;
+    }
+    return fallback;
+}
+
+std::string trim_copy(const std::string &value) {
+    size_t begin = 0;
+    size_t end = value.size();
+    while (begin < end && (value[begin] == ' ' || value[begin] == '\t' || value[begin] == '\r' || value[begin] == '\n')) {
+        ++begin;
+    }
+    while (end > begin && (value[end - 1u] == ' ' || value[end - 1u] == '\t' || value[end - 1u] == '\r' || value[end - 1u] == '\n')) {
+        --end;
+    }
+    return value.substr(begin, end - begin);
+}
+
 }  // namespace
 
 bool parse_progress_line(const std::string &line, RunProgress &progress) {
@@ -57,6 +79,27 @@ bool parse_progress_line(const std::string &line, RunProgress &progress) {
         return true;
     }
 
+    static const std::regex planField(R"(^\s*([a-zA-Z0-9_]+):\s*(.*?)\s*$)");
+    std::smatch planMatch;
+    if (std::regex_match(line, planMatch, planField)) {
+        const std::string key = planMatch[1].str();
+        const std::string value = trim_copy(planMatch[2].str());
+        if (key == "execution_mode") progress.executionMode = parse_int(value, progress.executionMode);
+        else if (key == "batch_size") progress.batchSize = parse_int(value, progress.batchSize);
+        else if (key == "inflight_batches") progress.inflightBatches = parse_int(value, progress.inflightBatches);
+        else if (key == "total_active_frames") progress.totalActiveFrames = parse_int(value, progress.totalActiveFrames);
+        else if (key == "frames_per_upload_batch") progress.framesPerUploadBatch = parse_int(value, progress.framesPerUploadBatch);
+        else if (key == "frames_per_download_batch") progress.framesPerDownloadBatch = parse_int(value, progress.framesPerDownloadBatch);
+        else if (key == "inference_context_count") progress.inferenceContextCount = parse_int(value, progress.inferenceContextCount);
+        else if (key == "pipeline_overlap_enabled") progress.pipelineOverlapEnabled = parse_bool(value, progress.pipelineOverlapEnabled);
+        else if (key == "parallel_inference_enabled") progress.parallelInferenceEnabled = parse_bool(value, progress.parallelInferenceEnabled);
+        else if (key == "vram_budget_mb") progress.vramBudgetMb = parse_double(value, progress.vramBudgetMb);
+        else if (key == "estimated_batch_mb") progress.estimatedBatchMb = parse_double(value, progress.estimatedBatchMb);
+        else if (key == "reason") progress.fallbackReason = value;
+        else return false;
+        return true;
+    }
+
     static const std::regex humanProgress(R"(progress:\s+completed\s+([0-9]+).*wall_clock_fps=([0-9.]+))",
                                           std::regex_constants::icase);
     std::smatch match;
@@ -76,8 +119,10 @@ void update_elapsed_progress(RunProgress &progress, double elapsedSeconds) {
     progress.elapsedSeconds = elapsedSeconds;
     if (progress.progress > 0.0 && progress.progress < 1.0) {
         progress.etaSeconds = elapsedSeconds * ((1.0 - progress.progress) / progress.progress);
+        progress.estimatedTotalSeconds = elapsedSeconds / progress.progress;
     } else {
         progress.etaSeconds = 0.0;
+        progress.estimatedTotalSeconds = progress.progress >= 1.0 ? elapsedSeconds : 0.0;
     }
 }
 

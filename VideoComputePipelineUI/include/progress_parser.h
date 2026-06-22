@@ -17,8 +17,21 @@ struct RunProgress {
     double speed = 0.0;
     double elapsedSeconds = 0.0;
     double etaSeconds = 0.0;
+    double estimatedTotalSeconds = 0.0;
     int totalDetections = 0;
     std::uint64_t outputBytes = 0;
+    int executionMode = -1;
+    int batchSize = 0;
+    int inflightBatches = 0;
+    int totalActiveFrames = 0;
+    int framesPerUploadBatch = 0;
+    int framesPerDownloadBatch = 0;
+    int inferenceContextCount = 0;
+    bool pipelineOverlapEnabled = false;
+    bool parallelInferenceEnabled = false;
+    double vramBudgetMb = 0.0;
+    double estimatedBatchMb = 0.0;
+    std::string fallbackReason;
     std::string lastStatusLine;
 };
 

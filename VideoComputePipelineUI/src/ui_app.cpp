@@ -63,6 +63,18 @@ void text_pair(const char *label, const char *value) {
     text_pair(label, std::string(value));
 }
 
+std::string format_fixed(double value, int precision = 3) {
+    std::ostringstream out;
+    out.setf(std::ios::fixed);
+    out.precision(precision);
+    out << value;
+    return out.str();
+}
+
+const char *bool_text(bool value) {
+    return value ? "true" : "false";
+}
+
 void help_section(const char *title, const char *body) {
     if (ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::TextWrapped("%s", body);
@@ -204,26 +216,31 @@ void UiApp::render() {
 }
 
 void UiApp::render_run_config_tab() {
+    ImGui::SeparatorText("Paths");
     int presetIndex = (int)config_.preset;
     if (combo_from_vector("Preset", presetIndex, preset_names())) {
         apply_preset(config_, (Preset)presetIndex);
         refresh_command();
     }
+    render_tooltip("Preset command profiles. Custom preserves your manual edits.");
 
     if (input_text_string("Pipeline exe", config_.pipelineExePath)) mark_custom();
-    render_tooltip("Path to VideoComputePipeline.exe. Defaults to ..\\VideoComputePipeline\\build-win\\bin\\VideoComputePipeline.exe.");
+    render_tooltip("Path to VideoComputePipeline.exe. Use build-msvc-hw or build-msvc for CUDA, TensorRT, NVDEC, and NVENC. build-win is usually the MinGW/OpenCL build.");
     if (input_text_string("Working directory", config_.workingDirectory)) mark_custom();
-    render_tooltip("The subprocess working directory. Use ..\\VideoComputePipeline so relative data, model, output, and benchmark paths resolve correctly.");
-    ImGui::Separator();
+    render_tooltip("Subprocess working directory. Relative input, model, label, output, benchmark, and detection paths are resolved from the VideoComputePipeline folder.");
 
+    ImGui::SeparatorText("Task");
     int taskIndex = (int)config_.task;
     if (combo_from_vector("Task", taskIndex, task_names())) {
         config_.task = (Task)taskIndex;
         mark_custom();
     }
+    render_tooltip("Filter modifies video pixels and writes an output video. Detect writes detections CSV by default and can optionally write annotated video.");
     const bool detectMode = config_.task == Task::Detect;
     const bool annotatedDetection = detectMode && config_.drawBoxes;
+    const bool profileOnly = detectMode && config_.profileHardwareOnly;
 
+    ImGui::SeparatorText("Video I/O");
     int decoderIndex = (int)config_.decoder;
     ImGui::BeginDisabled(!detectMode);
     if (combo_from_vector("Decoder", decoderIndex, decoder_names())) {
@@ -235,15 +252,16 @@ void UiApp::render_run_config_tab() {
     ImGui::BeginDisabled(!detectMode || config_.decoder != Decoder::Nvdec);
     if (ImGui::Checkbox("CPU decoder fallback", &config_.decoderFallbackCpu)) mark_custom();
     ImGui::EndDisabled();
+    render_tooltip("Allows CPU decode if NVDEC cannot open the input. Disable this when you want NVDEC failures to be visible.");
 
     int encoderIndex = (int)config_.encoder;
-    ImGui::BeginDisabled(detectMode && !annotatedDetection);
+    ImGui::BeginDisabled(profileOnly || (detectMode && !annotatedDetection));
     if (combo_from_vector("Encoder", encoderIndex, encoder_names())) {
         config_.encoder = (Encoder)encoderIndex;
         mark_custom();
     }
     ImGui::EndDisabled();
-    render_tooltip("h264_nvenc uses NVIDIA hardware encoding. Select none for CSV-only detection.");
+    render_tooltip("h264_nvenc uses NVIDIA hardware encoding for annotated detection. Select none for CSV-only detection.");
 
     int precisionIndex = (int)config_.precision;
     ImGui::BeginDisabled(!detectMode);
@@ -252,16 +270,16 @@ void UiApp::render_run_config_tab() {
         mark_custom();
     }
     ImGui::EndDisabled();
-    render_tooltip("fp32 is safest and most compatible. fp16 can be faster only if the TensorRT engine and GPU support it.");
+    render_tooltip("Runtime precision label. The actual TensorRT engine input tensor type still determines whether FP32 or FP16 preprocessing is used.");
 
     int outputFormatIndex = (int)config_.outputFormat;
-    ImGui::BeginDisabled(detectMode && !annotatedDetection);
+    ImGui::BeginDisabled(profileOnly || (detectMode && !annotatedDetection));
     if (combo_from_vector("Output format", outputFormatIndex, output_format_names())) {
         config_.outputFormat = (OutputFormat)outputFormatIndex;
         mark_custom();
     }
     ImGui::EndDisabled();
-    render_tooltip("MKV is better for viewing while the pipeline is still writing. MP4 may not be playable until finalized.");
+    render_tooltip("MKV is recommended for long annotated hardware-video runs. MP4 may not be playable until the trailer is finalized.");
 
     ImGui::BeginDisabled(detectMode);
     int processModeIndex = (int)config_.processMode;
@@ -276,18 +294,30 @@ void UiApp::render_run_config_tab() {
     }
     ImGui::EndDisabled();
 
+    ImGui::BeginDisabled(profileOnly);
     if (input_text_string("Input video", config_.inputVideoPath)) mark_custom();
+    render_tooltip("Input video path relative to the working directory unless an absolute path is provided.");
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Detection Model");
     ImGui::BeginDisabled(!detectMode);
     if (input_text_string("TensorRT model", config_.modelPath)) mark_custom();
+    render_tooltip("TensorRT engine file. It must match the model family, input size, GPU/runtime support, and expected YOLO output layout.");
     if (input_text_string("Labels file", config_.labelsPath)) mark_custom();
+    render_tooltip("Class labels file. One label per line; class IDs are the line numbers starting at 0.");
     ImGui::EndDisabled();
-    ImGui::BeginDisabled(detectMode && !annotatedDetection);
+    ImGui::BeginDisabled(profileOnly || (detectMode && !annotatedDetection));
     if (input_text_string("Output video", config_.outputVideoPath)) mark_custom();
     ImGui::EndDisabled();
+    render_tooltip("Annotated output video path. Detection CSV-only runs do not need this.");
     ImGui::BeginDisabled(!detectMode);
     if (input_text_string("Detections CSV", config_.detectionsCsvPath)) mark_custom();
     ImGui::EndDisabled();
+    render_tooltip("Detection rows are streamed here. CSV-only and annotated detection both write this file.");
+    ImGui::BeginDisabled(profileOnly);
     if (input_text_string("Benchmark CSV", config_.benchmarkCsvPath)) mark_custom();
+    ImGui::EndDisabled();
+    render_tooltip("Per-frame benchmark output. Disable benchmark if you only need logs or hardware profiling.");
 
     ImGui::BeginDisabled(!detectMode);
     if (ImGui::Checkbox("Draw boxes", &config_.drawBoxes)) mark_custom();
@@ -295,15 +325,17 @@ void UiApp::render_run_config_tab() {
     ImGui::EndDisabled();
     ImGui::BeginDisabled(!annotatedDetection);
     if (ImGui::InputInt("Box thickness", &config_.boxThickness)) mark_custom();
+    render_tooltip("Bounding box border thickness in pixels for annotated output.");
     if (ImGui::SliderFloat("Box confidence", &config_.boxConfidence, 0.0f, 1.0f, "%.2f")) mark_custom();
+    render_tooltip("Minimum confidence for drawing boxes. This can be higher than the detection CSV threshold.");
     ImGui::EndDisabled();
     ImGui::BeginDisabled(!detectMode);
     if (ImGui::SliderFloat("Confidence", &config_.confidence, 0.0f, 1.0f, "%.2f")) mark_custom();
-    render_tooltip("Minimum detection confidence. Higher values reduce false detections but may miss weak objects.");
+    render_tooltip("Minimum detection confidence. Lower values find more objects; higher values reduce false positives but may miss weak objects.");
     if (ImGui::SliderFloat("IoU threshold", &config_.iouThreshold, 0.0f, 1.0f, "%.2f")) mark_custom();
     render_tooltip("Controls non-maximum suppression. Lower values remove overlapping boxes more aggressively.");
     if (ImGui::InputInt("Input size", &config_.inputSize)) mark_custom();
-    render_tooltip("Model input resolution. YOLOv5s commonly uses 640.");
+    render_tooltip("YOLO network input resolution. The full frame is letterboxed into this size; it is not a crop. YOLOv5s commonly uses 640.");
 
     refresh_labels_if_needed();
     ImGui::SeparatorText("Class filter");
@@ -319,7 +351,7 @@ void UiApp::render_run_config_tab() {
         refresh_labels_if_needed();
     }
     input_text_string("Search classes", classSearch_);
-    render_tooltip("Leave the selection empty to detect every class. Select one or more labels to emit --class-ids.");
+    render_tooltip("Leave empty to detect every class. Select one or more labels to emit --class-ids and restrict CSV and annotated output.");
     if (classLabels_.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.24f, 1.0f), "No labels loaded from the labels path.");
     } else {
@@ -341,26 +373,99 @@ void UiApp::render_run_config_tab() {
         ImGui::EndChild();
     }
     ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Execution Plan");
+    ImGui::BeginDisabled(!detectMode);
+    if (ImGui::Checkbox("Auto tune", &config_.autoTune)) mark_custom();
+    render_tooltip("Lets the pipeline choose batch, in-flight, and inference context settings from the video, GPU, and TensorRT engine limits.");
+    if (ImGui::Checkbox("Profile hardware only", &config_.profileHardwareOnly)) mark_custom();
+    render_tooltip("Prints CUDA/VRAM capability information without requiring a full detection run.");
+
+    int batchModeIndex = (int)config_.batchSizeMode;
+    if (combo_from_vector("Batch size mode", batchModeIndex, auto_int_mode_names())) {
+        config_.batchSizeMode = (AutoIntMode)batchModeIndex;
+        mark_custom();
+    }
+    render_tooltip("Auto lets the planner choose. Manual sends the selected scheduling/transfer batch size.");
+    ImGui::BeginDisabled(config_.batchSizeMode == AutoIntMode::Auto);
+    if (ImGui::InputInt("Batch size", &config_.batchSize)) mark_custom();
+    ImGui::EndDisabled();
+    render_tooltip("Scheduling and transfer batch size. True TensorRT batch enqueue is only used when the engine supports it.");
+
+    int inflightModeIndex = (int)config_.inflightBatchesMode;
+    if (combo_from_vector("In-flight batches mode", inflightModeIndex, auto_int_mode_names())) {
+        config_.inflightBatchesMode = (AutoIntMode)inflightModeIndex;
+        mark_custom();
+    }
+    render_tooltip("Auto lets the planner choose how many batches can be active across stages.");
+    ImGui::BeginDisabled(config_.inflightBatchesMode == AutoIntMode::Auto);
+    if (ImGui::InputInt("In-flight batches", &config_.inflightBatches)) mark_custom();
+    ImGui::EndDisabled();
+    render_tooltip("Number of batches allowed active across decode, preprocess, inference, postprocess, overlay, and encode stages.");
+
+    if (ImGui::InputFloat("Target FPS", &config_.targetFps, 1.0f, 10.0f, "%.1f")) mark_custom();
+    render_tooltip("Tuning goal used by the planner. It is not a guaranteed output rate.");
+    if (ImGui::SliderFloat("VRAM budget ratio", &config_.vramBudgetRatio, 0.05f, 0.90f, "%.3f")) mark_custom();
+    render_tooltip("Fraction of total GPU memory the planner may use for active batches and buffers.");
+    if (ImGui::InputInt("VRAM reserve MB", &config_.vramReserveMb)) mark_custom();
+    render_tooltip("GPU memory kept free for the OS, driver, desktop, and other GPU work. 0 lets the pipeline compute a reserve.");
+
+    int overlapIndex = (int)config_.pipelineOverlap;
+    if (combo_from_vector("Pipeline overlap", overlapIndex, feature_mode_names())) {
+        config_.pipelineOverlap = (FeatureMode)overlapIndex;
+        mark_custom();
+    }
+    render_tooltip("Overlaps decode, upload/preprocess, inference, download/postprocess, overlay, and encode stages when supported.");
+    int parallelIndex = (int)config_.parallelInference;
+    if (combo_from_vector("Parallel inference", parallelIndex, feature_mode_names())) {
+        config_.parallelInference = (FeatureMode)parallelIndex;
+        mark_custom();
+    }
+    render_tooltip("Uses multiple TensorRT execution contexts when supported. One context is used per stream; a single context is not shared concurrently.");
+
+    int contextsModeIndex = (int)config_.inferenceContextsMode;
+    if (combo_from_vector("Inference contexts mode", contextsModeIndex, auto_int_mode_names())) {
+        config_.inferenceContextsMode = (AutoIntMode)contextsModeIndex;
+        mark_custom();
+    }
+    render_tooltip("Auto lets the planner choose TensorRT context count. Manual requests a specific number.");
+    ImGui::BeginDisabled(config_.inferenceContextsMode == AutoIntMode::Auto);
+    if (ImGui::InputInt("Inference contexts", &config_.inferenceContexts)) mark_custom();
+    ImGui::EndDisabled();
+    render_tooltip("Requested TensorRT execution contexts for parallel single-frame inference.");
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Runtime");
     if (ImGui::InputInt("Max frames", &config_.maxFrames)) mark_custom();
     render_tooltip("0 means full video.");
     if (ImGui::InputInt("Progress interval", &config_.progressInterval)) mark_custom();
+    render_tooltip("How many completed frames between progress log lines. Smaller values update the UI more often but produce more logs.");
     int ffmpegLogIndex = index_of_value(ffmpeg_log_level_names(), config_.ffmpegLogLevel, 1);
     if (combo_from_vector("FFmpeg log level", ffmpegLogIndex, ffmpeg_log_level_names())) {
         config_.ffmpegLogLevel = ffmpeg_log_level_names()[(size_t)ffmpegLogIndex];
         mark_custom();
     }
+    render_tooltip("Use error for noisy files. Use debug only when diagnosing FFmpeg decode/encode problems.");
+    ImGui::BeginDisabled(profileOnly);
     if (ImGui::Checkbox("Benchmark enabled", &config_.benchmarkEnabled)) mark_custom();
+    ImGui::EndDisabled();
 
     config_.boxThickness = clamp_int_min(config_.boxThickness, 1);
+    config_.batchSize = clamp_int_min(config_.batchSize, 1);
+    config_.inflightBatches = clamp_int_min(config_.inflightBatches, 1);
+    config_.inferenceContexts = clamp_int_min(config_.inferenceContexts, 1);
+    config_.vramReserveMb = clamp_int_min(config_.vramReserveMb, 0);
     config_.inputSize = clamp_int_min(config_.inputSize, 1);
     config_.maxFrames = clamp_int_min(config_.maxFrames, 0);
     config_.progressInterval = clamp_int_min(config_.progressInterval, 0);
     config_.confidence = clamp_float(config_.confidence, 0.0f, 1.0f);
     config_.iouThreshold = clamp_float(config_.iouThreshold, 0.0f, 1.0f);
     config_.boxConfidence = clamp_float(config_.boxConfidence, 0.0f, 1.0f);
+    config_.targetFps = clamp_float(config_.targetFps, 0.0f, 10000.0f);
+    config_.vramBudgetRatio = clamp_float(config_.vramBudgetRatio, 0.05f, 0.90f);
     refresh_command();
 
-    ImGui::Separator();
+    ImGui::SeparatorText("Generated Command");
     ImGui::TextUnformatted("Generated command");
     std::vector<char> previewBuffer(command_.preview.begin(), command_.preview.end());
     previewBuffer.push_back('\0');
@@ -391,6 +496,12 @@ void UiApp::render_run_config_tab() {
 
 void UiApp::render_monitor_tab() {
     RunProgress progress = runner_.progress_snapshot();
+    if (progress.totalFrames <= 0 && config_.maxFrames > 0) {
+        progress.totalFrames = config_.maxFrames;
+        if (progress.framesProcessed > 0) {
+            progress.progress = clamp_float((float)progress.framesProcessed / (float)progress.totalFrames, 0.0f, 1.0f);
+        }
+    }
     update_elapsed_progress(progress, runner_.elapsed_seconds());
     if (config_.task == Task::Detect && config_.drawBoxes && !config_.outputVideoPath.empty()) {
         const std::string outputPath = resolve_path(config_.workingDirectory, config_.outputVideoPath);
@@ -401,11 +512,20 @@ void UiApp::render_monitor_tab() {
     text_pair("Status", status_to_string(status));
     text_pair("Elapsed", format_duration(progress.elapsedSeconds));
     text_pair("ETA", progress.etaSeconds > 0.0 ? format_duration(progress.etaSeconds) : std::string("--"));
+    text_pair("Estimated total", progress.estimatedTotalSeconds > 0.0 ? format_duration(progress.estimatedTotalSeconds) : std::string("--"));
     text_pair("Current FPS", progress.fps > 0.0 ? std::to_string(progress.fps) : std::string("--"));
     text_pair("Speed", progress.speed > 0.0 ? std::to_string(progress.speed) : std::string("--"));
     text_pair("Frames", std::to_string(progress.framesProcessed) + (progress.totalFrames > 0 ? " / " + std::to_string(progress.totalFrames) : ""));
     text_pair("Detections", progress.totalDetections > 0 ? std::to_string(progress.totalDetections) : std::string("--"));
     text_pair("Output size", progress.outputBytes > 0 ? format_bytes(progress.outputBytes) : std::string("--"));
+    text_pair("Execution mode", progress.executionMode >= 0 ? std::to_string(progress.executionMode) : std::string("--"));
+    text_pair("Batch / In-flight", progress.batchSize > 0 ? std::to_string(progress.batchSize) + " / " + std::to_string(progress.inflightBatches) : std::string("--"));
+    text_pair("Active frames", progress.totalActiveFrames > 0 ? std::to_string(progress.totalActiveFrames) : std::string("--"));
+    text_pair("Inference contexts", progress.inferenceContextCount > 0 ? std::to_string(progress.inferenceContextCount) : std::string("--"));
+    text_pair("Overlap", progress.executionMode >= 0 ? bool_text(progress.pipelineOverlapEnabled) : "--");
+    text_pair("Parallel inference", progress.executionMode >= 0 ? bool_text(progress.parallelInferenceEnabled) : "--");
+    text_pair("Upload/download batch", progress.executionMode >= 0 ? std::to_string(progress.framesPerUploadBatch) + " / " + std::to_string(progress.framesPerDownloadBatch) : std::string("--"));
+    text_pair("VRAM plan", progress.vramBudgetMb > 0.0 ? format_fixed(progress.vramBudgetMb) + " MB budget, " + format_fixed(progress.estimatedBatchMb) + " MB batch" : std::string("--"));
 
     if (progress.progress > 0.0) {
         ImGui::ProgressBar((float)progress.progress, ImVec2(-1.0f, 0.0f));
@@ -413,6 +533,9 @@ void UiApp::render_monitor_tab() {
         ImGui::ProgressBar(0.0f, ImVec2(-1.0f, 0.0f), "progress unavailable");
     }
     ImGui::Separator();
+    if (!progress.fallbackReason.empty()) {
+        ImGui::TextWrapped("Plan reason: %s", progress.fallbackReason.c_str());
+    }
     ImGui::TextWrapped("Last status: %s", progress.lastStatusLine.empty() ? "--" : progress.lastStatusLine.c_str());
 }
 
@@ -420,6 +543,14 @@ void UiApp::render_logs_tab() {
     input_text_string("Filter", logFilter_);
     ImGui::SameLine();
     ImGui::Checkbox("Auto-scroll", &autoScroll_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Errors", &logShowErrors_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Warnings", &logShowWarnings_);
+    ImGui::SameLine();
+    ImGui::Checkbox("TensorRT", &logShowTensorRt_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Execution plan", &logShowExecutionPlan_);
     ImGui::SameLine();
     if (ImGui::Button("Clear logs")) {
         runner_.clear_logs();
@@ -437,13 +568,28 @@ void UiApp::render_logs_tab() {
         if (!logFilter_.empty() && line.text.find(logFilter_) == std::string::npos) {
             continue;
         }
-        const bool important = line.isError ||
-                               line.text.find("ERROR") != std::string::npos ||
-                               line.text.find("failed") != std::string::npos ||
-                               line.text.find("WARN") != std::string::npos ||
-                               line.text.find("TensorRT") != std::string::npos;
-        if (important) {
+        const std::string lower = lower_copy(line.text);
+        const bool isError = line.isError || lower.find("error") != std::string::npos || lower.find("failed") != std::string::npos;
+        const bool isWarning = lower.find("warn") != std::string::npos;
+        const bool isTensorRt = line.text.find("TensorRT") != std::string::npos;
+        const bool isExecutionPlan = lower.find("execution plan") != std::string::npos ||
+                                     lower.find("hardware profile") != std::string::npos ||
+                                     lower.find("fallback") != std::string::npos ||
+                                     lower.find("batch_size") != std::string::npos ||
+                                     lower.find("inflight_batches") != std::string::npos ||
+                                     lower.find("inference_context") != std::string::npos;
+        if ((!logShowErrors_ && isError) ||
+            (!logShowWarnings_ && isWarning) ||
+            (!logShowTensorRt_ && isTensorRt) ||
+            (!logShowExecutionPlan_ && isExecutionPlan)) {
+            continue;
+        }
+        if (isError) {
             ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.30f, 1.0f), "%s", line.text.c_str());
+        } else if (isWarning) {
+            ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.24f, 1.0f), "%s", line.text.c_str());
+        } else if (isTensorRt || isExecutionPlan) {
+            ImGui::TextColored(ImVec4(0.45f, 0.78f, 1.0f, 1.0f), "%s", line.text.c_str());
         } else {
             ImGui::TextUnformatted(line.text.c_str());
         }
@@ -455,24 +601,32 @@ void UiApp::render_logs_tab() {
 }
 
 void UiApp::render_help_tab() {
-    help_section("What VideoComputePipeline does",
-                 "VideoComputePipeline reads video through FFmpeg libraries, runs CPU/OpenCL filters or CUDA/TensorRT detection, writes CSV benchmark data, and can optionally write annotated video.");
-    help_section("Filter vs detection",
-                 "Filter mode changes pixels and writes a processed video. Detection mode is CSV-only by default and writes detections; annotated video is enabled with draw boxes and an output path.");
-    help_section("CPU decoder vs NVDEC",
-                 "CPU decoding produces system-memory frames. NVDEC uses NVIDIA hardware decode and is the preferred high-throughput path for GPU-resident detection and annotation.");
-    help_section("Encoder choices",
-                 "Use encoder none for CSV-only detection. Use h264_nvenc for low-CPU annotated output. CPU encoders are mainly for filter mode.");
+    help_section("Pipeline modes",
+                 "Filter mode changes pixels and writes a processed video. Detection mode runs TensorRT object detection, writes detections CSV by default, and writes annotated video only when Draw boxes and Output video are enabled.");
+    help_section("CSV-only detection",
+                 "CSV-only detection uses the model and labels paths, writes detections and benchmark CSV files, and does not need an encoder or output video path. This is the simplest mode for analytics-only inference.");
+    help_section("Annotated detection",
+                 "Annotated detection requires Draw boxes, an output path, and normally h264_nvenc. MKV is recommended for long hardware-video runs because it is more tolerant while writing and after interrupted runs.");
+    help_section("CPU decode vs NVDEC",
+                 "CPU decoding produces system-memory NV12 frames and uploads them to CUDA. NVDEC keeps decoded frames GPU-resident, avoiding raw-frame upload and enabling GPU overlay plus NVENC output.");
+    help_section("Execution plan modes",
+                 "Mode 0 is single-frame compatibility. Mode 1 enables batched transfers around sequential inference. Mode 2 overlaps pipeline stages while inference remains sequential. Mode 3 overlaps stages and uses parallel TensorRT execution contexts when the GPU and engine allow it.");
+    help_section("Batch size vs TensorRT batch",
+                 "The UI batch size is a scheduling and transfer batch. It can help uploads, downloads, and stage overlap even if the TensorRT engine is static batch-1. True TensorRT batch enqueue is used only when the engine reports support.");
+    help_section("Parallel inference",
+                 "Parallel inference means multiple TensorRT execution contexts. The pipeline never shares one execution context across concurrent streams. If parallel contexts are unsupported or not useful, auto mode falls back cleanly.");
+    help_section("VRAM budgeting",
+                 "Auto tune estimates video frame memory, TensorRT engine memory, active batch memory, and reserved GPU memory. VRAM budget ratio limits how much total GPU memory the planner may consume; reserve MB keeps memory free for the OS, driver, desktop, and other GPU work.");
     help_section("TensorRT, models, and labels",
-                 "Detection needs a TensorRT engine file and a labels file. The engine precision must be compatible with the runtime precision and GPU.");
+                 "Detection needs a TensorRT engine file and a labels file. The input size must match the engine. The precision selector is a runtime label; the engine tensor type still controls FP32 or FP16 preprocessing.");
     help_section("Confidence, IoU, and input size",
-                 "Confidence filters weak detections. IoU controls overlap suppression. YOLOv5s commonly uses input size 640; larger values cost more FPS.");
+                 "Confidence filters weak detections. IoU controls overlap suppression. Input size is the model resolution; the whole frame is letterboxed into that resolution, not cropped.");
     help_section("Class filtering",
-                 "By default detection keeps every class the model can output. Select one or more labels in the Run Config tab to emit class IDs and keep only those classes in CSV and annotated output.");
-    help_section("MKV vs MP4",
-                 "MKV is more tolerant while files are being written or if a run is interrupted. MP4 is often not playable until the trailer is finalized.");
+                 "By default detection keeps every class the model can output. Select one or more labels in the Run Config tab to emit class IDs and restrict both CSV and annotated output.");
+    help_section("Recommended presets",
+                 "Use CSV Only for analytics and easiest validation. Use Safe CPU Detection when CUDA video is unavailable. Use Annotated Video for normal NVDEC/TensorRT/NVENC output. Use Fast GPU or Stress Test when measuring long-run hardware throughput.");
     help_section("Common errors",
-                 "Check missing DLLs, missing TensorRT engine, missing labels, wrong working directory, unavailable NVDEC/NVENC, TensorRT engine mismatch, and output files open in another program.");
+                 "Check the working directory, build-msvc/build-msvc-hw vs build-win executable choice, missing TensorRT or FFmpeg DLLs, missing model or labels file, engine/input-size mismatch, unavailable NVDEC/NVENC, locked output files, and MP4 files that are not playable until finalized.");
 }
 
 void UiApp::render_tooltip(const char *text) {
