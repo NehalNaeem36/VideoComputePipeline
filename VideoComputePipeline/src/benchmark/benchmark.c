@@ -37,11 +37,11 @@ void benchmark_set_wall_clock_ms(Benchmark *bench, double wall_clock_ms) {
 }
 
 static int write_csv_header(FILE *file) {
-    return fprintf(file, "frame_index,decode_ms,process_ms,upload_ms,kernel_ms,download_ms,encode_ms,total_ms,preprocess_ms,inference_ms,postprocess_ms,overlay_ms,mux_write_ms\n") < 0 ? -1 : 0;
+    return fprintf(file, "frame_index,decode_ms,process_ms,upload_ms,kernel_ms,download_ms,encode_ms,total_ms,preprocess_ms,inference_ms,postprocess_ms,overlay_ms,mux_write_ms,batch_size,inflight_batches,total_active_frames,frames_per_upload_batch,frames_per_download_batch,execution_mode,inference_context_count,vram_budget_mb,estimated_batch_mb\n") < 0 ? -1 : 0;
 }
 
 static int write_csv_row(FILE *file, const FrameTiming *t) {
-    return fprintf(file, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+    return fprintf(file, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%d,%d,%d,%d,%d,%d,%.6f,%.6f\n",
                    t->frame_index,
                    t->decode_ms,
                    t->process_ms,
@@ -54,7 +54,16 @@ static int write_csv_row(FILE *file, const FrameTiming *t) {
                    t->inference_ms,
                    t->postprocess_ms,
                    t->overlay_ms,
-                   t->mux_write_ms) < 0 ? -1 : 0;
+                   t->mux_write_ms,
+                   t->batch_size,
+                   t->inflight_batches,
+                   t->total_active_frames,
+                   t->frames_per_upload_batch,
+                   t->frames_per_download_batch,
+                   t->execution_mode,
+                   t->inference_context_count,
+                   t->vram_budget_mb,
+                   t->estimated_batch_mb) < 0 ? -1 : 0;
 }
 
 int benchmark_open_csv(Benchmark *bench, const char *path) {

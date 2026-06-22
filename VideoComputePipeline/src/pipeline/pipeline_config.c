@@ -277,6 +277,53 @@ static int parse_float_value(const char *value, float *out) {
     return 0;
 }
 
+static int parse_batch_setting(const char *value, BatchSettingMode *mode, int *out) {
+    if (!value || !mode || !out) {
+        return -1;
+    }
+    if (strcmp(value, "auto") == 0) {
+        *mode = BATCH_SETTING_AUTO;
+        *out = 1;
+        return 0;
+    }
+    if (parse_int_value /* module: pipeline/pipeline_config */ (value, out) != 0 || *out <= 0) {
+        return -1;
+    }
+    *mode = BATCH_SETTING_MANUAL;
+    return 0;
+}
+
+static int parse_feature_mode(const char *value, PipelineFeatureMode *mode) {
+    if (!value || !mode) {
+        return -1;
+    }
+    if (strcmp(value, "auto") == 0) {
+        *mode = PIPELINE_FEATURE_AUTO;
+        return 0;
+    }
+    if (strcmp(value, "on") == 0) {
+        *mode = PIPELINE_FEATURE_ON;
+        return 0;
+    }
+    if (strcmp(value, "off") == 0) {
+        *mode = PIPELINE_FEATURE_OFF;
+        return 0;
+    }
+    return -1;
+}
+
+static const char *feature_mode_to_string(PipelineFeatureMode mode) {
+    switch (mode) {
+        case PIPELINE_FEATURE_ON:
+            return "on";
+        case PIPELINE_FEATURE_OFF:
+            return "off";
+        case PIPELINE_FEATURE_AUTO:
+        default:
+            return "auto";
+    }
+}
+
 static int parse_ffmpeg_log_level(const char *value) {
     return value &&
            (strcmp(value, "quiet") == 0 ||
@@ -443,6 +490,19 @@ void pipeline_config_default(PipelineConfig *config) {
     config->draw_boxes = DEFAULT_DRAW_BOXES;
     config->box_thickness = DEFAULT_BOX_THICKNESS;
     config->box_confidence = DEFAULT_BOX_CONFIDENCE;
+    config->batch_size_mode = BATCH_SETTING_MANUAL;
+    config->batch_size = DEFAULT_BATCH_SIZE;
+    config->inflight_batches_mode = BATCH_SETTING_MANUAL;
+    config->inflight_batches = DEFAULT_INFLIGHT_BATCHES;
+    config->enable_auto_tune = DEFAULT_AUTO_TUNE;
+    config->profile_hardware_only = DEFAULT_PROFILE_HARDWARE_ONLY;
+    config->target_fps = DEFAULT_TARGET_FPS;
+    config->vram_budget_ratio = DEFAULT_VRAM_BUDGET_RATIO;
+    config->vram_reserve_mb = DEFAULT_VRAM_RESERVE_MB;
+    config->pipeline_overlap_mode = PIPELINE_FEATURE_AUTO;
+    config->parallel_inference_mode = PIPELINE_FEATURE_AUTO;
+    config->inference_contexts_mode = BATCH_SETTING_AUTO;
+    config->inference_contexts = DEFAULT_INFERENCE_CONTEXTS;
 }
 
 int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
@@ -790,6 +850,79 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
                 set_parse_error /* module: pipeline/pipeline_config */ ("--box-confidence must be a number between 0 and 1");
                 return -1;
             }
+        } else if (strcmp(arg, "--batch-size") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_batch_setting /* module: pipeline/pipeline_config */ (argv[++i], &config->batch_size_mode, &config->batch_size) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--batch-size must be auto or a positive integer");
+                return -1;
+            }
+        } else if (strcmp(arg, "--inflight-batches") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_batch_setting /* module: pipeline/pipeline_config */ (argv[++i], &config->inflight_batches_mode, &config->inflight_batches) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--inflight-batches must be auto or a positive integer");
+                return -1;
+            }
+        } else if (strcmp(arg, "--auto-tune") == 0) {
+            config->enable_auto_tune = 1;
+            config->batch_size_mode = BATCH_SETTING_AUTO;
+            config->inflight_batches_mode = BATCH_SETTING_AUTO;
+        } else if (strcmp(arg, "--target-fps") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_float_value /* module: pipeline/pipeline_config */ (argv[++i], &config->target_fps) != 0 || config->target_fps < 0.0f) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--target-fps must be a non-negative number");
+                return -1;
+            }
+        } else if (strcmp(arg, "--vram-budget-ratio") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_float_value /* module: pipeline/pipeline_config */ (argv[++i], &config->vram_budget_ratio) != 0 ||
+                config->vram_budget_ratio <= 0.0f ||
+                config->vram_budget_ratio > 1.0f) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--vram-budget-ratio must be greater than 0 and at most 1");
+                return -1;
+            }
+        } else if (strcmp(arg, "--vram-reserve-mb") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_int_value /* module: pipeline/pipeline_config */ (argv[++i], &config->vram_reserve_mb) != 0 || config->vram_reserve_mb < 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--vram-reserve-mb must be a non-negative integer");
+                return -1;
+            }
+        } else if (strcmp(arg, "--profile-hardware") == 0) {
+            config->profile_hardware_only = 1;
+            config->enable_auto_tune = 1;
+        } else if (strcmp(arg, "--pipeline-overlap") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_feature_mode /* module: pipeline/pipeline_config */ (argv[++i], &config->pipeline_overlap_mode) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--pipeline-overlap must be auto, on, or off");
+                return -1;
+            }
+        } else if (strcmp(arg, "--parallel-inference") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_feature_mode /* module: pipeline/pipeline_config */ (argv[++i], &config->parallel_inference_mode) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--parallel-inference must be auto, on, or off");
+                return -1;
+            }
+        } else if (strcmp(arg, "--inference-contexts") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_batch_setting /* module: pipeline/pipeline_config */ (argv[++i], &config->inference_contexts_mode, &config->inference_contexts) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--inference-contexts must be auto or a positive integer");
+                return -1;
+            }
         } else {
             set_parse_error /* module: pipeline/pipeline_config */ ("unknown option: %s", arg);
             return -1;
@@ -873,6 +1006,39 @@ int pipeline_config_format_summary(const PipelineConfig *config, char *buffer, s
             if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "\n") != 0) {
                 return -1;
             }
+        }
+        if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "execution_plan:\n") != 0) {
+            return -1;
+        }
+        if (config->batch_size_mode == BATCH_SETTING_MANUAL) {
+            if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  batch_size: %d\n", config->batch_size) != 0) {
+                return -1;
+            }
+        } else if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  batch_size: auto\n") != 0) {
+            return -1;
+        }
+        if (config->inflight_batches_mode == BATCH_SETTING_MANUAL) {
+            if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  inflight_batches: %d\n", config->inflight_batches) != 0) {
+                return -1;
+            }
+        } else if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  inflight_batches: auto\n") != 0) {
+            return -1;
+        }
+        if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  auto_tune: %s\n", config->enable_auto_tune ? "true" : "false") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  profile_hardware_only: %s\n", config->profile_hardware_only ? "true" : "false") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  target_fps: %.3f\n", config->target_fps) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  vram_budget_ratio: %.3f\n", config->vram_budget_ratio) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  vram_reserve_mb: %d\n", config->vram_reserve_mb) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  pipeline_overlap: %s\n", feature_mode_to_string /* module: pipeline/pipeline_config */ (config->pipeline_overlap_mode)) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  parallel_inference: %s\n", feature_mode_to_string /* module: pipeline/pipeline_config */ (config->parallel_inference_mode)) != 0) {
+            return -1;
+        }
+        if (config->inference_contexts_mode == BATCH_SETTING_MANUAL) {
+            if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  inference_contexts: %d\n", config->inference_contexts) != 0) {
+                return -1;
+            }
+        } else if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  inference_contexts: auto\n") != 0) {
+            return -1;
         }
         if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "outputs:\n") != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  detections_path: %s\n", config->detections_path) != 0 ||

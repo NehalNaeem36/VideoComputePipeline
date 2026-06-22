@@ -48,6 +48,19 @@ static int pipeline_config_test_defaults(void) {
     TEST_ASSERT(config.draw_boxes == DEFAULT_DRAW_BOXES);
     TEST_ASSERT(config.box_thickness == DEFAULT_BOX_THICKNESS);
     TEST_ASSERT(config.box_confidence == DEFAULT_BOX_CONFIDENCE);
+    TEST_ASSERT(config.batch_size_mode == BATCH_SETTING_MANUAL);
+    TEST_ASSERT(config.batch_size == DEFAULT_BATCH_SIZE);
+    TEST_ASSERT(config.inflight_batches_mode == BATCH_SETTING_MANUAL);
+    TEST_ASSERT(config.inflight_batches == DEFAULT_INFLIGHT_BATCHES);
+    TEST_ASSERT(config.enable_auto_tune == DEFAULT_AUTO_TUNE);
+    TEST_ASSERT(config.profile_hardware_only == DEFAULT_PROFILE_HARDWARE_ONLY);
+    TEST_ASSERT(config.target_fps == DEFAULT_TARGET_FPS);
+    TEST_ASSERT(config.vram_budget_ratio == DEFAULT_VRAM_BUDGET_RATIO);
+    TEST_ASSERT(config.vram_reserve_mb == DEFAULT_VRAM_RESERVE_MB);
+    TEST_ASSERT(config.pipeline_overlap_mode == PIPELINE_FEATURE_AUTO);
+    TEST_ASSERT(config.parallel_inference_mode == PIPELINE_FEATURE_AUTO);
+    TEST_ASSERT(config.inference_contexts_mode == BATCH_SETTING_AUTO);
+    TEST_ASSERT(config.inference_contexts == DEFAULT_INFERENCE_CONTEXTS);
     return 0;
 }
 
@@ -87,6 +100,15 @@ static int pipeline_config_test_parse_args(void) {
         "--draw-boxes",
         "--box-thickness", "4",
         "--box-confidence", "0.40",
+        "--batch-size", "4",
+        "--inflight-batches", "2",
+        "--auto-tune",
+        "--target-fps", "60",
+        "--vram-budget-ratio", "0.35",
+        "--vram-reserve-mb", "768",
+        "--pipeline-overlap", "on",
+        "--parallel-inference", "off",
+        "--inference-contexts", "2",
         "--no-benchmark"
     };
     const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
@@ -134,6 +156,16 @@ static int pipeline_config_test_parse_args(void) {
     TEST_ASSERT(config.draw_boxes == 1);
     TEST_ASSERT(config.box_thickness == 4);
     TEST_ASSERT(config.box_confidence > 0.39f && config.box_confidence < 0.41f);
+    TEST_ASSERT(config.batch_size_mode == BATCH_SETTING_AUTO);
+    TEST_ASSERT(config.inflight_batches_mode == BATCH_SETTING_AUTO);
+    TEST_ASSERT(config.enable_auto_tune == 1);
+    TEST_ASSERT(config.target_fps > 59.9f && config.target_fps < 60.1f);
+    TEST_ASSERT(config.vram_budget_ratio > 0.34f && config.vram_budget_ratio < 0.36f);
+    TEST_ASSERT(config.vram_reserve_mb == 768);
+    TEST_ASSERT(config.pipeline_overlap_mode == PIPELINE_FEATURE_ON);
+    TEST_ASSERT(config.parallel_inference_mode == PIPELINE_FEATURE_OFF);
+    TEST_ASSERT(config.inference_contexts_mode == BATCH_SETTING_MANUAL);
+    TEST_ASSERT(config.inference_contexts == 2);
     return 0;
 }
 
@@ -212,6 +244,40 @@ static int pipeline_config_test_bad_class_ids(void) {
     return 0;
 }
 
+static int pipeline_config_test_manual_batch_options(void) {
+    char *argv[] = {
+        "VideoComputePipeline",
+        "--batch-size", "3",
+        "--inflight-batches", "2"
+    };
+    const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+
+    PipelineConfig config;
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+
+    TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) == 0);
+    TEST_ASSERT(config.batch_size_mode == BATCH_SETTING_MANUAL);
+    TEST_ASSERT(config.batch_size == 3);
+    TEST_ASSERT(config.inflight_batches_mode == BATCH_SETTING_MANUAL);
+    TEST_ASSERT(config.inflight_batches == 2);
+    return 0;
+}
+
+static int pipeline_config_test_bad_batch_size(void) {
+    char *argv[] = {
+        "VideoComputePipeline",
+        "--batch-size", "0"
+    };
+    const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+
+    PipelineConfig config;
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+
+    TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) != 0);
+    TEST_ASSERT(strstr(pipeline_config_last_error /* module: pipeline/pipeline_config */ (), "--batch-size") != NULL);
+    return 0;
+}
+
 static int pipeline_config_test_detect_summary(void) {
     PipelineConfig config;
     char summary[4096];
@@ -232,6 +298,12 @@ static int pipeline_config_test_detect_summary(void) {
     TEST_ASSERT(strstr(summary, "confidence:") != NULL);
     TEST_ASSERT(strstr(summary, "input_size:") != NULL);
     TEST_ASSERT(strstr(summary, "class_filter: ids=0 names=car") != NULL);
+    TEST_ASSERT(strstr(summary, "execution_plan:") != NULL);
+    TEST_ASSERT(strstr(summary, "batch_size:") != NULL);
+    TEST_ASSERT(strstr(summary, "auto_tune:") != NULL);
+    TEST_ASSERT(strstr(summary, "pipeline_overlap:") != NULL);
+    TEST_ASSERT(strstr(summary, "parallel_inference:") != NULL);
+    TEST_ASSERT(strstr(summary, "inference_contexts:") != NULL);
     TEST_ASSERT(strstr(summary, "\n  filter:") == NULL);
     TEST_ASSERT(strstr(summary, "encoder:") == NULL);
     TEST_ASSERT(strstr(summary, "output_path:") == NULL);
@@ -271,6 +343,8 @@ static int pipeline_config_test_filter_summary(void) {
     TEST_ASSERT(strstr(summary, "model_path:") == NULL);
     TEST_ASSERT(strstr(summary, "confidence:") == NULL);
     TEST_ASSERT(strstr(summary, "detections_path:") == NULL);
+    TEST_ASSERT(strstr(summary, "execution_plan:") == NULL);
+    TEST_ASSERT(strstr(summary, "batch_size:") == NULL);
     return 0;
 }
 
@@ -295,6 +369,12 @@ int main(void) {
         return 1;
     }
     if (pipeline_config_test_bad_class_ids() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_manual_batch_options() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_bad_batch_size() != 0) {
         return 1;
     }
     if (pipeline_config_test_detect_summary() != 0) {

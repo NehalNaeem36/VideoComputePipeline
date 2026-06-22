@@ -81,6 +81,10 @@ set(PROJECT_SOURCES
     src/pipeline/frame_slot.c
     src/pipeline/frame_queue.c
     src/pipeline/frame_pool.c
+    src/pipeline/frame_batch.c
+    src/pipeline/video_profile.c
+    src/pipeline/hardware_profile.c
+    src/pipeline/pipeline_execution_plan.c
     src/benchmark/timer.c
     src/benchmark/benchmark.c
     src/benchmark/matrix_report.c

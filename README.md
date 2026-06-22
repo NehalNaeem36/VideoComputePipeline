@@ -24,6 +24,7 @@ VideoComputePipeline/
 - Matrix report CLI for CPU/GPU CSV comparison
 - Detection-only CUDA/TensorRT YOLO path: MP4 -> NV12 -> detections CSV
 - Experimental GPU-resident detection path: NVDEC -> TensorRT -> CUDA box overlay -> NVENC
+- Batch-aware detection execution plan with optional video/GPU auto-tuning
 - Tests for modules
 
 ## Build
@@ -197,6 +198,16 @@ Experimental annotated detection without full-frame CPU transfers:
 --input-size N
 --inference-backend tensorrt
 --precision fp16|fp32
+--batch-size auto|N
+--inflight-batches auto|N
+--auto-tune
+--target-fps N
+--vram-budget-ratio R
+--vram-reserve-mb N
+--profile-hardware
+--pipeline-overlap auto|on|off
+--parallel-inference auto|on|off
+--inference-contexts auto|N
 --encoder libx264|libx264rgb|h264_nvenc|mpeg4
 --mode cpu|gpu
 --filter grayscale|blur3x3|blur5x5|blur9x9|blur13x13
@@ -248,6 +259,68 @@ manual    Uses the exact thread and queue values passed on the CLI.
 ```
 
 Benchmark CSV rows are streamed during encoding and flushed periodically, so long runs do not keep all timing rows in heap memory.
+
+## Detection Auto-Tuning
+
+Detection mode now builds an execution plan before the frame loop. The default plan preserves the existing single-frame behavior:
+
+```text
+batch_size = 1
+inflight_batches = 1
+valid_frames = 1
+```
+
+Use `--auto-tune` to let the planner choose batch and in-flight settings from the actual video metadata, CUDA memory state, TensorRT engine capability, and measured pinned-copy bandwidth:
+
+```powershell
+.\build-msvc\bin\VideoComputePipeline.exe `
+  --task detect `
+  --decoder nvdec `
+  --draw-boxes `
+  --input data\input\sample.mp4 `
+  --output data\output\annotated.mkv `
+  --encoder h264_nvenc `
+  --model models\yolov5s_trt11.engine `
+  --labels models\coco.names `
+  --detections benchmarks\detections_hw.csv `
+  --benchmark benchmarks\detection_hw.csv `
+  --auto-tune `
+  --target-fps 60 `
+  --input-size 640 `
+  --max-frames 300
+```
+
+The VRAM policy is conservative by default. It uses the smaller of `total_vram * 0.375` and free VRAM after TensorRT engine load minus a reserve. This avoids treating display/OS/other GPU memory as available pipeline working memory.
+
+For a quick CUDA environment check:
+
+```powershell
+.\build-msvc\bin\VideoComputePipeline.exe --task detect --profile-hardware
+```
+
+Batching is currently integrated through `FrameBatch` and execution-plan metadata. If the TensorRT engine is static batch-1, the planner keeps true inference at batch size 1 or loops per frame inside the batch abstraction. Engines with larger/dynamic batch support can be enabled through the batch inference API without creating a separate pipeline.
+
+For static batch-1 engines, the overlap path can still use multiple TensorRT execution contexts when supported:
+
+```powershell
+.\build-msvc\bin\VideoComputePipeline.exe `
+  --task detect `
+  --decoder nvdec `
+  --draw-boxes `
+  --auto-tune `
+  --pipeline-overlap on `
+  --parallel-inference auto `
+  --input data\input\sample.mp4 `
+  --output data\output\overlap_annotated.mkv `
+  --encoder h264_nvenc `
+  --model models\yolov5s_trt11.engine `
+  --labels models\coco.names `
+  --detections benchmarks\nvdec_overlap_detections.csv `
+  --benchmark benchmarks\nvdec_overlap_benchmark.csv `
+  --max-frames 300
+```
+
+This is parallel single-frame inference, not one TensorRT batch enqueue. Each active inference slot owns its own CUDA stream and TensorRT execution context.
 
 ## Output Quality
 

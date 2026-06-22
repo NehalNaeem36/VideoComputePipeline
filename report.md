@@ -250,6 +250,66 @@ total_ms        decode + upload + preprocess + inference + download + postproces
 
 Wall-clock FPS is measured separately from summed per-frame latency.
 
+## Auto-Tuned Batch Execution Plan
+
+Detection now has a batch-aware execution-plan layer. The current behavior remains the default special case:
+
+```text
+batch_size = 1
+inflight_batches = 1
+valid_frames = 1
+```
+
+The planner combines:
+
+- actual input video dimensions, FPS, frame format, and estimated frame bytes
+- CUDA total/free VRAM before and after TensorRT engine creation
+- conservative VRAM reserve and budget ratio
+- TensorRT input/output byte estimates and batch capability
+- measured pinned H2D/D2H bandwidth when auto-tune/profile mode is requested
+- whether the run is CPU-decoded or GPU-resident NVDEC/NVENC
+
+GPU-resident detection keeps raw frames on the GPU:
+
+```text
+NVDEC -> TensorRT -> postprocess metadata -> CUDA overlay -> NVENC
+```
+
+For that mode, the selected plan reports:
+
+```text
+frames_per_upload_batch = 0
+frames_per_download_batch = 0
+```
+
+CPU-decoded detection requires raw upload, so the planner reports upload batch size equal to the selected frame batch size. Full raw-frame download remains a fallback/debug concept, not the preferred throughput path.
+
+Benchmark CSV rows append execution-plan metadata:
+
+```text
+batch_size
+inflight_batches
+total_active_frames
+frames_per_upload_batch
+frames_per_download_batch
+vram_budget_mb
+estimated_batch_mb
+```
+
+Use `--auto-tune` for planned selection or `--profile-hardware` to print CUDA/VRAM/bandwidth information without running a full detection pipeline.
+
+The static batch-1 optimization path uses parallel staged execution rather than true TensorRT batch enqueue. When `--parallel-inference auto|on` selects more than one context, each active inference slot owns a separate TensorRT execution context and CUDA stream. This lets the pipeline overlap uploads, preprocess, enqueue, output copy, postprocess, overlay, and encode across in-flight frames while preserving frame-id ordering.
+
+Relevant controls:
+
+```text
+--pipeline-overlap auto|on|off
+--parallel-inference auto|on|off
+--inference-contexts auto|N
+```
+
+The planner records the selected execution mode and context count in benchmark CSV rows.
+
 ## Experimental GPU-Resident Annotated Detection Path
 
 The next hardware path keeps raw video frames on the GPU:

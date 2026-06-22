@@ -17,6 +17,33 @@ int inference_engine_create(InferenceEngine **engine, const InferenceConfig *con
     return -1;
 }
 
+int inference_engine_get_batch_capability(InferenceEngine *engine, InferenceBatchCapability *capability) {
+    (void)engine;
+    if (capability) {
+        capability->min_batch_size = 1;
+        capability->max_batch_size = 1;
+        capability->supports_dynamic_batch = 0;
+        capability->supports_true_batching = 0;
+        capability->supports_parallel_contexts = 0;
+        capability->max_parallel_contexts = 1;
+        capability->selected_context_count = 1;
+        capability->input_width = 0;
+        capability->input_height = 0;
+        capability->input_bytes_per_frame = 0;
+        capability->output_bytes_per_frame = 0;
+        capability->description[0] = '\0';
+    }
+    g_last_error = "CUDA/TensorRT inference backend was not built";
+    return -1;
+}
+
+int inference_engine_set_parallel_contexts(InferenceEngine *engine, int context_count) {
+    (void)engine;
+    (void)context_count;
+    g_last_error = "CUDA/TensorRT inference backend was not built";
+    return -1;
+}
+
 int inference_engine_run_nv12(InferenceEngine *engine, const Frame *frame, DetectionResult *result, FrameTiming *timing) {
     (void)engine;
     (void)frame;
@@ -31,6 +58,20 @@ int inference_engine_run_cuda_nv12(InferenceEngine *engine, const CudaNV12Frame 
     (void)frame;
     (void)result;
     (void)timing;
+    g_last_error = "CUDA/TensorRT inference backend was not built";
+    return -1;
+}
+
+int inference_engine_run_nv12_batch(InferenceEngine *engine, FrameBatch *batch) {
+    (void)engine;
+    (void)batch;
+    g_last_error = "CUDA/TensorRT inference backend was not built";
+    return -1;
+}
+
+int inference_engine_run_cuda_nv12_batch(InferenceEngine *engine, FrameBatch *batch) {
+    (void)engine;
+    (void)batch;
     g_last_error = "CUDA/TensorRT inference backend was not built";
     return -1;
 }

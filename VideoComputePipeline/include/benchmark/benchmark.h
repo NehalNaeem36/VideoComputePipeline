@@ -17,6 +17,15 @@ typedef struct {
     double postprocess_ms;
     double overlay_ms;
     double mux_write_ms;
+    int batch_size;
+    int inflight_batches;
+    int total_active_frames;
+    int frames_per_upload_batch;
+    int frames_per_download_batch;
+    int execution_mode;
+    int inference_context_count;
+    double vram_budget_mb;
+    double estimated_batch_mb;
 } FrameTiming;
 
 typedef struct {

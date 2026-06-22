@@ -46,6 +46,17 @@ typedef enum {
     OUTPUT_FORMAT_MKV = 2
 } OutputFormat;
 
+typedef enum {
+    BATCH_SETTING_AUTO = 0,
+    BATCH_SETTING_MANUAL = 1
+} BatchSettingMode;
+
+typedef enum {
+    PIPELINE_FEATURE_AUTO = 0,
+    PIPELINE_FEATURE_ON = 1,
+    PIPELINE_FEATURE_OFF = 2
+} PipelineFeatureMode;
+
 typedef struct {
     char input_path[VCP_MAX_PATH_LENGTH];
     char output_path[VCP_MAX_PATH_LENGTH];
@@ -85,6 +96,19 @@ typedef struct {
     int draw_boxes;
     int box_thickness;
     float box_confidence;
+    BatchSettingMode batch_size_mode;
+    int batch_size;
+    BatchSettingMode inflight_batches_mode;
+    int inflight_batches;
+    int enable_auto_tune;
+    int profile_hardware_only;
+    float target_fps;
+    float vram_budget_ratio;
+    int vram_reserve_mb;
+    PipelineFeatureMode pipeline_overlap_mode;
+    PipelineFeatureMode parallel_inference_mode;
+    BatchSettingMode inference_contexts_mode;
+    int inference_contexts;
 } PipelineConfig;
 
 void pipeline_config_default(PipelineConfig *config);

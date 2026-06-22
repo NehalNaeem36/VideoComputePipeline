@@ -44,8 +44,12 @@ int main(void) {
         }
     }
 #else
+    InferenceBatchCapability capability;
+    memset(&capability, 0, sizeof(capability));
     TEST_ASSERT(inference_engine_create /* module: inference/inference_engine */ (&engine, &config) != 0);
     TEST_ASSERT(engine == NULL);
+    TEST_ASSERT(inference_engine_get_batch_capability /* module: inference/inference_engine */ (engine, &capability) != 0);
+    TEST_ASSERT(capability.max_batch_size == 1);
     TEST_ASSERT(strstr(inference_engine_last_error /* module: inference/inference_engine */ (), "CUDA/TensorRT") != NULL);
     inference_engine_destroy /* module: inference/inference_engine */ (engine);
 #endif

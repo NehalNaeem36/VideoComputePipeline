@@ -8,14 +8,17 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <numeric>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -120,6 +123,7 @@ float elapsed_event_ms(cudaEvent_t start, cudaEvent_t end) {
 }
 
 struct CudaSlot {
+    std::unique_ptr<nvinfer1::IExecutionContext> context;
     cudaStream_t stream = nullptr;
     cudaEvent_t start = nullptr;
     cudaEvent_t upload_done = nullptr;
@@ -259,9 +263,10 @@ public:
         }
         cudaEventRecord(slot.preprocess_done, slot.stream);
 
-        if (!context_->setTensorAddress(input_name_.c_str(), slot.d_input) ||
-            !context_->setTensorAddress(output_name_.c_str(), slot.d_output) ||
-            !context_->enqueueV3(slot.stream)) {
+        if (!slot.context ||
+            !slot.context->setTensorAddress(input_name_.c_str(), slot.d_input) ||
+            !slot.context->setTensorAddress(output_name_.c_str(), slot.d_output) ||
+            !slot.context->enqueueV3(slot.stream)) {
             g_last_error = "TensorRT enqueueV3 failed";
             return -1;
         }
@@ -369,9 +374,10 @@ public:
         }
         cudaEventRecord(slot.preprocess_done, slot.stream);
 
-        if (!context_->setTensorAddress(input_name_.c_str(), slot.d_input) ||
-            !context_->setTensorAddress(output_name_.c_str(), slot.d_output) ||
-            !context_->enqueueV3(slot.stream)) {
+        if (!slot.context ||
+            !slot.context->setTensorAddress(input_name_.c_str(), slot.d_input) ||
+            !slot.context->setTensorAddress(output_name_.c_str(), slot.d_output) ||
+            !slot.context->enqueueV3(slot.stream)) {
             g_last_error = "TensorRT enqueueV3 failed";
             return -1;
         }
@@ -424,6 +430,123 @@ public:
         }
         auto post_end = std::chrono::high_resolution_clock::now();
         timing->postprocess_ms = std::chrono::duration<double, std::milli>(post_end - post_start).count();
+        return 0;
+    }
+
+    int get_batch_capability(InferenceBatchCapability *capability) const {
+        if (!capability) {
+            g_last_error = "invalid batch capability output";
+            return -1;
+        }
+
+        std::memset(capability, 0, sizeof(*capability));
+        capability->min_batch_size = 1;
+        capability->max_batch_size = 1;
+        capability->supports_dynamic_batch = supports_dynamic_batch_ ? 1 : 0;
+        capability->supports_true_batching = 0;
+        capability->supports_parallel_contexts = slots_.size() > 1 ? 1 : 0;
+        capability->max_parallel_contexts = (int)slots_.size();
+        capability->selected_context_count = selected_context_count_;
+        capability->input_width = config_.input_width;
+        capability->input_height = config_.input_height;
+        capability->input_bytes_per_frame = input_bytes_per_frame_;
+        capability->output_bytes_per_frame = output_bytes_per_frame_;
+        std::snprintf(capability->description,
+                      sizeof(capability->description),
+                      "%s batch, max_batch=%d",
+                      supports_dynamic_batch_ ? "dynamic" : "static",
+                      capability->max_batch_size);
+        return 0;
+    }
+
+    int run_batch(FrameBatch *batch) {
+        if (!batch || batch->use_cuda_frames || batch->valid_frames < 0 || batch->valid_frames > batch->capacity) {
+            g_last_error = "invalid CPU FrameBatch for inference";
+            return -1;
+        }
+        if (batch->valid_frames > 0 &&
+            ensure_frame_buffers(batch->cpu_frames[0].width, batch->cpu_frames[0].height) != 0) {
+            return -1;
+        }
+        if (selected_context_count_ <= 1 || batch->valid_frames <= 1) {
+            for (int i = 0; i < batch->valid_frames; ++i) {
+                if (run(&batch->cpu_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+                    return -1;
+                }
+            }
+            return 0;
+        }
+
+        for (int begin = 0; begin < batch->valid_frames; begin += selected_context_count_) {
+            const int end = std::min(batch->valid_frames, begin + selected_context_count_);
+            std::vector<std::thread> workers;
+            std::atomic<int> failed{0};
+            workers.reserve((size_t)(end - begin));
+            for (int i = begin; i < end; ++i) {
+                workers.emplace_back([this, batch, i, &failed]() {
+                    if (run(&batch->cpu_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+                        failed.store(1);
+                    }
+                });
+            }
+            for (std::thread &worker : workers) {
+                worker.join();
+            }
+            if (failed.load() != 0) {
+                g_last_error = "parallel CPU batch inference worker failed";
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+    int run_device_batch(FrameBatch *batch) {
+        if (!batch || !batch->use_cuda_frames || batch->valid_frames < 0 || batch->valid_frames > batch->capacity) {
+            g_last_error = "invalid CUDA FrameBatch for inference";
+            return -1;
+        }
+        if (selected_context_count_ <= 1 || batch->valid_frames <= 1) {
+            for (int i = 0; i < batch->valid_frames; ++i) {
+                if (run_device(&batch->cuda_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+                    return -1;
+                }
+            }
+            return 0;
+        }
+
+        for (int begin = 0; begin < batch->valid_frames; begin += selected_context_count_) {
+            const int end = std::min(batch->valid_frames, begin + selected_context_count_);
+            std::vector<std::thread> workers;
+            std::atomic<int> failed{0};
+            workers.reserve((size_t)(end - begin));
+            for (int i = begin; i < end; ++i) {
+                workers.emplace_back([this, batch, i, &failed]() {
+                    if (run_device(&batch->cuda_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+                        failed.store(1);
+                    }
+                });
+            }
+            for (std::thread &worker : workers) {
+                worker.join();
+            }
+            if (failed.load() != 0) {
+                g_last_error = "parallel CUDA batch inference worker failed";
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+    int set_parallel_contexts(int context_count) {
+        if (context_count < 1) {
+            g_last_error = "parallel inference context count must be positive";
+            return -1;
+        }
+        if (context_count > (int)slots_.size()) {
+            g_last_error = "requested parallel inference contexts exceed allocated CUDA slots";
+            return -1;
+        }
+        selected_context_count_ = context_count;
         return 0;
     }
 
@@ -513,8 +636,12 @@ private:
 
         nvinfer1::Dims input_dims = engine_->getTensorShape(input_name_.c_str());
         bool dynamic = false;
+        int declared_batch = 1;
         for (int i = 0; i < input_dims.nbDims; ++i) {
             dynamic = dynamic || input_dims.d[i] < 0;
+        }
+        if (input_dims.nbDims == 4 && input_dims.d[0] > 0) {
+            declared_batch = input_dims.d[0];
         }
         if (dynamic) {
             if (!context_->setInputShape(input_name_.c_str(), nvinfer1::Dims4{1, 3, config_.input_height, config_.input_width})) {
@@ -522,6 +649,10 @@ private:
                 return -1;
             }
             input_dims = context_->getTensorShape(input_name_.c_str());
+            supports_dynamic_batch_ = true;
+            max_supported_batch_size_ = 8;
+        } else {
+            max_supported_batch_size_ = declared_batch > 0 ? declared_batch : 1;
         }
 
         if (input_dims.nbDims != 4 ||
@@ -542,6 +673,9 @@ private:
             g_last_error = "unsupported TensorRT engine output shape or type";
             return -1;
         }
+        input_bytes_per_frame_ = (size_t)3 * (size_t)config_.input_width * (size_t)config_.input_height *
+                                 (input_type_ == nvinfer1::DataType::kHALF ? sizeof(__half) : sizeof(float));
+        output_bytes_per_frame_ = output_bytes_;
         return 0;
     }
 
@@ -550,6 +684,16 @@ private:
         const size_t input_element_size = input_type_ == nvinfer1::DataType::kHALF ? sizeof(__half) : sizeof(float);
         const size_t input_bytes = (size_t)3 * (size_t)config_.input_width * (size_t)config_.input_height * input_element_size;
         for (CudaSlot &slot : slots_) {
+            slot.context.reset(engine_->createExecutionContext());
+            if (!slot.context) {
+                g_last_error = "failed to create TensorRT slot execution context";
+                return -1;
+            }
+            if (supports_dynamic_batch_ &&
+                !slot.context->setInputShape(input_name_.c_str(), nvinfer1::Dims4{1, 3, config_.input_height, config_.input_width})) {
+                g_last_error = "failed to set TensorRT slot dynamic input shape";
+                return -1;
+            }
             if (cudaStreamCreate(&slot.stream) != cudaSuccess ||
                 cudaEventCreate(&slot.start) != cudaSuccess ||
                 cudaEventCreate(&slot.upload_done) != cudaSuccess ||
@@ -634,6 +778,11 @@ private:
     size_t output_elements_ = 0;
     size_t output_element_size_ = 0;
     size_t output_bytes_ = 0;
+    size_t input_bytes_per_frame_ = 0;
+    size_t output_bytes_per_frame_ = 0;
+    int max_supported_batch_size_ = 1;
+    int selected_context_count_ = 1;
+    bool supports_dynamic_batch_ = false;
     int frame_width_ = 0;
     int frame_height_ = 0;
     std::vector<CudaSlot> slots_;
@@ -670,12 +819,44 @@ extern "C" int inference_engine_run_nv12(InferenceEngine *engine, const Frame *f
     return engine->impl->run(frame, result, timing);
 }
 
+extern "C" int inference_engine_get_batch_capability(InferenceEngine *engine, InferenceBatchCapability *capability) {
+    if (!engine || !engine->impl) {
+        g_last_error = "inference engine is not initialized";
+        return -1;
+    }
+    return engine->impl->get_batch_capability(capability);
+}
+
+extern "C" int inference_engine_set_parallel_contexts(InferenceEngine *engine, int context_count) {
+    if (!engine || !engine->impl) {
+        g_last_error = "inference engine is not initialized";
+        return -1;
+    }
+    return engine->impl->set_parallel_contexts(context_count);
+}
+
 extern "C" int inference_engine_run_cuda_nv12(InferenceEngine *engine, const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing) {
     if (!engine || !engine->impl) {
         g_last_error = "inference engine is not initialized";
         return -1;
     }
     return engine->impl->run_device(frame, result, timing);
+}
+
+extern "C" int inference_engine_run_nv12_batch(InferenceEngine *engine, FrameBatch *batch) {
+    if (!engine || !engine->impl) {
+        g_last_error = "inference engine is not initialized";
+        return -1;
+    }
+    return engine->impl->run_batch(batch);
+}
+
+extern "C" int inference_engine_run_cuda_nv12_batch(InferenceEngine *engine, FrameBatch *batch) {
+    if (!engine || !engine->impl) {
+        g_last_error = "inference engine is not initialized";
+        return -1;
+    }
+    return engine->impl->run_device_batch(batch);
 }
 
 extern "C" void inference_engine_destroy(InferenceEngine *engine) {

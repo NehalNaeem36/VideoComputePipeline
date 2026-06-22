@@ -8,7 +8,11 @@
 #include "inference/detection_result.h"
 #include "inference/detection_writer.h"
 #include "inference/inference_engine.h"
+#include "pipeline/frame_batch.h"
 #include "pipeline/frame_pool.h"
+#include "pipeline/hardware_profile.h"
+#include "pipeline/pipeline_execution_plan.h"
+#include "pipeline/video_profile.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "video/video_reader.h"
@@ -663,6 +667,116 @@ static int validate_detection_paths(const PipelineConfig *config) {
     return 0;
 }
 
+static void detection_profile_hardware_before_engine(const PipelineConfig *config, HardwareProfile *hardware) {
+    hardware_profile_init /* module: pipeline/hardware_profile */ (hardware);
+    if (hardware_profile_query_before_engine /* module: pipeline/hardware_profile */ (hardware) == 0 &&
+        (config->enable_auto_tune || config->profile_hardware_only)) {
+        hardware_profile_measure_bandwidth /* module: pipeline/hardware_profile */ (hardware);
+    }
+}
+
+static void detection_profile_hardware_after_engine(const PipelineConfig *config, HardwareProfile *hardware) {
+    if (hardware_profile_query_after_engine /* module: pipeline/hardware_profile */ (hardware) == 0 &&
+        (config->enable_auto_tune || config->profile_hardware_only) &&
+        (hardware->h2d_pinned_gbps <= 0.0 || hardware->d2h_pinned_gbps <= 0.0)) {
+        hardware_profile_measure_bandwidth /* module: pipeline/hardware_profile */ (hardware);
+    }
+}
+
+static int detection_build_execution_plan(const PipelineConfig *config,
+                                          const VideoInfo *info,
+                                          FrameFormat working_format,
+                                          int requires_raw_upload,
+                                          int requires_raw_download,
+                                          const HardwareProfile *hardware,
+                                          InferenceEngine *engine,
+                                          PipelineExecutionPlan *plan) {
+    VideoProfile video;
+    InferenceBatchCapability capability;
+
+    video_profile_init /* module: pipeline/video_profile */ (&video);
+    memset(&capability, 0, sizeof(capability));
+    capability.min_batch_size = 1;
+    capability.max_batch_size = 1;
+
+    if (video_profile_from_info /* module: pipeline/video_profile */ (&video, info, working_format, requires_raw_upload, requires_raw_download) != 0) {
+        log_error /* module: utils/logger */ ("failed to build video profile for execution planner");
+        return -1;
+    }
+    if (engine && inference_engine_get_batch_capability /* module: inference/inference_engine */ (engine, &capability) != 0) {
+        log_warn /* module: utils/logger */ ("failed to query inference batch capability: %s", inference_engine_last_error /* module: inference/inference_engine */ ());
+    }
+    if (pipeline_execution_plan_build /* module: pipeline/pipeline_execution_plan */ (plan, config, &video, hardware, &capability) != 0) {
+        log_error /* module: utils/logger */ ("failed to build execution plan");
+        return -1;
+    }
+    return 0;
+}
+
+static int detection_apply_inference_execution_plan(const PipelineConfig *config,
+                                                    InferenceEngine *engine,
+                                                    PipelineExecutionPlan *plan) {
+    if (!engine || !plan) {
+        return -1;
+    }
+    if (inference_engine_set_parallel_contexts /* module: inference/inference_engine */ (engine, plan->inference_context_count) != 0) {
+        if (config && config->parallel_inference_mode == PIPELINE_FEATURE_ON) {
+            log_error /* module: utils/logger */ ("failed to enable requested parallel inference contexts: %s", inference_engine_last_error /* module: inference/inference_engine */ ());
+            return -1;
+        }
+        log_warn /* module: utils/logger */ ("parallel inference unavailable; using one inference context: %s", inference_engine_last_error /* module: inference/inference_engine */ ());
+        plan->parallel_inference_enabled = 0;
+        plan->inference_context_count = 1;
+        plan->inference_serialized = 1;
+        if (plan->execution_mode == 3) {
+            plan->execution_mode = plan->pipeline_overlap_enabled ? 2 : (plan->transfer_batching_enabled ? 1 : 0);
+        }
+    }
+    return 0;
+}
+
+static int run_hardware_profile_only(const PipelineConfig *config) {
+    HardwareProfile hardware;
+    (void)config;
+    hardware_profile_init /* module: pipeline/hardware_profile */ (&hardware);
+    hardware_profile_query_before_engine /* module: pipeline/hardware_profile */ (&hardware);
+    hardware_profile_query_after_engine /* module: pipeline/hardware_profile */ (&hardware);
+    hardware_profile_measure_bandwidth /* module: pipeline/hardware_profile */ (&hardware);
+    hardware_profile_print /* module: pipeline/hardware_profile */ (&hardware);
+    return 0;
+}
+
+static void release_hw_frame_batch(VideoHWReader *reader, FrameBatch *batch) {
+    if (!reader || !batch || !batch->use_cuda_frames || !batch->cuda_frames) {
+        return;
+    }
+    for (int i = 0; i < batch->capacity; ++i) {
+        if (batch->cuda_frames[i].av_frame) {
+            video_hw_reader_release_frame /* module: video/video_hw_reader */ (reader, &batch->cuda_frames[i]);
+        }
+    }
+    batch->valid_frames = 0;
+}
+
+static double bytes_to_mib(size_t bytes) {
+    return (double)bytes / (1024.0 * 1024.0);
+}
+
+static void apply_execution_plan_to_timing(const PipelineExecutionPlan *plan, FrameTiming *timing) {
+    if (!plan || !timing) {
+        return;
+    }
+    timing->batch_size = plan->batch_size;
+    timing->inflight_batches = plan->inflight_batches;
+    timing->total_active_frames = plan->total_active_frames;
+    timing->frames_per_upload_batch = plan->frames_per_upload_batch;
+    timing->frames_per_download_batch = plan->frames_per_download_batch;
+    timing->execution_mode = plan->execution_mode;
+    timing->inference_context_count = plan->inference_context_count;
+    timing->vram_budget_mb = bytes_to_mib /* module: pipeline/pipeline_runner */ (plan->vram_budget_bytes);
+    timing->estimated_batch_mb = bytes_to_mib /* module: pipeline/pipeline_runner */ (plan->estimated_batch_bytes);
+}
+
 static int run_detection_pipeline_cpu(const PipelineConfig *config) {
     if (validate_detection_paths /* module: pipeline/pipeline_runner */ (config) != 0) {
         return -1;
@@ -676,15 +790,17 @@ static int run_detection_pipeline_cpu(const PipelineConfig *config) {
     Benchmark benchmark;
     DetectionWriter detections;
     InferenceEngine *engine = NULL;
-    Frame frame;
-    DetectionResult detection_result;
+    FrameBatch batch;
+    HardwareProfile hardware;
+    PipelineExecutionPlan plan;
     Timer wall_timer;
 
     memset(&reader, 0, sizeof(reader));
     benchmark_init /* module: benchmark/benchmark */ (&benchmark);
     detection_writer_init /* module: inference/detection_writer */ (&detections);
-    frame_init /* module: core/frame */ (&frame);
-    detection_result_init /* module: inference/detection_result */ (&detection_result);
+    frame_batch_init /* module: pipeline/frame_batch */ (&batch);
+    hardware_profile_init /* module: pipeline/hardware_profile */ (&hardware);
+    pipeline_execution_plan_init /* module: pipeline/pipeline_execution_plan */ (&plan);
 
     int effective_decoder_threads = config->decoder_threads;
     if ((config->memory_profile == MEMORY_PROFILE_LOW || config->memory_profile == MEMORY_PROFILE_AUTO) &&
@@ -709,16 +825,6 @@ static int run_detection_pipeline_cpu(const PipelineConfig *config) {
         goto cleanup;
     }
 
-    if (frame_alloc /* module: core/frame */ (&frame, info->width, info->height, FRAME_FORMAT_NV12) != 0) {
-        log_error /* module: utils/logger */ ("failed to allocate reusable NV12 frame: %dx%d", info->width, info->height);
-        goto cleanup;
-    }
-
-    if (detection_result_alloc /* module: inference/detection_result */ (&detection_result, (size_t)config->max_detections_per_frame) != 0) {
-        log_error /* module: utils/logger */ ("failed to allocate detection result capacity: %d", config->max_detections_per_frame);
-        goto cleanup;
-    }
-
     if (detection_writer_open /* module: inference/detection_writer */ (&detections, config->detections_path, config->labels_path) != 0) {
         log_error /* module: utils/logger */ ("failed to open detections CSV: %s", config->detections_path);
         goto cleanup;
@@ -735,8 +841,37 @@ static int run_detection_pipeline_cpu(const PipelineConfig *config) {
     InferenceConfig inference_config;
     fill_inference_config_from_pipeline /* module: pipeline/pipeline_runner */ (config, &inference_config);
 
+    detection_profile_hardware_before_engine /* module: pipeline/pipeline_runner */ (config, &hardware);
     if (inference_engine_create /* module: inference/inference_engine */ (&engine, &inference_config) != 0) {
         log_error /* module: utils/logger */ ("failed to create inference engine: %s", inference_engine_last_error /* module: inference/inference_engine */ ());
+        goto cleanup;
+    }
+    detection_profile_hardware_after_engine /* module: pipeline/pipeline_runner */ (config, &hardware);
+
+    if (detection_build_execution_plan /* module: pipeline/pipeline_runner */ (config,
+                                                                               info,
+                                                                               FRAME_FORMAT_NV12,
+                                                                               1,
+                                                                               0,
+                                                                               &hardware,
+                                                                               engine,
+                                                                               &plan) != 0) {
+        goto cleanup;
+    }
+    if (detection_apply_inference_execution_plan /* module: pipeline/pipeline_runner */ (config, engine, &plan) != 0) {
+        goto cleanup;
+    }
+    if (config->enable_auto_tune || config->batch_size_mode == BATCH_SETTING_AUTO || config->batch_size > 1) {
+        hardware_profile_print /* module: pipeline/hardware_profile */ (&hardware);
+        pipeline_execution_plan_print /* module: pipeline/pipeline_execution_plan */ (&plan);
+    }
+
+    if (frame_batch_alloc /* module: pipeline/frame_batch */ (&batch,
+                                                              plan.batch_size,
+                                                              0,
+                                                              (size_t)config->max_detections_per_frame) != 0 ||
+        frame_batch_alloc_cpu_nv12_frames /* module: pipeline/frame_batch */ (&batch, info->width, info->height) != 0) {
+        log_error /* module: utils/logger */ ("failed to allocate CPU NV12 FrameBatch capacity: %d", plan.batch_size);
         goto cleanup;
     }
 
@@ -745,57 +880,76 @@ static int run_detection_pipeline_cpu(const PipelineConfig *config) {
 
     int frame_id = 0;
     for (;;) {
-        FrameTiming timing;
-        Timer decode_timer;
-        memset(&timing, 0, sizeof(timing));
+        int reached_eof = 0;
+        frame_batch_clear /* module: pipeline/frame_batch */ (&batch);
 
-        if (config->max_frames > 0 && frame_id >= config->max_frames) {
+        for (int slot = 0; slot < batch.capacity; ++slot) {
+            Timer decode_timer;
+            int read_result = 0;
+            if (config->max_frames > 0 && frame_id >= config->max_frames) {
+                break;
+            }
+            timer_start /* module: benchmark/timer */ (&decode_timer);
+            read_result = video_reader_read_frame_as /* module: video/video_reader */ (&reader, &batch.cpu_frames[slot], FRAME_FORMAT_NV12);
+            batch.timings[slot].decode_ms = timer_stop_ms /* module: benchmark/timer */ (&decode_timer);
+            if (read_result == 0) {
+                reached_eof = 1;
+                break;
+            }
+            if (read_result < 0) {
+                log_error /* module: utils/logger */ ("failed to decode NV12 frame %d", frame_id);
+                goto cleanup;
+            }
+            batch.cpu_frames[slot].index = frame_id;
+            batch.timings[slot].frame_index = frame_id;
+            batch.valid_frames++;
+            frame_id++;
+        }
+
+        if (batch.valid_frames == 0) {
             break;
         }
 
-        timer_start /* module: benchmark/timer */ (&decode_timer);
-        const int read_result = video_reader_read_frame_as /* module: video/video_reader */ (&reader, &frame, FRAME_FORMAT_NV12);
-        timing.decode_ms = timer_stop_ms /* module: benchmark/timer */ (&decode_timer);
-        if (read_result == 0) {
+        if (inference_engine_run_nv12_batch /* module: inference/inference_engine */ (engine, &batch) != 0) {
+            log_error /* module: utils/logger */ ("inference failed on batch starting at frame %d: %s",
+                      batch.timings[0].frame_index,
+                      inference_engine_last_error /* module: inference/inference_engine */ ());
+            goto cleanup;
+        }
+
+        for (int slot = 0; slot < batch.valid_frames; ++slot) {
+            FrameTiming *timing = &batch.timings[slot];
+            DetectionResult *result = &batch.detections[slot];
+            const int current_frame_id = timing->frame_index;
+            const double timestamp_ms = info->fps > 0.0 ? (double)current_frame_id * 1000.0 / info->fps : 0.0;
+            for (size_t i = 0; i < result->count; ++i) {
+                result->items[i].timestamp_ms = timestamp_ms;
+            }
+
+            timing->process_ms = timing->upload_ms + timing->preprocess_ms + timing->inference_ms + timing->download_ms + timing->postprocess_ms;
+            timing->total_ms = timing->decode_ms + timing->process_ms;
+            apply_execution_plan_to_timing /* module: pipeline/pipeline_runner */ (&plan, timing);
+
+            if (detection_writer_write_frame /* module: inference/detection_writer */ (&detections, result) != 0) {
+                log_error /* module: utils/logger */ ("failed to write detections for frame %d", current_frame_id);
+                goto cleanup;
+            }
+
+            if (config->enable_benchmark &&
+                benchmark_add_frame_result /* module: benchmark/benchmark */ (&benchmark, timing) != 0) {
+                log_error /* module: utils/logger */ ("failed to write benchmark timing for frame %d", current_frame_id);
+                goto cleanup;
+            }
+
+            if (config->progress_interval > 0 && (current_frame_id + 1) % config->progress_interval == 0) {
+                const double wall_ms = timer_stop_ms /* module: benchmark/timer */ (&wall_timer);
+                const double fps = wall_ms > 0.0 ? (double)(current_frame_id + 1) * 1000.0 / wall_ms : 0.0;
+                log_info /* module: utils/logger */ ("progress: completed %d detection frames, wall_clock_fps=%.3f", current_frame_id + 1, fps);
+            }
+        }
+
+        if (reached_eof) {
             break;
-        }
-        if (read_result < 0) {
-            log_error /* module: utils/logger */ ("failed to decode NV12 frame %d", frame_id);
-            goto cleanup;
-        }
-
-        frame.index = frame_id;
-        timing.frame_index = frame_id;
-        detection_result_clear /* module: inference/detection_result */ (&detection_result);
-        if (inference_engine_run_nv12 /* module: inference/inference_engine */ (engine, &frame, &detection_result, &timing) != 0) {
-            log_error /* module: utils/logger */ ("inference failed on frame %d: %s", frame_id, inference_engine_last_error /* module: inference/inference_engine */ ());
-            goto cleanup;
-        }
-
-        const double timestamp_ms = info->fps > 0.0 ? (double)frame_id * 1000.0 / info->fps : 0.0;
-        for (size_t i = 0; i < detection_result.count; ++i) {
-            detection_result.items[i].timestamp_ms = timestamp_ms;
-        }
-
-        timing.process_ms = timing.upload_ms + timing.preprocess_ms + timing.inference_ms + timing.download_ms + timing.postprocess_ms;
-        timing.total_ms = timing.decode_ms + timing.process_ms;
-
-        if (detection_writer_write_frame /* module: inference/detection_writer */ (&detections, &detection_result) != 0) {
-            log_error /* module: utils/logger */ ("failed to write detections for frame %d", frame_id);
-            goto cleanup;
-        }
-
-        if (config->enable_benchmark &&
-            benchmark_add_frame_result /* module: benchmark/benchmark */ (&benchmark, &timing) != 0) {
-            log_error /* module: utils/logger */ ("failed to write benchmark timing for frame %d", frame_id);
-            goto cleanup;
-        }
-
-        frame_id++;
-        if (config->progress_interval > 0 && frame_id % config->progress_interval == 0) {
-            const double wall_ms = timer_stop_ms /* module: benchmark/timer */ (&wall_timer);
-            const double fps = wall_ms > 0.0 ? (double)frame_id * 1000.0 / wall_ms : 0.0;
-            log_info /* module: utils/logger */ ("progress: completed %d detection frames, wall_clock_fps=%.3f", frame_id, fps);
         }
     }
 
@@ -819,8 +973,7 @@ cleanup:
         detection_writer_close /* module: inference/detection_writer */ (&detections);
     }
     inference_engine_destroy /* module: inference/inference_engine */ (engine);
-    detection_result_free /* module: inference/detection_result */ (&detection_result);
-    frame_free /* module: core/frame */ (&frame);
+    frame_batch_free /* module: pipeline/frame_batch */ (&batch);
     benchmark_free /* module: benchmark/benchmark */ (&benchmark);
     if (reader_opened) {
         video_reader_close /* module: video/video_reader */ (&reader);
@@ -843,16 +996,18 @@ static int run_detection_pipeline_hw(const PipelineConfig *config) {
     Benchmark benchmark;
     DetectionWriter detections;
     InferenceEngine *engine = NULL;
-    DetectionResult detection_result;
-    CudaNV12Frame frame;
+    FrameBatch batch;
+    HardwareProfile hardware;
+    PipelineExecutionPlan plan;
     Timer wall_timer;
 
     memset(&reader, 0, sizeof(reader));
     memset(&writer, 0, sizeof(writer));
     benchmark_init /* module: benchmark/benchmark */ (&benchmark);
     detection_writer_init /* module: inference/detection_writer */ (&detections);
-    detection_result_init /* module: inference/detection_result */ (&detection_result);
-    cuda_nv12_frame_init /* module: gpu/cuda_frame */ (&frame);
+    frame_batch_init /* module: pipeline/frame_batch */ (&batch);
+    hardware_profile_init /* module: pipeline/hardware_profile */ (&hardware);
+    pipeline_execution_plan_init /* module: pipeline/pipeline_execution_plan */ (&plan);
 
     int effective_decoder_threads = config->decoder_threads;
     if ((config->memory_profile == MEMORY_PROFILE_LOW || config->memory_profile == MEMORY_PROFILE_AUTO) &&
@@ -877,11 +1032,6 @@ static int run_detection_pipeline_hw(const PipelineConfig *config) {
         goto cleanup;
     }
 
-    if (detection_result_alloc /* module: inference/detection_result */ (&detection_result, (size_t)config->max_detections_per_frame) != 0) {
-        log_error /* module: utils/logger */ ("failed to allocate detection result capacity: %d", config->max_detections_per_frame);
-        goto cleanup;
-    }
-
     if (detection_writer_open /* module: inference/detection_writer */ (&detections, config->detections_path, config->labels_path) != 0) {
         log_error /* module: utils/logger */ ("failed to open detections CSV: %s", config->detections_path);
         goto cleanup;
@@ -897,8 +1047,36 @@ static int run_detection_pipeline_hw(const PipelineConfig *config) {
 
     InferenceConfig inference_config;
     fill_inference_config_from_pipeline /* module: pipeline/pipeline_runner */ (config, &inference_config);
+    detection_profile_hardware_before_engine /* module: pipeline/pipeline_runner */ (config, &hardware);
     if (inference_engine_create /* module: inference/inference_engine */ (&engine, &inference_config) != 0) {
         log_error /* module: utils/logger */ ("failed to create inference engine: %s", inference_engine_last_error /* module: inference/inference_engine */ ());
+        goto cleanup;
+    }
+    detection_profile_hardware_after_engine /* module: pipeline/pipeline_runner */ (config, &hardware);
+
+    if (detection_build_execution_plan /* module: pipeline/pipeline_runner */ (config,
+                                                                               info,
+                                                                               FRAME_FORMAT_NV12,
+                                                                               0,
+                                                                               0,
+                                                                               &hardware,
+                                                                               engine,
+                                                                               &plan) != 0) {
+        goto cleanup;
+    }
+    if (detection_apply_inference_execution_plan /* module: pipeline/pipeline_runner */ (config, engine, &plan) != 0) {
+        goto cleanup;
+    }
+    if (config->enable_auto_tune || config->batch_size_mode == BATCH_SETTING_AUTO || config->batch_size > 1) {
+        hardware_profile_print /* module: pipeline/hardware_profile */ (&hardware);
+        pipeline_execution_plan_print /* module: pipeline/pipeline_execution_plan */ (&plan);
+    }
+
+    if (frame_batch_alloc /* module: pipeline/frame_batch */ (&batch,
+                                                              plan.batch_size,
+                                                              1,
+                                                              (size_t)config->max_detections_per_frame) != 0) {
+        log_error /* module: utils/logger */ ("failed to allocate CUDA FrameBatch capacity: %d", plan.batch_size);
         goto cleanup;
     }
 
@@ -917,78 +1095,97 @@ static int run_detection_pipeline_hw(const PipelineConfig *config) {
 
     int frame_id = 0;
     for (;;) {
-        FrameTiming timing;
-        Timer decode_timer;
-        memset(&timing, 0, sizeof(timing));
-        cuda_nv12_frame_clear /* module: gpu/cuda_frame */ (&frame);
+        int reached_eof = 0;
+        release_hw_frame_batch /* module: pipeline/pipeline_runner */ (&reader, &batch);
+        frame_batch_clear /* module: pipeline/frame_batch */ (&batch);
 
-        if (config->max_frames > 0 && frame_id >= config->max_frames) {
+        for (int slot = 0; slot < batch.capacity; ++slot) {
+            Timer decode_timer;
+            int read_result = 0;
+            if (config->max_frames > 0 && frame_id >= config->max_frames) {
+                break;
+            }
+            timer_start /* module: benchmark/timer */ (&decode_timer);
+            read_result = video_hw_reader_read_cuda_nv12 /* module: video/video_hw_reader */ (&reader, &batch.cuda_frames[slot]);
+            batch.timings[slot].decode_ms = timer_stop_ms /* module: benchmark/timer */ (&decode_timer);
+            if (read_result == 0) {
+                reached_eof = 1;
+                break;
+            }
+            if (read_result < 0) {
+                log_error /* module: utils/logger */ ("failed to decode CUDA/NV12 frame %d: %s", frame_id, video_hw_reader_last_error /* module: video/video_hw_reader */ ());
+                goto cleanup;
+            }
+            batch.cuda_frames[slot].index = frame_id;
+            batch.timings[slot].frame_index = frame_id;
+            batch.valid_frames++;
+            frame_id++;
+        }
+
+        if (batch.valid_frames == 0) {
             break;
         }
 
-        timer_start /* module: benchmark/timer */ (&decode_timer);
-        const int read_result = video_hw_reader_read_cuda_nv12 /* module: video/video_hw_reader */ (&reader, &frame);
-        timing.decode_ms = timer_stop_ms /* module: benchmark/timer */ (&decode_timer);
-        if (read_result == 0) {
+        if (inference_engine_run_cuda_nv12_batch /* module: inference/inference_engine */ (engine, &batch) != 0) {
+            log_error /* module: utils/logger */ ("device inference failed on batch starting at frame %d: %s",
+                      batch.timings[0].frame_index,
+                      inference_engine_last_error /* module: inference/inference_engine */ ());
+            goto cleanup;
+        }
+
+        for (int slot = 0; slot < batch.valid_frames; ++slot) {
+            CudaNV12Frame *frame = &batch.cuda_frames[slot];
+            FrameTiming *timing = &batch.timings[slot];
+            DetectionResult *result = &batch.detections[slot];
+            const int current_frame_id = timing->frame_index;
+            const double timestamp_ms = frame->timestamp_ms > 0.0
+                                            ? frame->timestamp_ms
+                                            : (info->fps > 0.0 ? (double)current_frame_id * 1000.0 / info->fps : 0.0);
+            for (size_t i = 0; i < result->count; ++i) {
+                result->items[i].timestamp_ms = timestamp_ms;
+            }
+
+            if (detection_writer_write_frame /* module: inference/detection_writer */ (&detections, result) != 0) {
+                log_error /* module: utils/logger */ ("failed to write detections for frame %d", current_frame_id);
+                goto cleanup;
+            }
+
+            if (config->draw_boxes) {
+                if (cuda_overlay_draw_nv12_boxes /* module: gpu/cuda_overlay */ (frame,
+                                                                                 result,
+                                                                                 config->box_thickness,
+                                                                                 config->box_confidence,
+                                                                                 -1,
+                                                                                 frame->cuda_stream,
+                                                                                 &timing->overlay_ms) != 0) {
+                    log_error /* module: utils/logger */ ("failed to draw detection boxes on frame %d: %s", current_frame_id, cuda_overlay_last_error /* module: gpu/cuda_overlay */ ());
+                    goto cleanup;
+                }
+                if (video_hw_writer_write_cuda_nv12 /* module: video/video_hw_writer */ (&writer, frame, timing) != 0) {
+                    log_error /* module: utils/logger */ ("failed to encode annotated frame %d: %s", current_frame_id, video_hw_writer_last_error /* module: video/video_hw_writer */ ());
+                    goto cleanup;
+                }
+            }
+
+            timing->process_ms = timing->upload_ms + timing->preprocess_ms + timing->inference_ms + timing->download_ms + timing->postprocess_ms + timing->overlay_ms;
+            timing->total_ms = timing->decode_ms + timing->process_ms + timing->encode_ms + timing->mux_write_ms;
+            apply_execution_plan_to_timing /* module: pipeline/pipeline_runner */ (&plan, timing);
+
+            if (config->enable_benchmark &&
+                benchmark_add_frame_result /* module: benchmark/benchmark */ (&benchmark, timing) != 0) {
+                log_error /* module: utils/logger */ ("failed to write benchmark timing for frame %d", current_frame_id);
+                goto cleanup;
+            }
+
+            if (config->progress_interval > 0 && (current_frame_id + 1) % config->progress_interval == 0) {
+                const double wall_ms = timer_stop_ms /* module: benchmark/timer */ (&wall_timer);
+                const double fps = wall_ms > 0.0 ? (double)(current_frame_id + 1) * 1000.0 / wall_ms : 0.0;
+                log_info /* module: utils/logger */ ("progress: completed %d hardware detection frames, wall_clock_fps=%.3f", current_frame_id + 1, fps);
+            }
+        }
+
+        if (reached_eof) {
             break;
-        }
-        if (read_result < 0) {
-            log_error /* module: utils/logger */ ("failed to decode CUDA/NV12 frame %d: %s", frame_id, video_hw_reader_last_error /* module: video/video_hw_reader */ ());
-            goto cleanup;
-        }
-
-        frame.index = frame_id;
-        timing.frame_index = frame_id;
-        detection_result_clear /* module: inference/detection_result */ (&detection_result);
-        if (inference_engine_run_cuda_nv12 /* module: inference/inference_engine */ (engine, &frame, &detection_result, &timing) != 0) {
-            log_error /* module: utils/logger */ ("device inference failed on frame %d: %s", frame_id, inference_engine_last_error /* module: inference/inference_engine */ ());
-            goto cleanup;
-        }
-
-        const double timestamp_ms = frame.timestamp_ms > 0.0
-                                        ? frame.timestamp_ms
-                                        : (info->fps > 0.0 ? (double)frame_id * 1000.0 / info->fps : 0.0);
-        for (size_t i = 0; i < detection_result.count; ++i) {
-            detection_result.items[i].timestamp_ms = timestamp_ms;
-        }
-
-        if (detection_writer_write_frame /* module: inference/detection_writer */ (&detections, &detection_result) != 0) {
-            log_error /* module: utils/logger */ ("failed to write detections for frame %d", frame_id);
-            goto cleanup;
-        }
-
-        if (config->draw_boxes) {
-            if (cuda_overlay_draw_nv12_boxes /* module: gpu/cuda_overlay */ (&frame,
-                                                                             &detection_result,
-                                                                             config->box_thickness,
-                                                                             config->box_confidence,
-                                                                             -1,
-                                                                             frame.cuda_stream,
-                                                                             &timing.overlay_ms) != 0) {
-                log_error /* module: utils/logger */ ("failed to draw detection boxes on frame %d: %s", frame_id, cuda_overlay_last_error /* module: gpu/cuda_overlay */ ());
-                goto cleanup;
-            }
-            if (video_hw_writer_write_cuda_nv12 /* module: video/video_hw_writer */ (&writer, &frame, &timing) != 0) {
-                log_error /* module: utils/logger */ ("failed to encode annotated frame %d: %s", frame_id, video_hw_writer_last_error /* module: video/video_hw_writer */ ());
-                goto cleanup;
-            }
-        }
-
-        timing.process_ms = timing.upload_ms + timing.preprocess_ms + timing.inference_ms + timing.download_ms + timing.postprocess_ms + timing.overlay_ms;
-        timing.total_ms = timing.decode_ms + timing.process_ms + timing.encode_ms + timing.mux_write_ms;
-
-        if (config->enable_benchmark &&
-            benchmark_add_frame_result /* module: benchmark/benchmark */ (&benchmark, &timing) != 0) {
-            log_error /* module: utils/logger */ ("failed to write benchmark timing for frame %d", frame_id);
-            goto cleanup;
-        }
-
-        video_hw_reader_release_frame /* module: video/video_hw_reader */ (&reader, &frame);
-        frame_id++;
-        if (config->progress_interval > 0 && frame_id % config->progress_interval == 0) {
-            const double wall_ms = timer_stop_ms /* module: benchmark/timer */ (&wall_timer);
-            const double fps = wall_ms > 0.0 ? (double)frame_id * 1000.0 / wall_ms : 0.0;
-            log_info /* module: utils/logger */ ("progress: completed %d hardware detection frames, wall_clock_fps=%.3f", frame_id, fps);
         }
     }
 
@@ -1010,9 +1207,7 @@ static int run_detection_pipeline_hw(const PipelineConfig *config) {
     result_code = 0;
 
 cleanup:
-    if (frame.av_frame) {
-        video_hw_reader_release_frame /* module: video/video_hw_reader */ (&reader, &frame);
-    }
+    release_hw_frame_batch /* module: pipeline/pipeline_runner */ (&reader, &batch);
     if (benchmark_opened) {
         benchmark_close_csv /* module: benchmark/benchmark */ (&benchmark);
     }
@@ -1023,7 +1218,7 @@ cleanup:
         video_hw_writer_close /* module: video/video_hw_writer */ (&writer);
     }
     inference_engine_destroy /* module: inference/inference_engine */ (engine);
-    detection_result_free /* module: inference/detection_result */ (&detection_result);
+    frame_batch_free /* module: pipeline/frame_batch */ (&batch);
     benchmark_free /* module: benchmark/benchmark */ (&benchmark);
     if (reader_opened) {
         video_hw_reader_close /* module: video/video_hw_reader */ (&reader);
@@ -1034,6 +1229,10 @@ cleanup:
 static int run_detection_pipeline(const PipelineConfig *config) {
     if (!config) {
         return -1;
+    }
+
+    if (config->profile_hardware_only) {
+        return run_hardware_profile_only /* module: pipeline/pipeline_runner */ (config);
     }
 
     if (config->decoder_mode == VIDEO_DECODER_NVDEC) {
