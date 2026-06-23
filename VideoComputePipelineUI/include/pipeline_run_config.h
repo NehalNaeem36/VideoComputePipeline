@@ -26,7 +26,7 @@ enum class AutoIntMode { Manual = 0, Auto };
 enum class FeatureMode { Auto = 0, On, Off };
 
 struct PipelineRunConfig {
-    std::string pipelineExePath = "..\\VideoComputePipeline\\build-msvc-hw\\bin\\VideoComputePipeline.exe";
+    std::string pipelineExePath = "..\\VideoComputePipeline\\build-win-cuda12\\Release\\VideoComputePipeline.exe";
     std::string workingDirectory = "..\\VideoComputePipeline";
     std::string inputVideoPath = "data\\input\\people_4k_30min_stream_test.mp4";
     std::string modelPath = "models\\yolov5s_trt11.engine";

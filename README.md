@@ -50,37 +50,102 @@ cmake -S . -B build-win -G "MinGW Makefiles"
 cmake --build build-win -j 4
 ```
 
-CUDA/TensorRT detection builds require MSVC, CUDA Toolkit, TensorRT, and MSVC-compatible FFmpeg development files:
+## Windows CUDA 12 Stack
 
-```cmd
-cd /d E:\wAI\first_task\VideoComputePipeline
-rmdir /s /q build-msvc
+CUDA/TensorRT/NVDEC/NVENC detection builds require Visual Studio 2022 x64, CUDA 12.9, cuDNN 9.23.2 for CUDA 12, TensorRT 11.1.0.106 for CUDA 12, and MSVC-compatible FFmpeg development files.
 
-cmake -S . -B build-msvc -G "Ninja" ^
-  -DCMAKE_BUILD_TYPE=Release ^
-  -DENABLE_CUDA_INFERENCE=ON ^
-  -DCMAKE_CUDA_ARCHITECTURES=86 ^
-  -DOPENCL_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3" ^
-  -DTENSORRT_ROOT="D:\TensorRT\TensorRT-Enterprise-11.1.0.106-Windows-amd64-cuda-13.3-Release-external\TensorRT-11.1.0.106" ^
-  -DFFMPEG_ROOT="C:\vcpkg\installed\x64-windows"
+Verified local roots:
 
-cmake --build build-msvc -j 8
+```text
+CUDA Toolkit:
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9
+
+cuDNN:
+D:\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive
+
+TensorRT:
+D:\TensorRT\TensorRT-11.1.0.106
+
+ONNX Runtime GPU:
+E:\wAI\third_party\onnxruntime\Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0
 ```
 
-Experimental NVDEC/NVENC annotated detection additionally enables hardware video:
+Required runtime PATH entries when DLLs are not copied beside the executable:
 
-```cmd
-cmake -S . -B build-msvc -G "Ninja" ^
-  -DCMAKE_BUILD_TYPE=Release ^
-  -DENABLE_CUDA_INFERENCE=ON ^
-  -DENABLE_HW_VIDEO=ON ^
-  -DCMAKE_CUDA_ARCHITECTURES=86 ^
-  -DOPENCL_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3" ^
-  -DTENSORRT_ROOT="D:\TensorRT\TensorRT-Enterprise-11.1.0.106-Windows-amd64-cuda-13.3-Release-external\TensorRT-11.1.0.106" ^
-  -DFFMPEG_ROOT="C:\vcpkg\installed\x64-windows"
-
-cmake --build build-msvc -j 8
+```text
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\bin
+D:\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive\bin\x64
+D:\TensorRT\TensorRT-11.1.0.106\bin
+E:\wAI\third_party\onnxruntime\Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0\runtimes\win-x64\native
 ```
+
+Verify the stack:
+
+```powershell
+cd E:\wAI\first_task\VideoComputePipeline
+.\scripts\verify_cuda12_stack.ps1
+
+where.exe nvcc
+nvcc --version
+where.exe cudart64_*.dll
+where.exe cudnn*.dll
+where.exe trtexec
+where.exe nvinfer*.dll
+where.exe onnxruntime.dll
+where.exe onnxruntime_providers_cuda.dll
+echo $env:CUDA_PATH
+echo $env:CUDNN_ROOT
+echo $env:TENSORRT_ROOT
+echo $env:ONNXRUNTIME_ROOT
+```
+
+TensorRT-only CUDA 12 configure:
+
+```powershell
+cd E:\wAI\first_task\VideoComputePipeline
+
+cmake -S . -B build-win-cuda12 `
+  -G "Visual Studio 17 2022" `
+  -A x64 `
+  -DCUDAToolkit_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9" `
+  -DTENSORRT_ROOT="D:\TensorRT\TensorRT-11.1.0.106" `
+  -DCUDNN_ROOT="D:\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive" `
+  -DENABLE_CUDA_INFERENCE=ON `
+  -DENABLE_HW_VIDEO=ON `
+  -DENABLE_ONNXRUNTIME=OFF `
+  -DENABLE_LIBTORCH=OFF
+
+cmake --build build-win-cuda12 --config Release
+```
+
+ONNX Runtime-enabled CUDA 12 configure:
+
+```powershell
+cmake -S . -B build-win-cuda12-onnx `
+  -G "Visual Studio 17 2022" `
+  -A x64 `
+  -DCUDAToolkit_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9" `
+  -DTENSORRT_ROOT="D:\TensorRT\TensorRT-11.1.0.106" `
+  -DCUDNN_ROOT="D:\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive" `
+  -DONNXRUNTIME_ROOT="E:\wAI\third_party\onnxruntime\Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0" `
+  -DENABLE_CUDA_INFERENCE=ON `
+  -DENABLE_HW_VIDEO=ON `
+  -DENABLE_ONNXRUNTIME=ON `
+  -DENABLE_LIBTORCH=OFF
+
+cmake --build build-win-cuda12-onnx --config Release
+```
+
+Shortcut script:
+
+```powershell
+.\scripts\configure_cuda12.ps1
+.\scripts\configure_cuda12.ps1 -EnableOnnxRuntime
+```
+
+Do not mix CUDA 13 and CUDA 12 paths in the same build directory. Do not use MinGW/MSYS2 for CUDA/TensorRT/NVDEC/NVENC builds. Avoid relying on `C:\Windows\System32\onnxruntime.dll`; the intended ONNX Runtime DLLs are under `ONNXRUNTIME_ROOT\runtimes\win-x64\native`.
+
+Existing TensorRT `.engine` files built with the old CUDA/TensorRT stack should be treated as stale and rebuilt after moving to TensorRT 11.1 / CUDA 12.
 
 ## Run Examples
 
@@ -142,7 +207,7 @@ python tools\build_yolov5s_tensorrt.py
 Detection smoke test:
 
 ```powershell
-.\build-msvc\bin\VideoComputePipeline.exe `
+.\build-win-cuda12\Release\VideoComputePipeline.exe `
   --task detect `
   --input data\input\sample.mp4 `
   --model models\yolov5s_trt11.engine `
@@ -159,7 +224,7 @@ Detection smoke test:
 Experimental annotated detection without full-frame CPU transfers:
 
 ```powershell
-.\build-msvc\bin\VideoComputePipeline.exe `
+.\build-win-cuda12\Release\VideoComputePipeline.exe `
   --task detect `
   --decoder nvdec `
   --draw-boxes `
@@ -286,7 +351,7 @@ valid_frames = 1
 Use `--auto-tune` to let the planner choose batch and in-flight settings from the actual video metadata, CUDA memory state, TensorRT engine capability, and measured pinned-copy bandwidth:
 
 ```powershell
-.\build-msvc\bin\VideoComputePipeline.exe `
+.\build-win-cuda12\Release\VideoComputePipeline.exe `
   --task detect `
   --decoder nvdec `
   --draw-boxes `
@@ -308,7 +373,7 @@ The VRAM policy is conservative by default. It uses the smaller of `total_vram *
 For a quick CUDA environment check:
 
 ```powershell
-.\build-msvc\bin\VideoComputePipeline.exe --task detect --profile-hardware
+.\build-win-cuda12\Release\VideoComputePipeline.exe --task detect --profile-hardware
 ```
 
 Batching is currently integrated through `FrameBatch` and execution-plan metadata. If the TensorRT engine is static batch-1, the planner keeps true inference at batch size 1 or loops per frame inside the batch abstraction. Engines with larger/dynamic batch support can be enabled through the batch inference API without creating a separate pipeline.
@@ -316,7 +381,7 @@ Batching is currently integrated through `FrameBatch` and execution-plan metadat
 For static batch-1 engines, the overlap path can still use multiple TensorRT execution contexts when supported:
 
 ```powershell
-.\build-msvc\bin\VideoComputePipeline.exe `
+.\build-win-cuda12\Release\VideoComputePipeline.exe `
   --task detect `
   --decoder nvdec `
   --draw-boxes `

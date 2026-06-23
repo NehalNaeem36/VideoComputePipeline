@@ -230,6 +230,31 @@ Runtime selection flags:
 
 Auto runtime selection is extension based: `.engine`/`.plan` -> TensorRT, `.onnx` -> ONNX Runtime, and `.pt`/`.ts`/`.torchscript` -> TorchScript. TensorRT remains the default CUDA runtime. ONNX Runtime and TorchScript are optional builds that require the matching ONNX Runtime GPU or LibTorch CUDA packages at configure time.
 
+## Windows CUDA 12 Stack
+
+The CUDA inference build now targets the CUDA 12 dependency stack:
+
+```text
+CUDA Toolkit 12.9
+cuDNN 9.23.2 for CUDA 12
+TensorRT 11.1.0.106 CUDA 12 build
+ONNX Runtime GPU 1.26.0 Windows NuGet package
+MSVC / Visual Studio 2022 x64
+```
+
+Expected local roots:
+
+```text
+CUDAToolkit_ROOT = C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9
+CUDNN_ROOT = D:\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive
+TENSORRT_ROOT = D:\TensorRT\TensorRT-11.1.0.106
+ONNXRUNTIME_ROOT = E:\wAI\third_party\onnxruntime\Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0
+```
+
+CMake validates the TensorRT 11 headers/libs/DLLs, cuDNN 9 runtime layout, and ONNX Runtime NuGet native layout when ONNX Runtime is enabled. TensorRT and ONNX Runtime DLLs are copied beside the built executable so the app does not accidentally bind to `C:\Windows\System32\onnxruntime.dll`.
+
+Old TensorRT `.engine` files from the previous CUDA/TensorRT stack should be rebuilt after this migration. CUDA 13 paths should not be mixed into CUDA 12 build directories.
+
 ## CUDA/TensorRT Detection Workflow
 
 The detection milestone is separate from the filter-and-encode pipeline:

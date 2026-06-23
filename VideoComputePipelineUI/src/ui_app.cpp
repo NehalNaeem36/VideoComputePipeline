@@ -231,7 +231,7 @@ void UiApp::render_run_config_tab() {
     render_tooltip("Preset command profiles. Custom preserves your manual edits.");
 
     if (input_text_string("Pipeline exe", config_.pipelineExePath)) mark_custom();
-    render_tooltip("Path to VideoComputePipeline.exe. Use build-msvc-hw or build-msvc for CUDA, TensorRT, NVDEC, and NVENC. build-win is usually the MinGW/OpenCL build.");
+    render_tooltip("Path to VideoComputePipeline.exe. Use build-win-cuda12 or build-win-cuda12-onnx for CUDA, TensorRT, NVDEC, and NVENC. build-win is usually the MinGW/OpenCL build.");
     if (input_text_string("Working directory", config_.workingDirectory)) mark_custom();
     render_tooltip("Subprocess working directory. Relative input, model, label, output, benchmark, and detection paths are resolved from the VideoComputePipeline folder.");
 
@@ -632,7 +632,7 @@ void UiApp::render_help_tab() {
     help_section("Recommended presets",
                  "Use CSV Only for analytics and easiest validation. Use Safe CPU Detection when CUDA video is unavailable. Use Annotated Video for normal NVDEC/TensorRT/NVENC output. Use Fast GPU or Stress Test when measuring long-run hardware throughput.");
     help_section("Common errors",
-                 "Check the working directory, build-msvc/build-msvc-hw vs build-win executable choice, missing TensorRT or FFmpeg DLLs, missing model or labels file, engine/input-size mismatch, unavailable NVDEC/NVENC, locked output files, and MP4 files that are not playable until finalized.");
+                 "Check the working directory, build-win-cuda12-onnx/build-win-cuda12 vs build-win executable choice, missing TensorRT or FFmpeg DLLs, missing model or labels file, engine/input-size mismatch, unavailable NVDEC/NVENC, locked output files, and MP4 files that are not playable until finalized.");
 }
 
 void UiApp::render_tooltip(const char *text) {
@@ -673,8 +673,8 @@ void UiApp::normalize_default_paths() {
             config_.workingDirectory = pipelineDir.u8string();
 
             const fs::path candidates[] = {
-                pipelineDir / "build-msvc-hw" / "bin" / "VideoComputePipeline.exe",
-                pipelineDir / "build-msvc" / "bin" / "VideoComputePipeline.exe",
+                pipelineDir / "build-win-cuda12" / "Release" / "VideoComputePipeline.exe",
+                pipelineDir / "build-win-cuda12-onnx" / "Release" / "VideoComputePipeline.exe",
                 pipelineDir / "build-win" / "bin" / "VideoComputePipeline.exe",
                 pipelineDir / "build-vs" / "Release" / "VideoComputePipeline.exe",
             };

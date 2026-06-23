@@ -9,6 +9,15 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
+if(CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release")
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release")
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/lib/Release")
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug")
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug")
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/lib/Debug")
+endif()
+
 option(BUILD_TESTING "Build tests" ON)
 option(ENABLE_TENSORRT "Build TensorRT inference runtime when CUDA inference is enabled" ON)
 option(ENABLE_CUDA_INFERENCE "Build CUDA/TensorRT inference backend" OFF)
@@ -18,6 +27,7 @@ option(ENABLE_LIBTORCH "Build LibTorch TorchScript inference backend" OFF)
 set(FFMPEG_ROOT "" CACHE PATH "Optional FFmpeg installation root")
 set(OPENCL_ROOT "" CACHE PATH "Optional OpenCL installation root")
 set(TENSORRT_ROOT "" CACHE PATH "Optional TensorRT installation root")
+set(CUDNN_ROOT "" CACHE PATH "Optional cuDNN installation root")
 set(ONNXRUNTIME_ROOT "" CACHE PATH "Optional ONNX Runtime installation root")
 set(LIBTORCH_ROOT "" CACHE PATH "Optional LibTorch installation root")
 set(VCP_TEST_TENSORRT_ENGINE "" CACHE FILEPATH "Optional TensorRT engine for CUDA inference tests")
@@ -29,9 +39,38 @@ function(vcp_reject_msys_path VAR_NAME)
             message(FATAL_ERROR
                 "${VAR_NAME} points to a MinGW/MSYS2 path: ${${VAR_NAME}}\n"
                 "MSVC builds must not use MSYS2 headers or .a libraries. "
-                "Delete build-msvc and configure with MSVC-compatible dependencies.")
+                "Delete the MSVC build directory and configure with MSVC-compatible dependencies.")
         endif()
     endif()
+endfunction()
+
+function(vcp_reject_cuda13_path VAR_NAME)
+    if(DEFINED ${VAR_NAME} AND ${VAR_NAME})
+        string(TOLOWER "${${VAR_NAME}}" VCP_PATH_LOWER)
+        if(VCP_PATH_LOWER MATCHES "cuda[/\\\\]v13|cuda[/\\\\]v13\\.|cuda-13|cuda13|13\\.3")
+            message(FATAL_ERROR
+                "${VAR_NAME} appears to point at the old CUDA 13 stack: ${${VAR_NAME}}\n"
+                "Configure the CUDA inference build with the CUDA 12.9 stack paths from prompt-file.txt.")
+        endif()
+    endif()
+endfunction()
+
+function(vcp_require_file VAR_NAME DESCRIPTION)
+    if(NOT DEFINED ${VAR_NAME} OR NOT ${VAR_NAME} OR NOT EXISTS "${${VAR_NAME}}")
+        message(FATAL_ERROR "Missing required ${DESCRIPTION}: ${${VAR_NAME}}")
+    endif()
+endfunction()
+
+function(vcp_copy_runtime_dlls TARGET_NAME)
+    foreach(VCP_DLL IN LISTS ARGN)
+        if(VCP_DLL AND EXISTS "${VCP_DLL}")
+            add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${VCP_DLL}"
+                    "$<TARGET_FILE_DIR:${TARGET_NAME}>"
+                VERBATIM)
+        endif()
+    endforeach()
 endfunction()
 
 if(ENABLE_HW_VIDEO AND NOT ENABLE_CUDA_INFERENCE)
@@ -44,6 +83,13 @@ if(ENABLE_CUDA_INFERENCE)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    if(NOT CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES 86 CACHE STRING "CUDA architectures for VideoComputePipeline" FORCE)
+    endif()
+    vcp_reject_cuda13_path(CUDAToolkit_ROOT)
+    vcp_reject_cuda13_path(CUDA_TOOLKIT_ROOT_DIR)
+    vcp_reject_cuda13_path(OPENCL_ROOT)
+    vcp_reject_cuda13_path(TENSORRT_ROOT)
     find_package(CUDAToolkit REQUIRED)
 
     if(ENABLE_TENSORRT)
@@ -52,9 +98,17 @@ if(ENABLE_CUDA_INFERENCE)
                 "${TENSORRT_ROOT}/include"
                 "$ENV{TENSORRT_ROOT}/include"
                 "$ENV{TensorRT_ROOT}/include"
+            NO_DEFAULT_PATH
+        )
+        find_path(TENSORRT_ONNX_PARSER_INCLUDE_DIR NvOnnxParser.h
+            HINTS
+                "${TENSORRT_ROOT}/include"
+                "$ENV{TENSORRT_ROOT}/include"
+                "$ENV{TensorRT_ROOT}/include"
+            NO_DEFAULT_PATH
         )
         find_library(TENSORRT_NVINFER_LIBRARY
-            NAMES nvinfer nvinfer_11
+            NAMES nvinfer_11 nvinfer
             HINTS
                 "${TENSORRT_ROOT}/lib"
                 "${TENSORRT_ROOT}/lib/x64"
@@ -62,31 +116,113 @@ if(ENABLE_CUDA_INFERENCE)
                 "$ENV{TENSORRT_ROOT}/lib/x64"
                 "$ENV{TensorRT_ROOT}/lib"
                 "$ENV{TensorRT_ROOT}/lib/x64"
+            NO_DEFAULT_PATH
         )
-        if(NOT TENSORRT_INCLUDE_DIR OR NOT TENSORRT_NVINFER_LIBRARY)
-            message(FATAL_ERROR "ENABLE_TENSORRT=ON requires TensorRT. Set -DTENSORRT_ROOT=C:/path/to/TensorRT from a VS Developer Prompt.")
+        find_library(TENSORRT_NVINFER_PLUGIN_LIBRARY
+            NAMES nvinfer_plugin_11 nvinfer_plugin
+            HINTS
+                "${TENSORRT_ROOT}/lib"
+                "${TENSORRT_ROOT}/lib/x64"
+                "$ENV{TENSORRT_ROOT}/lib"
+                "$ENV{TENSORRT_ROOT}/lib/x64"
+                "$ENV{TensorRT_ROOT}/lib"
+                "$ENV{TensorRT_ROOT}/lib/x64"
+            NO_DEFAULT_PATH
+        )
+        find_library(TENSORRT_NVONNXPARSER_LIBRARY
+            NAMES nvonnxparser_11 nvonnxparser
+            HINTS
+                "${TENSORRT_ROOT}/lib"
+                "${TENSORRT_ROOT}/lib/x64"
+                "$ENV{TENSORRT_ROOT}/lib"
+                "$ENV{TENSORRT_ROOT}/lib/x64"
+                "$ENV{TensorRT_ROOT}/lib"
+                "$ENV{TensorRT_ROOT}/lib/x64"
+            NO_DEFAULT_PATH
+        )
+        find_file(TENSORRT_NVINFER_DLL
+            NAMES nvinfer_11.dll
+            HINTS "${TENSORRT_ROOT}/bin" "$ENV{TENSORRT_ROOT}/bin" "$ENV{TensorRT_ROOT}/bin"
+            NO_DEFAULT_PATH
+        )
+        find_file(TENSORRT_NVINFER_PLUGIN_DLL
+            NAMES nvinfer_plugin_11.dll
+            HINTS "${TENSORRT_ROOT}/bin" "$ENV{TENSORRT_ROOT}/bin" "$ENV{TensorRT_ROOT}/bin"
+            NO_DEFAULT_PATH
+        )
+        find_file(TENSORRT_NVONNXPARSER_DLL
+            NAMES nvonnxparser_11.dll
+            HINTS "${TENSORRT_ROOT}/bin" "$ENV{TENSORRT_ROOT}/bin" "$ENV{TensorRT_ROOT}/bin"
+            NO_DEFAULT_PATH
+        )
+        if(NOT TENSORRT_INCLUDE_DIR OR NOT TENSORRT_ONNX_PARSER_INCLUDE_DIR OR
+           NOT TENSORRT_NVINFER_LIBRARY OR NOT TENSORRT_NVINFER_PLUGIN_LIBRARY OR NOT TENSORRT_NVONNXPARSER_LIBRARY OR
+           NOT TENSORRT_NVINFER_DLL OR NOT TENSORRT_NVINFER_PLUGIN_DLL OR NOT TENSORRT_NVONNXPARSER_DLL)
+            message(FATAL_ERROR
+                "ENABLE_TENSORRT=ON requires TensorRT 11.1 CUDA 12 files. Set -DTENSORRT_ROOT=D:/TensorRT/TensorRT-11.1.0.106.\n"
+                "Required: include/NvInfer.h, include/NvOnnxParser.h, lib/nvinfer_11.lib, lib/nvinfer_plugin_11.lib, lib/nvonnxparser_11.lib, and matching bin/*.dll files.")
         endif()
+    endif()
+
+    find_path(CUDNN_INCLUDE_DIR cudnn.h
+        HINTS "${CUDNN_ROOT}/include" "$ENV{CUDNN_ROOT}/include"
+        NO_DEFAULT_PATH
+    )
+    find_library(CUDNN_LIBRARY
+        NAMES cudnn
+        HINTS "${CUDNN_ROOT}/lib/x64" "$ENV{CUDNN_ROOT}/lib/x64"
+        NO_DEFAULT_PATH
+    )
+    find_file(CUDNN_RUNTIME_DLL
+        NAMES cudnn64_9.dll
+        HINTS "${CUDNN_ROOT}/bin/x64" "$ENV{CUDNN_ROOT}/bin/x64"
+        NO_DEFAULT_PATH
+    )
+    if(NOT CUDNN_INCLUDE_DIR OR NOT CUDNN_LIBRARY OR NOT CUDNN_RUNTIME_DLL)
+        message(FATAL_ERROR
+            "ENABLE_CUDA_INFERENCE=ON requires cuDNN 9 for CUDA 12. Set -DCUDNN_ROOT=D:/cuDNN/cudnn-windows-x86_64-9.23.2.1_cuda12-archive.\n"
+            "Required layout: include, lib/x64, and bin/x64/cudnn64_9.dll.")
     endif()
 
     if(ENABLE_ONNXRUNTIME)
         find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
             HINTS
-                "${ONNXRUNTIME_ROOT}/include"
+                "${ONNXRUNTIME_ROOT}/buildTransitive/native/include"
                 "$ENV{ONNXRUNTIME_ROOT}/include"
+                "$ENV{ONNXRUNTIME_ROOT}/buildTransitive/native/include"
                 "$ENV{OnnxRuntime_ROOT}/include"
+                "$ENV{OnnxRuntime_ROOT}/buildTransitive/native/include"
+            NO_DEFAULT_PATH
         )
         find_library(ONNXRUNTIME_LIBRARY
             NAMES onnxruntime
             HINTS
-                "${ONNXRUNTIME_ROOT}/lib"
-                "${ONNXRUNTIME_ROOT}/lib/x64"
-                "$ENV{ONNXRUNTIME_ROOT}/lib"
-                "$ENV{ONNXRUNTIME_ROOT}/lib/x64"
-                "$ENV{OnnxRuntime_ROOT}/lib"
-                "$ENV{OnnxRuntime_ROOT}/lib/x64"
+                "${ONNXRUNTIME_ROOT}/runtimes/win-x64/native"
+                "$ENV{ONNXRUNTIME_ROOT}/runtimes/win-x64/native"
+                "$ENV{OnnxRuntime_ROOT}/runtimes/win-x64/native"
+            NO_DEFAULT_PATH
         )
-        if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
-            message(FATAL_ERROR "ENABLE_ONNXRUNTIME=ON requires ONNX Runtime. Set -DONNXRUNTIME_ROOT=C:/path/to/onnxruntime-win-x64-gpu.")
+        find_file(ONNXRUNTIME_DLL
+            NAMES onnxruntime.dll
+            HINTS "${ONNXRUNTIME_ROOT}/runtimes/win-x64/native" "$ENV{ONNXRUNTIME_ROOT}/runtimes/win-x64/native" "$ENV{OnnxRuntime_ROOT}/runtimes/win-x64/native"
+            NO_DEFAULT_PATH
+        )
+        find_file(ONNXRUNTIME_PROVIDERS_CUDA_DLL
+            NAMES onnxruntime_providers_cuda.dll
+            HINTS "${ONNXRUNTIME_ROOT}/runtimes/win-x64/native" "$ENV{ONNXRUNTIME_ROOT}/runtimes/win-x64/native" "$ENV{OnnxRuntime_ROOT}/runtimes/win-x64/native"
+            NO_DEFAULT_PATH
+        )
+        find_file(ONNXRUNTIME_PROVIDERS_SHARED_DLL
+            NAMES onnxruntime_providers_shared.dll
+            HINTS "${ONNXRUNTIME_ROOT}/runtimes/win-x64/native" "$ENV{ONNXRUNTIME_ROOT}/runtimes/win-x64/native" "$ENV{OnnxRuntime_ROOT}/runtimes/win-x64/native"
+            NO_DEFAULT_PATH
+        )
+        if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY OR
+           NOT ONNXRUNTIME_DLL OR NOT ONNXRUNTIME_PROVIDERS_CUDA_DLL OR NOT ONNXRUNTIME_PROVIDERS_SHARED_DLL)
+            message(FATAL_ERROR
+                "ENABLE_ONNXRUNTIME=ON requires the ONNX Runtime GPU 1.26 Windows NuGet layout.\n"
+                "Set -DONNXRUNTIME_ROOT=E:/wAI/third_party/onnxruntime/Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0.\n"
+                "Required: buildTransitive/native/include/onnxruntime_cxx_api.h and runtimes/win-x64/native/onnxruntime*.dll/lib.")
         endif()
     endif()
 
@@ -175,12 +311,13 @@ if(NOT FFMPEG_FOUND)
             HINTS
                 "${FFMPEG_ROOT}/include"
                 "$ENV{FFMPEG_ROOT}/include"
+                "C:/vcpkg/installed/x64-windows/include"
             NO_DEFAULT_PATH
         )
-        find_library(AVFORMAT_LIBRARY avformat PATHS "${FFMPEG_ROOT}/lib" "$ENV{FFMPEG_ROOT}/lib" NO_DEFAULT_PATH)
-        find_library(AVCODEC_LIBRARY avcodec PATHS "${FFMPEG_ROOT}/lib" "$ENV{FFMPEG_ROOT}/lib" NO_DEFAULT_PATH)
-        find_library(AVUTIL_LIBRARY avutil PATHS "${FFMPEG_ROOT}/lib" "$ENV{FFMPEG_ROOT}/lib" NO_DEFAULT_PATH)
-        find_library(SWSCALE_LIBRARY swscale PATHS "${FFMPEG_ROOT}/lib" "$ENV{FFMPEG_ROOT}/lib" NO_DEFAULT_PATH)
+        find_library(AVFORMAT_LIBRARY avformat PATHS "${FFMPEG_ROOT}/lib" "$ENV{FFMPEG_ROOT}/lib" "C:/vcpkg/installed/x64-windows/lib" NO_DEFAULT_PATH)
+        find_library(AVCODEC_LIBRARY avcodec PATHS "${FFMPEG_ROOT}/lib" "$ENV{FFMPEG_ROOT}/lib" "C:/vcpkg/installed/x64-windows/lib" NO_DEFAULT_PATH)
+        find_library(AVUTIL_LIBRARY avutil PATHS "${FFMPEG_ROOT}/lib" "$ENV{FFMPEG_ROOT}/lib" "C:/vcpkg/installed/x64-windows/lib" NO_DEFAULT_PATH)
+        find_library(SWSCALE_LIBRARY swscale PATHS "${FFMPEG_ROOT}/lib" "$ENV{FFMPEG_ROOT}/lib" "C:/vcpkg/installed/x64-windows/lib" NO_DEFAULT_PATH)
     else()
         find_path(FFMPEG_INCLUDE_DIR libavformat/avformat.h
             HINTS
@@ -279,7 +416,12 @@ endif()
 if(ENABLE_CUDA_INFERENCE AND ENABLE_TENSORRT)
     target_compile_definitions(vcp_core PUBLIC VCP_ENABLE_TENSORRT=1)
     target_include_directories(vcp_core PUBLIC ${TENSORRT_INCLUDE_DIR})
-    target_link_libraries(vcp_core PUBLIC CUDA::cudart ${TENSORRT_NVINFER_LIBRARY})
+    target_link_libraries(vcp_core PUBLIC
+        CUDA::cudart
+        ${TENSORRT_NVINFER_LIBRARY}
+        ${TENSORRT_NVINFER_PLUGIN_LIBRARY}
+        ${TENSORRT_NVONNXPARSER_LIBRARY}
+    )
 endif()
 
 if(ENABLE_CUDA_INFERENCE AND ENABLE_ONNXRUNTIME)
@@ -318,6 +460,20 @@ target_link_libraries(VideoComputePipeline PRIVATE vcp_core)
 if(ENABLE_CUDA_INFERENCE)
     set_target_properties(VideoComputePipeline PROPERTIES LINKER_LANGUAGE CXX)
 endif()
+if(ENABLE_CUDA_INFERENCE AND ENABLE_TENSORRT)
+    vcp_copy_runtime_dlls(VideoComputePipeline
+        "${TENSORRT_NVINFER_DLL}"
+        "${TENSORRT_NVINFER_PLUGIN_DLL}"
+        "${TENSORRT_NVONNXPARSER_DLL}"
+    )
+endif()
+if(ENABLE_CUDA_INFERENCE AND ENABLE_ONNXRUNTIME)
+    vcp_copy_runtime_dlls(VideoComputePipeline
+        "${ONNXRUNTIME_DLL}"
+        "${ONNXRUNTIME_PROVIDERS_CUDA_DLL}"
+        "${ONNXRUNTIME_PROVIDERS_SHARED_DLL}"
+    )
+endif()
 
 if(BUILD_TESTING)
     enable_testing()
@@ -330,6 +486,20 @@ if(BUILD_TESTING)
             set_target_properties(${TEST_NAME} PROPERTIES LINKER_LANGUAGE CXX)
             target_compile_definitions(${TEST_NAME} PRIVATE VCP_TEST_TENSORRT_ENGINE="${VCP_TEST_TENSORRT_ENGINE}")
         endif()
+        if(ENABLE_CUDA_INFERENCE AND ENABLE_TENSORRT)
+            vcp_copy_runtime_dlls(${TEST_NAME}
+                "${TENSORRT_NVINFER_DLL}"
+                "${TENSORRT_NVINFER_PLUGIN_DLL}"
+                "${TENSORRT_NVONNXPARSER_DLL}"
+            )
+        endif()
+        if(ENABLE_CUDA_INFERENCE AND ENABLE_ONNXRUNTIME)
+            vcp_copy_runtime_dlls(${TEST_NAME}
+                "${ONNXRUNTIME_DLL}"
+                "${ONNXRUNTIME_PROVIDERS_CUDA_DLL}"
+                "${ONNXRUNTIME_PROVIDERS_SHARED_DLL}"
+            )
+        endif()
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     endforeach()
 endif()
@@ -341,13 +511,21 @@ message(STATUS "OpenCL found: ${OpenCL_FOUND}")
 message(STATUS "CUDA inference enabled: ${ENABLE_CUDA_INFERENCE}")
 message(STATUS "Hardware video enabled: ${ENABLE_HW_VIDEO}")
 if(ENABLE_CUDA_INFERENCE)
+    message(STATUS "CUDA Toolkit: ${CUDAToolkit_VERSION} at ${CUDAToolkit_TARGET_DIR}")
+    message(STATUS "cuDNN include: ${CUDNN_INCLUDE_DIR}")
+    message(STATUS "cuDNN library: ${CUDNN_LIBRARY}")
+    message(STATUS "cuDNN runtime: ${CUDNN_RUNTIME_DLL}")
     if(ENABLE_TENSORRT)
         message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIR}")
         message(STATUS "TensorRT nvinfer: ${TENSORRT_NVINFER_LIBRARY}")
+        message(STATUS "TensorRT plugin: ${TENSORRT_NVINFER_PLUGIN_LIBRARY}")
+        message(STATUS "TensorRT onnx parser: ${TENSORRT_NVONNXPARSER_LIBRARY}")
     endif()
     if(ENABLE_ONNXRUNTIME)
         message(STATUS "ONNX Runtime include: ${ONNXRUNTIME_INCLUDE_DIR}")
         message(STATUS "ONNX Runtime library: ${ONNXRUNTIME_LIBRARY}")
+        message(STATUS "ONNX Runtime DLL: ${ONNXRUNTIME_DLL}")
+        message(STATUS "ONNX Runtime CUDA provider: ${ONNXRUNTIME_PROVIDERS_CUDA_DLL}")
     endif()
     if(ENABLE_LIBTORCH)
         message(STATUS "LibTorch libraries: ${TORCH_LIBRARIES}")

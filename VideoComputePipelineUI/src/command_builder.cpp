@@ -147,7 +147,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
         return;
     }
 
-    config.pipelineExePath = "..\\VideoComputePipeline\\build-msvc-hw\\bin\\VideoComputePipeline.exe";
+    config.pipelineExePath = "..\\VideoComputePipeline\\build-win-cuda12\\Release\\VideoComputePipeline.exe";
     config.workingDirectory = "..\\VideoComputePipeline";
     config.inputVideoPath = "data\\input\\people_4k_30min_stream_test.mp4";
     config.modelPath = "models\\yolov5s_trt11.engine";

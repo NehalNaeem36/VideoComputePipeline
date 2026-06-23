@@ -25,11 +25,11 @@ build-win\Release\VideoComputePipelineUI.exe
 Run the UI from `E:\wAI\first_task\VideoComputePipelineUI` so the default relative paths resolve:
 
 ```text
-..\VideoComputePipeline\build-win\bin\VideoComputePipeline.exe
+..\VideoComputePipeline\build-win-cuda12\Release\VideoComputePipeline.exe
 ..\VideoComputePipeline
 ```
 
-If your pipeline binary is in `build-msvc` or `build-msvc-hw`, edit the Pipeline exe field in the Run Config tab.
+If your pipeline binary is in `build-win-cuda12-onnx` or `build-win-cuda12`, edit the Pipeline exe field in the Run Config tab.
 
 ## Presets
 
