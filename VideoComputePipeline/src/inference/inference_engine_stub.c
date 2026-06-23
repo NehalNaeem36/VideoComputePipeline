@@ -4,6 +4,7 @@
  * builds continue to compile and run filter paths.
  */
 #include "inference/inference_engine.h"
+#include "inference/backend_registry.h"
 
 #include <stdlib.h>
 
@@ -14,11 +15,22 @@ struct InferenceEngine {
 static const char *g_last_error = "CUDA/TensorRT inference backend was not built";
 
 int inference_engine_create(InferenceEngine **engine, const InferenceConfig *config) {
-    (void)config;
+    InferenceRuntime runtime = INFERENCE_RUNTIME_TENSORRT;
     if (engine) {
         *engine = NULL;
     }
-    g_last_error = "CUDA/TensorRT inference backend was not built";
+    if (config) {
+        runtime = config->runtime == INFERENCE_RUNTIME_AUTO
+                      ? inference_runtime_from_model_path(config->model_path)
+                      : config->runtime;
+    }
+    if (runtime == INFERENCE_RUNTIME_ONNXRUNTIME) {
+        g_last_error = "ONNX Runtime backend was not compiled. Rebuild with ENABLE_ONNXRUNTIME=ON.";
+    } else if (runtime == INFERENCE_RUNTIME_TORCHSCRIPT) {
+        g_last_error = "TorchScript backend was not compiled. Rebuild with ENABLE_LIBTORCH=ON.";
+    } else {
+        g_last_error = "TensorRT backend was not compiled. Rebuild with ENABLE_CUDA_INFERENCE=ON and ENABLE_TENSORRT=ON.";
+    }
     return -1;
 }
 

@@ -4,6 +4,7 @@
  * handing execution to the pipeline runner.
  */
 #include "pipeline/pipeline_config.h"
+#include "inference/backend_registry.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -508,6 +509,12 @@ void pipeline_config_default(PipelineConfig *config) {
     config->parallel_inference_mode = PIPELINE_FEATURE_AUTO;
     config->inference_contexts_mode = BATCH_SETTING_AUTO;
     config->inference_contexts = DEFAULT_INFERENCE_CONTEXTS;
+    config->runtime = INFERENCE_RUNTIME_AUTO;
+    config->backend_device = BACKEND_DEVICE_CUDA;
+    config->model_type = MODEL_TYPE_AUTO;
+    config->allow_host_backend = DEFAULT_ALLOW_HOST_BACKEND;
+    config->list_backends = DEFAULT_LIST_BACKENDS;
+    config->model_info = DEFAULT_MODEL_INFO;
 }
 
 int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
@@ -635,12 +642,52 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
                 return -1;
             }
             const char *backend = argv[++i];
-            if (strcmp(backend, "tensorrt") != 0) {
+            if (inference_runtime_parse /* module: inference/backend_registry */ (backend, &config->runtime) != 0 ||
+                config->runtime == INFERENCE_RUNTIME_AUTO) {
                 set_parse_error /* module: pipeline/pipeline_config */ ("unknown inference backend: %s", backend);
                 return -1;
             }
             if (copy_path /* module: pipeline/pipeline_config */ (config->inference_backend, sizeof(config->inference_backend), backend) != 0) {
                 set_parse_error /* module: pipeline/pipeline_config */ ("value for --inference-backend is too long");
+                return -1;
+            }
+        } else if (strcmp(arg, "--runtime") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *runtime = argv[++i];
+            if (inference_runtime_parse /* module: inference/backend_registry */ (runtime, &config->runtime) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown runtime: %s", runtime);
+                return -1;
+            }
+            if (copy_path /* module: pipeline/pipeline_config */ (config->inference_backend,
+                                                                  sizeof(config->inference_backend),
+                                                                  inference_runtime_to_string /* module: inference/backend_registry */ (config->runtime)) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("value for --runtime is too long");
+                return -1;
+            }
+        } else if (strcmp(arg, "--backend-device") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *device = argv[++i];
+            if (backend_device_parse /* module: inference/backend_registry */ (device, &config->backend_device) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown backend device: %s", device);
+                return -1;
+            }
+        } else if (strcmp(arg, "--allow-host-backend") == 0) {
+            config->allow_host_backend = 1;
+        } else if (strcmp(arg, "--list-backends") == 0) {
+            config->list_backends = 1;
+        } else if (strcmp(arg, "--model-info") == 0) {
+            config->model_info = 1;
+        } else if (strcmp(arg, "--model-type") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            const char *model_type = argv[++i];
+            if (model_type_parse /* module: inference/backend_registry */ (model_type, &config->model_type) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("unknown model type: %s", model_type);
                 return -1;
             }
         } else if (strcmp(arg, "--precision") == 0) {
@@ -934,6 +981,17 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
         }
     }
 
+    if (config->task == PIPELINE_TASK_DETECT && !config->list_backends && !config->model_info) {
+        char validation[256] = {0};
+        if (inference_runtime_validate_model_path /* module: inference/backend_registry */ (config->runtime,
+                                                                                          config->model_path,
+                                                                                          validation,
+                                                                                          sizeof(validation)) != 0) {
+            set_parse_error /* module: pipeline/pipeline_config */ ("%s", validation);
+            return -1;
+        }
+    }
+
     return apply_output_format_extension /* module: pipeline/pipeline_config */ (config);
 }
 
@@ -983,7 +1041,10 @@ int pipeline_config_format_summary(const PipelineConfig *config, char *buffer, s
         if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "inference:\n") != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  decoder: %s\n", decoder_mode_to_string /* module: pipeline/pipeline_config */ (config->decoder_mode)) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  decoder_fallback: %s\n", decoder_fallback_to_string /* module: pipeline/pipeline_config */ (config->decoder_fallback)) != 0 ||
-            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  backend: %s\n", config->inference_backend) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  runtime: %s\n", inference_runtime_to_string /* module: inference/backend_registry */ (config->runtime)) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  backend_device: %s\n", backend_device_to_string /* module: inference/backend_registry */ (config->backend_device)) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  allow_host_backend: %s\n", config->allow_host_backend ? "true" : "false") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  model_type: %s\n", model_type_to_string /* module: inference/backend_registry */ (config->model_type)) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  precision: %s\n", config->inference_precision) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  model_path: %s\n", config->model_path) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  labels_path: %s\n", config->labels_path) != 0 ||

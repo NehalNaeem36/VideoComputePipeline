@@ -5,6 +5,7 @@
 #include "config.h"
 #include "core/frame.h"
 #include "gpu/cuda_frame.h"
+#include "inference/inference_types.h"
 #include "inference/detection_result.h"
 #include "pipeline/frame_batch.h"
 
@@ -32,6 +33,10 @@ typedef struct {
 typedef struct {
     char model_path[VCP_MAX_PATH_LENGTH];
     char labels_path[VCP_MAX_PATH_LENGTH];
+    InferenceRuntime runtime;
+    BackendDevice backend_device;
+    ModelType model_type;
+    int allow_host_backend;
     int input_width;
     int input_height;
     int class_count;

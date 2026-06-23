@@ -1,5 +1,6 @@
 #include "config.h"
 #include "benchmark/matrix_report.h"
+#include "inference/backend_registry.h"
 #include "pipeline/pipeline_config.h"
 #include "pipeline/pipeline_runner.h"
 #include "utils/logger.h"
@@ -20,6 +21,8 @@ static void print_common_options(void) {
     printf("  --output-format auto|mp4|mkv Force output container extension\n");
     printf("  --no-benchmark               Disable benchmark output\n");
     printf("  --version                    Show version information\n");
+    printf("  --list-backends              Show compiled and available inference runtimes\n");
+    printf("  --model-info                 Show selected model/runtime information and exit\n");
 }
 
 static void print_usage(const char *program_name) {
@@ -77,7 +80,12 @@ static void print_detect_usage(const char *program_name) {
     printf("  --classes names              Comma-separated label names to keep, for example person,car\n");
     printf("  --class-ids ids              Comma-separated numeric class IDs to keep, for example 0,2\n");
     printf("  --input-size N               Detector input size, default 640\n");
-    printf("  --inference-backend name     tensorrt\n");
+    printf("  --runtime name               auto, tensorrt, onnxruntime, or torchscript\n");
+    printf("  --backend-device name        cuda or cpu, default cuda\n");
+    printf("  --allow-host-backend         Allow explicit slow host backend fallback\n");
+    printf("  --model-info                 Print model/runtime information and exit\n");
+    printf("  --model-type name            auto or yolov5\n");
+    printf("  --inference-backend name     Backward-compatible alias for --runtime\n");
     printf("  --precision name             fp16 or fp32 runtime label\n");
     printf("  --batch-size auto|N          Frames per detection batch, default 1\n");
     printf("  --inflight-batches auto|N    Batches allowed in flight, default 1\n");
@@ -158,6 +166,21 @@ int main(int argc, char **argv) {
         log_error /* module: utils/logger */ ("%s", pipeline_config_last_error /* module: pipeline/pipeline_config */ ());
         printf("Run %s --help for usage.\n", argv[0]);
         return EXIT_FAILURE;
+    }
+
+    if (config.list_backends) {
+        inference_backend_registry_print /* module: inference/backend_registry */ (stdout);
+        return EXIT_SUCCESS;
+    }
+
+    if (config.model_info) {
+        inference_backend_model_info_print /* module: inference/backend_registry */ (stdout,
+                                                                                    config.model_path,
+                                                                                    config.labels_path,
+                                                                                    config.runtime,
+                                                                                    config.backend_device,
+                                                                                    config.model_type);
+        return EXIT_SUCCESS;
     }
     /* if config created sucessfully 
             print config 

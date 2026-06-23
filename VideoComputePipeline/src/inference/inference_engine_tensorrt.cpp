@@ -7,14 +7,32 @@
 #include "inference/inference_engine.h"
 
 #include "cuda_preprocess.h"
+#include "inference/backend_registry.h"
 #include "yolo_postprocess.h"
 
+#ifdef VCP_ENABLE_TENSORRT
 #include <NvInfer.h>
+#endif
+
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#ifdef VCP_ENABLE_ONNXRUNTIME
+#include <onnxruntime_cxx_api.h>
+#if __has_include(<cuda_provider_factory.h>)
+#include <cuda_provider_factory.h>
+#define VCP_HAS_ORT_CUDA_PROVIDER_FACTORY 1
+#endif
+#endif
+
+#ifdef VCP_ENABLE_LIBTORCH
+#include <torch/script.h>
+#include <torch/torch.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -29,6 +47,7 @@
 
 namespace {
 
+#ifdef VCP_ENABLE_TENSORRT
 class Logger final : public nvinfer1::ILogger {
 public:
     void log(Severity severity, const char *msg) noexcept override {
@@ -39,8 +58,11 @@ public:
 };
 
 Logger g_logger;
+#endif
+
 thread_local std::string g_last_error = "no error";
 
+#ifdef VCP_ENABLE_TENSORRT
 size_t volume(const nvinfer1::Dims &dims) {
     if (dims.nbDims <= 0) {
         return 0;
@@ -87,6 +109,28 @@ std::vector<char> read_file(const char *path) {
     file.read(data.data(), size);
     return file ? data : std::vector<char>{};
 }
+#endif
+
+size_t shape_volume(const std::vector<int64_t> &shape) {
+    size_t value = 1;
+    for (int64_t dim : shape) {
+        if (dim <= 0) {
+            return 0;
+        }
+        value *= (size_t)dim;
+    }
+    return value;
+}
+
+size_t tensor_element_size(TensorDataType type) {
+    switch (type) {
+        case TENSOR_DTYPE_FP32: return sizeof(float);
+        case TENSOR_DTYPE_FP16: return sizeof(uint16_t);
+        case TENSOR_DTYPE_INT32: return sizeof(int32_t);
+        case TENSOR_DTYPE_INT8: return sizeof(int8_t);
+        default: return 0;
+    }
+}
 
 std::string trim_copy(const std::string &value) {
     size_t begin = 0;
@@ -120,6 +164,64 @@ std::vector<std::string> read_labels(const char *path) {
     return labels;
 }
 
+int add_resolved_class_id_to_config(InferenceConfig &config, int class_id) {
+    if (class_id < 0 || class_id >= config.class_count) {
+        g_last_error = "class filter ID is outside the configured label range";
+        return -1;
+    }
+    for (int i = 0; i < config.class_filter_id_count; ++i) {
+        if (config.class_filter_ids[i] == class_id) {
+            return 0;
+        }
+    }
+    if (config.class_filter_id_count >= VCP_MAX_CLASS_FILTERS) {
+        g_last_error = "too many class filters";
+        return -1;
+    }
+    config.class_filter_ids[config.class_filter_id_count++] = class_id;
+    return 0;
+}
+
+int resolve_class_configuration_for_config(InferenceConfig &config) {
+    std::vector<std::string> labels = read_labels(config.labels_path);
+    if (config.class_count <= 0) {
+        if (labels.empty()) {
+            g_last_error = "class count is not configured and labels file is empty or unreadable";
+            return -1;
+        }
+        config.class_count = (int)labels.size();
+    }
+
+    const int initial_id_count = config.class_filter_id_count;
+    int initial_ids[VCP_MAX_CLASS_FILTERS] = {0};
+    std::copy(config.class_filter_ids, config.class_filter_ids + initial_id_count, initial_ids);
+    config.class_filter_id_count = 0;
+    for (int i = 0; i < initial_id_count; ++i) {
+        if (add_resolved_class_id_to_config(config, initial_ids[i]) != 0) {
+            return -1;
+        }
+    }
+
+    for (int i = 0; i < config.class_filter_name_count; ++i) {
+        const std::string wanted = lower_copy(trim_copy(config.class_filter_names[i]));
+        int found = -1;
+        for (size_t label_index = 0; label_index < labels.size(); ++label_index) {
+            if (lower_copy(labels[label_index]) == wanted) {
+                found = (int)label_index;
+                break;
+            }
+        }
+        if (found < 0) {
+            g_last_error = "class filter name was not found in labels file: " + std::string(config.class_filter_names[i]);
+            return -1;
+        }
+        if (add_resolved_class_id_to_config(config, found) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 float elapsed_event_ms(cudaEvent_t start, cudaEvent_t end) {
     float ms = 0.0f;
     if (cudaEventElapsedTime(&ms, start, end) != cudaSuccess) {
@@ -128,8 +230,21 @@ float elapsed_event_ms(cudaEvent_t start, cudaEvent_t end) {
     return ms;
 }
 
+class InferenceEngineImpl {
+public:
+    virtual ~InferenceEngineImpl() = default;
+    virtual int run(const Frame *frame, DetectionResult *result, FrameTiming *timing) = 0;
+    virtual int run_device(const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing) = 0;
+    virtual int get_batch_capability(InferenceBatchCapability *capability) const = 0;
+    virtual int set_parallel_contexts(int context_count) = 0;
+    virtual int run_batch(FrameBatch *batch) = 0;
+    virtual int run_device_batch(FrameBatch *batch) = 0;
+};
+
 struct CudaSlot {
+#ifdef VCP_ENABLE_TENSORRT
     std::unique_ptr<nvinfer1::IExecutionContext> context;
+#endif
     cudaStream_t stream = nullptr;
     cudaEvent_t start = nullptr;
     cudaEvent_t upload_done = nullptr;
@@ -141,14 +256,40 @@ struct CudaSlot {
     void *d_output = nullptr;
     std::vector<uint8_t> h_output_raw;
     std::vector<float> h_output_float;
+    std::vector<int> output_dims;
 };
 
-class TensorRTYoloEngine {
+#ifdef VCP_ENABLE_TENSORRT
+class TensorRTYoloEngine : public InferenceEngineImpl {
 public:
     explicit TensorRTYoloEngine(const InferenceConfig &cfg) : config_(cfg) {}
     ~TensorRTYoloEngine() { release(); }
 
     int init() {
+        const InferenceRuntime selected_runtime = config_.runtime == INFERENCE_RUNTIME_AUTO
+                                                      ? inference_runtime_from_model_path(config_.model_path)
+                                                      : config_.runtime;
+        char validation[256] = {0};
+        if (inference_runtime_validate_model_path(config_.runtime,
+                                                  config_.model_path,
+                                                  validation,
+                                                  sizeof(validation)) != 0) {
+            g_last_error = validation;
+            return -1;
+        }
+        if (selected_runtime != INFERENCE_RUNTIME_TENSORRT) {
+            BackendRegistryInfo info{};
+            inference_backend_registry_get(selected_runtime, &info);
+            g_last_error = info.diagnostic[0] != '\0'
+                               ? info.diagnostic
+                               : "selected runtime is not handled by the TensorRT compatibility backend";
+            return -1;
+        }
+        if (config_.backend_device != BACKEND_DEVICE_CUDA) {
+            g_last_error = "TensorRT backend requires --backend-device cuda";
+            return -1;
+        }
+
         if (config_.model_path[0] == '\0') {
             g_last_error = "TensorRT model path is empty";
             return -1;
@@ -189,7 +330,7 @@ public:
         return 0;
     }
 
-    int run(const Frame *frame, DetectionResult *result, FrameTiming *timing) {
+    int run(const Frame *frame, DetectionResult *result, FrameTiming *timing) override {
         if (!frame || !result || !timing || frame->format != FRAME_FORMAT_NV12 || !frame->planes[0] || !frame->planes[1]) {
             g_last_error = "invalid NV12 frame for inference";
             return -1;
@@ -328,7 +469,7 @@ public:
         return 0;
     }
 
-    int run_device(const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing) {
+    int run_device(const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing) override {
         if (!frame || !result || !timing || !cuda_nv12_frame_is_valid(frame)) {
             g_last_error = "invalid CUDA NV12 frame for inference";
             return -1;
@@ -439,7 +580,7 @@ public:
         return 0;
     }
 
-    int get_batch_capability(InferenceBatchCapability *capability) const {
+    int get_batch_capability(InferenceBatchCapability *capability) const override {
         if (!capability) {
             g_last_error = "invalid batch capability output";
             return -1;
@@ -459,13 +600,13 @@ public:
         capability->output_bytes_per_frame = output_bytes_per_frame_;
         std::snprintf(capability->description,
                       sizeof(capability->description),
-                      "%s batch, max_batch=%d",
+                      "TensorRT %s batch, max_batch=%d",
                       supports_dynamic_batch_ ? "dynamic" : "static",
                       capability->max_batch_size);
         return 0;
     }
 
-    int run_batch(FrameBatch *batch) {
+    int run_batch(FrameBatch *batch) override {
         if (!batch || batch->use_cuda_frames || batch->valid_frames < 0 || batch->valid_frames > batch->capacity) {
             g_last_error = "invalid CPU FrameBatch for inference";
             return -1;
@@ -506,7 +647,7 @@ public:
         return 0;
     }
 
-    int run_device_batch(FrameBatch *batch) {
+    int run_device_batch(FrameBatch *batch) override {
         if (!batch || !batch->use_cuda_frames || batch->valid_frames < 0 || batch->valid_frames > batch->capacity) {
             g_last_error = "invalid CUDA FrameBatch for inference";
             return -1;
@@ -543,7 +684,7 @@ public:
         return 0;
     }
 
-    int set_parallel_contexts(int context_count) {
+    int set_parallel_contexts(int context_count) override {
         if (context_count < 1) {
             g_last_error = "parallel inference context count must be positive";
             return -1;
@@ -793,11 +934,668 @@ private:
     int frame_height_ = 0;
     std::vector<CudaSlot> slots_;
 };
+#endif
+
+#if defined(VCP_ENABLE_ONNXRUNTIME) || defined(VCP_ENABLE_LIBTORCH)
+class CudaYoloRuntimeEngine : public InferenceEngineImpl {
+public:
+    explicit CudaYoloRuntimeEngine(const InferenceConfig &cfg) : config_(cfg) {}
+    ~CudaYoloRuntimeEngine() override { release_common(); }
+
+    int run(const Frame *frame, DetectionResult *result, FrameTiming *timing) override {
+        if (!frame || !result || !timing || frame->format != FRAME_FORMAT_NV12 || !frame->planes[0] || !frame->planes[1]) {
+            g_last_error = "invalid NV12 frame for inference";
+            return -1;
+        }
+        if (ensure_frame_buffers(frame->width, frame->height) != 0) {
+            return -1;
+        }
+
+        CudaSlot &slot = slots_[(size_t)frame->index % slots_.size()];
+        const size_t y_size = (size_t)frame->width * (size_t)frame->height;
+        const uint8_t *d_y = slot.d_nv12;
+        const uint8_t *d_uv = slot.d_nv12 + y_size;
+
+        const float scale = std::min((float)config_.input_width / (float)frame->width,
+                                     (float)config_.input_height / (float)frame->height);
+        const float resized_w = (float)frame->width * scale;
+        const float resized_h = (float)frame->height * scale;
+        const float pad_x = ((float)config_.input_width - resized_w) * 0.5f;
+        const float pad_y = ((float)config_.input_height - resized_h) * 0.5f;
+
+        cudaEventRecord(slot.start, slot.stream);
+        if (cudaMemcpy2DAsync(slot.d_nv12,
+                              (size_t)frame->width,
+                              frame->planes[0],
+                              frame->linesize[0],
+                              (size_t)frame->width,
+                              (size_t)frame->height,
+                              cudaMemcpyHostToDevice,
+                              slot.stream) != cudaSuccess ||
+            cudaMemcpy2DAsync(slot.d_nv12 + y_size,
+                              (size_t)frame->width,
+                              frame->planes[1],
+                              frame->linesize[1],
+                              (size_t)frame->width,
+                              (size_t)frame->height / 2u,
+                              cudaMemcpyHostToDevice,
+                              slot.stream) != cudaSuccess) {
+            g_last_error = "failed to upload NV12 frame";
+            return -1;
+        }
+        cudaEventRecord(slot.upload_done, slot.stream);
+        return run_preprocessed(slot, frame->index, frame->width, frame->height, d_y, d_uv, (size_t)frame->width, (size_t)frame->width, scale, pad_x, pad_y, result, timing);
+    }
+
+    int run_device(const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing) override {
+        if (!frame || !result || !timing || !cuda_nv12_frame_is_valid(frame)) {
+            g_last_error = "invalid CUDA NV12 frame for inference";
+            return -1;
+        }
+
+        CudaSlot &slot = slots_[(size_t)frame->index % slots_.size()];
+        const float scale = std::min((float)config_.input_width / (float)frame->width,
+                                     (float)config_.input_height / (float)frame->height);
+        const float resized_w = (float)frame->width * scale;
+        const float resized_h = (float)frame->height * scale;
+        const float pad_x = ((float)config_.input_width - resized_w) * 0.5f;
+        const float pad_y = ((float)config_.input_height - resized_h) * 0.5f;
+
+        cudaEventRecord(slot.start, slot.stream);
+        cudaEventRecord(slot.upload_done, slot.stream);
+        const int status = run_preprocessed(slot,
+                                            frame->index,
+                                            frame->width,
+                                            frame->height,
+                                            frame->d_y,
+                                            frame->d_uv,
+                                            frame->y_pitch,
+                                            frame->uv_pitch,
+                                            scale,
+                                            pad_x,
+                                            pad_y,
+                                            result,
+                                            timing);
+        timing->upload_ms = 0.0;
+        return status;
+    }
+
+    int get_batch_capability(InferenceBatchCapability *capability) const override {
+        if (!capability) {
+            g_last_error = "invalid batch capability output";
+            return -1;
+        }
+
+        std::memset(capability, 0, sizeof(*capability));
+        capability->min_batch_size = 1;
+        capability->max_batch_size = max_batch_size_;
+        capability->supports_dynamic_batch = supports_dynamic_batch_ ? 1 : 0;
+        capability->supports_true_batching = max_batch_size_ > 1 ? 1 : 0;
+        capability->supports_parallel_contexts = 0;
+        capability->max_parallel_contexts = 1;
+        capability->selected_context_count = 1;
+        capability->input_width = config_.input_width;
+        capability->input_height = config_.input_height;
+        capability->input_bytes_per_frame = input_bytes_;
+        capability->output_bytes_per_frame = output_bytes_;
+        std::snprintf(capability->description,
+                      sizeof(capability->description),
+                      "%s %s batch, max_batch=%d",
+                      backend_name(),
+                      supports_dynamic_batch_ ? "dynamic" : "static",
+                      max_batch_size_);
+        return 0;
+    }
+
+    int set_parallel_contexts(int context_count) override {
+        if (context_count != 1) {
+            g_last_error = std::string(backend_name()) + " backend currently exposes one runtime session/module per engine";
+            return -1;
+        }
+        return 0;
+    }
+
+    int run_batch(FrameBatch *batch) override {
+        if (!batch || batch->use_cuda_frames || batch->valid_frames < 0 || batch->valid_frames > batch->capacity) {
+            g_last_error = "invalid CPU FrameBatch for inference";
+            return -1;
+        }
+        for (int i = 0; i < batch->valid_frames; ++i) {
+            if (run(&batch->cpu_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+    int run_device_batch(FrameBatch *batch) override {
+        if (!batch || !batch->use_cuda_frames || batch->valid_frames < 0 || batch->valid_frames > batch->capacity) {
+            g_last_error = "invalid CUDA FrameBatch for inference";
+            return -1;
+        }
+        for (int i = 0; i < batch->valid_frames; ++i) {
+            if (run_device(&batch->cuda_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+protected:
+    virtual const char *backend_name() const = 0;
+    virtual int run_backend(CudaSlot &slot, FrameTiming *timing) = 0;
+
+    int init_common() {
+        if (config_.backend_device != BACKEND_DEVICE_CUDA) {
+            g_last_error = std::string(backend_name()) + " backend currently requires --backend-device cuda";
+            return -1;
+        }
+        if (resolve_class_configuration_for_config(config_) != 0) {
+            return -1;
+        }
+        if (input_dtype_ != TENSOR_DTYPE_FP16 && input_dtype_ != TENSOR_DTYPE_FP32) {
+            input_dtype_ = config_.use_fp16 ? TENSOR_DTYPE_FP16 : TENSOR_DTYPE_FP32;
+        }
+        input_bytes_ = (size_t)3 * (size_t)config_.input_width * (size_t)config_.input_height * tensor_element_size(input_dtype_);
+        if (input_bytes_ == 0) {
+            g_last_error = "invalid model input tensor size";
+            return -1;
+        }
+        slots_.resize(3);
+        for (CudaSlot &slot : slots_) {
+            if (cudaStreamCreate(&slot.stream) != cudaSuccess ||
+                cudaEventCreate(&slot.start) != cudaSuccess ||
+                cudaEventCreate(&slot.upload_done) != cudaSuccess ||
+                cudaEventCreate(&slot.preprocess_done) != cudaSuccess ||
+                cudaEventCreate(&slot.inference_done) != cudaSuccess ||
+                cudaEventCreate(&slot.output_done) != cudaSuccess ||
+                cudaMalloc(&slot.d_input, input_bytes_) != cudaSuccess) {
+                g_last_error = "failed to allocate CUDA inference input buffers";
+                return -1;
+            }
+            if (output_bytes_ > 0 && cudaMalloc(&slot.d_output, output_bytes_) != cudaSuccess) {
+                g_last_error = "failed to allocate CUDA inference output buffers";
+                return -1;
+            }
+            if (output_bytes_ > 0) {
+                slot.h_output_raw.resize(output_bytes_);
+                slot.h_output_float.resize(output_elements_);
+            }
+        }
+        return 0;
+    }
+
+    int set_output_shape(std::vector<int64_t> shape, TensorDataType dtype) {
+        if (shape.empty()) {
+            g_last_error = "model output shape is empty";
+            return -1;
+        }
+        if (shape[0] < 0) {
+            shape[0] = 1;
+        }
+        const int attributes = 5 + config_.class_count;
+        for (int64_t &dim : shape) {
+            if (dim < 0) {
+                dim = -1;
+            }
+        }
+        if (shape.size() >= 3 && shape[1] < 0 && shape[2] == attributes) {
+            const int grid8 = config_.input_width / 8;
+            const int grid16 = config_.input_width / 16;
+            const int grid32 = config_.input_width / 32;
+            shape[1] = (int64_t)(3 * (grid8 * grid8 + grid16 * grid16 + grid32 * grid32));
+        } else if (shape.size() >= 3 && shape[2] < 0 && shape[1] == attributes) {
+            const int grid8 = config_.input_width / 8;
+            const int grid16 = config_.input_width / 16;
+            const int grid32 = config_.input_width / 32;
+            shape[2] = (int64_t)(3 * (grid8 * grid8 + grid16 * grid16 + grid32 * grid32));
+        }
+
+        output_elements_ = shape_volume(shape);
+        const size_t element_size = tensor_element_size(dtype);
+        if (output_elements_ == 0 || element_size == 0 || (dtype != TENSOR_DTYPE_FP32 && dtype != TENSOR_DTYPE_FP16)) {
+            g_last_error = "unsupported model output shape or type";
+            return -1;
+        }
+        output_shape_ = shape;
+        output_dtype_ = dtype;
+        output_bytes_ = output_elements_ * element_size;
+        return 0;
+    }
+
+    int run_preprocessed(CudaSlot &slot,
+                         int frame_index,
+                         int frame_width,
+                         int frame_height,
+                         const uint8_t *d_y,
+                         const uint8_t *d_uv,
+                         size_t y_pitch,
+                         size_t uv_pitch,
+                         float scale,
+                         float pad_x,
+                         float pad_y,
+                         DetectionResult *result,
+                         FrameTiming *timing) {
+        cudaError_t preprocess_result = cudaSuccess;
+        if (input_dtype_ == TENSOR_DTYPE_FP16) {
+            preprocess_result = vcp_cuda_preprocess_nv12_to_nchw_fp16(d_y,
+                                                                      d_uv,
+                                                                      frame_width,
+                                                                      frame_height,
+                                                                      y_pitch,
+                                                                      uv_pitch,
+                                                                      config_.input_width,
+                                                                      config_.input_height,
+                                                                      scale,
+                                                                      pad_x,
+                                                                      pad_y,
+                                                                      reinterpret_cast<__half *>(slot.d_input),
+                                                                      slot.stream);
+        } else {
+            preprocess_result = vcp_cuda_preprocess_nv12_to_nchw_fp32(d_y,
+                                                                      d_uv,
+                                                                      frame_width,
+                                                                      frame_height,
+                                                                      y_pitch,
+                                                                      uv_pitch,
+                                                                      config_.input_width,
+                                                                      config_.input_height,
+                                                                      scale,
+                                                                      pad_x,
+                                                                      pad_y,
+                                                                      reinterpret_cast<float *>(slot.d_input),
+                                                                      slot.stream);
+        }
+        if (preprocess_result != cudaSuccess) {
+            g_last_error = "failed to launch CUDA NV12 preprocess kernel";
+            return -1;
+        }
+        cudaEventRecord(slot.preprocess_done, slot.stream);
+        timing->upload_ms = elapsed_event_ms(slot.start, slot.upload_done);
+        timing->preprocess_ms = elapsed_event_ms(slot.upload_done, slot.preprocess_done);
+
+        if (run_backend(slot, timing) != 0) {
+            return -1;
+        }
+
+        auto post_start = std::chrono::high_resolution_clock::now();
+        YoloPostprocessConfig post_config{};
+        post_config.frame_index = frame_index;
+        post_config.src_width = frame_width;
+        post_config.src_height = frame_height;
+        post_config.input_width = config_.input_width;
+        post_config.input_height = config_.input_height;
+        post_config.class_count = config_.class_count;
+        post_config.class_filter_id_count = config_.class_filter_id_count;
+        std::copy(config_.class_filter_ids,
+                  config_.class_filter_ids + config_.class_filter_id_count,
+                  post_config.class_filter_ids);
+        post_config.confidence_threshold = config_.confidence_threshold;
+        post_config.iou_threshold = config_.iou_threshold;
+        post_config.scale = scale;
+        post_config.pad_x = pad_x;
+        post_config.pad_y = pad_y;
+
+        if (slot.output_dims.empty()) {
+            slot.output_dims.reserve(output_shape_.size());
+            for (int64_t dim : output_shape_) {
+                slot.output_dims.push_back((int)dim);
+            }
+        }
+        if (yolo_postprocess(slot.h_output_float.data(),
+                             slot.h_output_float.size(),
+                             slot.output_dims.data(),
+                             (int)slot.output_dims.size(),
+                             &post_config,
+                             result) != 0) {
+            g_last_error = "YOLOv5 postprocess failed";
+            return -1;
+        }
+        auto post_end = std::chrono::high_resolution_clock::now();
+        timing->postprocess_ms = std::chrono::duration<double, std::milli>(post_end - post_start).count();
+        return 0;
+    }
+
+    int ensure_frame_buffers(int width, int height) {
+        if (width == frame_width_ && height == frame_height_) {
+            return 0;
+        }
+        if (width <= 0 || height <= 0 || (width % 2) != 0 || (height % 2) != 0) {
+            g_last_error = "NV12 frame dimensions must be positive and even";
+            return -1;
+        }
+
+        const size_t bytes = (size_t)width * (size_t)height * 3u / 2u;
+        for (CudaSlot &slot : slots_) {
+            if (slot.d_nv12) {
+                cudaFree(slot.d_nv12);
+                slot.d_nv12 = nullptr;
+            }
+            if (cudaMalloc((void **)&slot.d_nv12, bytes) != cudaSuccess) {
+                g_last_error = "failed to allocate CUDA NV12 frame buffer";
+                return -1;
+            }
+        }
+        frame_width_ = width;
+        frame_height_ = height;
+        return 0;
+    }
+
+    void convert_output_raw_to_float(CudaSlot &slot) {
+        if (output_dtype_ == TENSOR_DTYPE_FP32) {
+            std::copy_n(reinterpret_cast<const float *>(slot.h_output_raw.data()), output_elements_, slot.h_output_float.data());
+            return;
+        }
+
+        const __half *half_data = reinterpret_cast<const __half *>(slot.h_output_raw.data());
+        for (size_t i = 0; i < output_elements_; ++i) {
+            slot.h_output_float[i] = __half2float(half_data[i]);
+        }
+    }
+
+    void release_common() {
+        for (CudaSlot &slot : slots_) {
+            if (slot.d_nv12) cudaFree(slot.d_nv12);
+            if (slot.d_input) cudaFree(slot.d_input);
+            if (slot.d_output) cudaFree(slot.d_output);
+            if (slot.start) cudaEventDestroy(slot.start);
+            if (slot.upload_done) cudaEventDestroy(slot.upload_done);
+            if (slot.preprocess_done) cudaEventDestroy(slot.preprocess_done);
+            if (slot.inference_done) cudaEventDestroy(slot.inference_done);
+            if (slot.output_done) cudaEventDestroy(slot.output_done);
+            if (slot.stream) cudaStreamDestroy(slot.stream);
+        }
+        slots_.clear();
+    }
+
+    InferenceConfig config_{};
+    TensorDataType input_dtype_{TENSOR_DTYPE_FP32};
+    TensorDataType output_dtype_{TENSOR_DTYPE_FP32};
+    size_t input_bytes_ = 0;
+    size_t output_bytes_ = 0;
+    size_t output_elements_ = 0;
+    int max_batch_size_ = 1;
+    bool supports_dynamic_batch_ = false;
+    int frame_width_ = 0;
+    int frame_height_ = 0;
+    std::vector<int64_t> output_shape_;
+    std::vector<CudaSlot> slots_;
+};
+#endif
+
+#ifdef VCP_ENABLE_ONNXRUNTIME
+class OnnxRuntimeYoloEngine final : public CudaYoloRuntimeEngine {
+public:
+    explicit OnnxRuntimeYoloEngine(const InferenceConfig &cfg)
+        : CudaYoloRuntimeEngine(cfg),
+          env_(ORT_LOGGING_LEVEL_WARNING, "VideoComputePipeline") {}
+
+    int init() {
+        if (inference_runtime_validate_model_path(INFERENCE_RUNTIME_ONNXRUNTIME, config_.model_path, validation_, sizeof(validation_)) != 0) {
+            g_last_error = validation_;
+            return -1;
+        }
+
+        session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        if (config_.backend_device == BACKEND_DEVICE_CUDA) {
+#ifdef VCP_HAS_ORT_CUDA_PROVIDER_FACTORY
+            OrtCUDAProviderOptions cuda_options{};
+            cuda_options.device_id = 0;
+            if (OrtSessionOptionsAppendExecutionProvider_CUDA(session_options_, &cuda_options) != nullptr) {
+                g_last_error = "failed to enable ONNX Runtime CUDA execution provider";
+                return -1;
+            }
+#else
+            g_last_error = "ONNX Runtime CUDA provider factory header was not found in this installation";
+            return -1;
+#endif
+        }
+
+#ifdef _WIN32
+        const std::wstring model_path = widen(config_.model_path);
+        session_.reset(new Ort::Session(env_, model_path.c_str(), session_options_));
+#else
+        session_.reset(new Ort::Session(env_, config_.model_path, session_options_));
+#endif
+        allocator_.reset(new Ort::AllocatorWithDefaultOptions());
+        if (discover_model() != 0) {
+            return -1;
+        }
+        return init_common();
+    }
+
+protected:
+    const char *backend_name() const override { return "ONNX Runtime"; }
+
+    int run_backend(CudaSlot &slot, FrameTiming *timing) override {
+        if (cudaStreamSynchronize(slot.stream) != cudaSuccess) {
+            g_last_error = "failed to synchronize CUDA preprocess before ONNX Runtime execution";
+            return -1;
+        }
+
+        std::array<int64_t, 4> input_shape = {1, 3, config_.input_height, config_.input_width};
+        Ort::MemoryInfo cuda_memory("Cuda", OrtAllocatorType::OrtDeviceAllocator, 0, OrtMemTypeDefault);
+        Ort::Value input_tensor = Ort::Value::CreateTensor(cuda_memory,
+                                                           slot.d_input,
+                                                           input_bytes_,
+                                                           input_shape.data(),
+                                                           input_shape.size(),
+                                                           input_ort_type_);
+        Ort::Value output_tensor = Ort::Value::CreateTensor(cuda_memory,
+                                                            slot.d_output,
+                                                            output_bytes_,
+                                                            output_shape_.data(),
+                                                            output_shape_.size(),
+                                                            output_ort_type_);
+
+        auto inference_start = std::chrono::high_resolution_clock::now();
+        try {
+            Ort::IoBinding binding(*session_);
+            binding.BindInput(input_name_.c_str(), input_tensor);
+            binding.BindOutput(output_name_.c_str(), output_tensor);
+            session_->Run(Ort::RunOptions{nullptr}, binding);
+        } catch (const Ort::Exception &e) {
+            g_last_error = std::string("ONNX Runtime inference failed: ") + e.what();
+            return -1;
+        }
+        auto inference_end = std::chrono::high_resolution_clock::now();
+        timing->inference_ms = std::chrono::duration<double, std::milli>(inference_end - inference_start).count();
+
+        cudaEventRecord(slot.inference_done, slot.stream);
+        if (cudaMemcpyAsync(slot.h_output_raw.data(), slot.d_output, output_bytes_, cudaMemcpyDeviceToHost, slot.stream) != cudaSuccess) {
+            g_last_error = "failed to copy ONNX Runtime output to host";
+            return -1;
+        }
+        cudaEventRecord(slot.output_done, slot.stream);
+        if (cudaStreamSynchronize(slot.stream) != cudaSuccess) {
+            g_last_error = "failed to synchronize ONNX Runtime output copy";
+            return -1;
+        }
+        timing->download_ms = elapsed_event_ms(slot.inference_done, slot.output_done);
+        convert_output_raw_to_float(slot);
+        slot.output_dims.clear();
+        for (int64_t dim : output_shape_) {
+            slot.output_dims.push_back((int)dim);
+        }
+        return 0;
+    }
+
+private:
+#ifdef _WIN32
+    static std::wstring widen(const char *value) {
+        std::wstring output;
+        if (!value) {
+            return output;
+        }
+        while (*value) {
+            output.push_back((wchar_t)(unsigned char)*value);
+            ++value;
+        }
+        return output;
+    }
+#endif
+
+    TensorDataType from_ort_type(ONNXTensorElementDataType type) const {
+        switch (type) {
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT: return TENSOR_DTYPE_FP32;
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16: return TENSOR_DTYPE_FP16;
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32: return TENSOR_DTYPE_INT32;
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8: return TENSOR_DTYPE_INT8;
+            default: return TENSOR_DTYPE_UNKNOWN;
+        }
+    }
+
+    int discover_model() {
+        if (!session_ || !allocator_) {
+            g_last_error = "ONNX Runtime session was not initialized";
+            return -1;
+        }
+        if (session_->GetInputCount() != 1 || session_->GetOutputCount() < 1) {
+            g_last_error = "ONNX Runtime backend expects one input and at least one output";
+            return -1;
+        }
+
+        auto input_name = session_->GetInputNameAllocated(0, *allocator_);
+        auto output_name = session_->GetOutputNameAllocated(0, *allocator_);
+        input_name_ = input_name.get();
+        output_name_ = output_name.get();
+
+        const auto input_info = session_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
+        std::vector<int64_t> input_shape = input_info.GetShape();
+        if (input_shape.size() != 4 ||
+            input_shape[1] != 3 ||
+            input_shape[2] != config_.input_height ||
+            input_shape[3] != config_.input_width) {
+            g_last_error = "unsupported ONNX model input shape; expected 1x3xinput_sizexinput_size";
+            return -1;
+        }
+        max_batch_size_ = input_shape[0] > 0 ? (int)input_shape[0] : 8;
+        supports_dynamic_batch_ = input_shape[0] < 0;
+        input_ort_type_ = input_info.GetElementType();
+        input_dtype_ = from_ort_type(input_ort_type_);
+        if (input_dtype_ != TENSOR_DTYPE_FP32 && input_dtype_ != TENSOR_DTYPE_FP16) {
+            g_last_error = "ONNX model input must be FP32 or FP16";
+            return -1;
+        }
+
+        const auto output_info = session_->GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo();
+        output_ort_type_ = output_info.GetElementType();
+        if (set_output_shape(output_info.GetShape(), from_ort_type(output_ort_type_)) != 0) {
+            return -1;
+        }
+        return 0;
+    }
+
+    char validation_[256] = {0};
+    Ort::Env env_;
+    Ort::SessionOptions session_options_;
+    std::unique_ptr<Ort::Session> session_;
+    std::unique_ptr<Ort::AllocatorWithDefaultOptions> allocator_;
+    std::string input_name_;
+    std::string output_name_;
+    ONNXTensorElementDataType input_ort_type_{ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT};
+    ONNXTensorElementDataType output_ort_type_{ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT};
+};
+#endif
+
+#ifdef VCP_ENABLE_LIBTORCH
+class TorchScriptYoloEngine final : public CudaYoloRuntimeEngine {
+public:
+    explicit TorchScriptYoloEngine(const InferenceConfig &cfg) : CudaYoloRuntimeEngine(cfg) {}
+
+    int init() {
+        if (inference_runtime_validate_model_path(INFERENCE_RUNTIME_TORCHSCRIPT, config_.model_path, validation_, sizeof(validation_)) != 0) {
+            g_last_error = validation_;
+            return -1;
+        }
+        try {
+            module_ = torch::jit::load(config_.model_path, torch::kCUDA);
+            module_.eval();
+            if (config_.use_fp16) {
+                module_.to(torch::kCUDA, torch::kFloat16);
+                input_dtype_ = TENSOR_DTYPE_FP16;
+            } else {
+                module_.to(torch::kCUDA, torch::kFloat32);
+                input_dtype_ = TENSOR_DTYPE_FP32;
+            }
+        } catch (const c10::Error &e) {
+            g_last_error = std::string("failed to load TorchScript model: ") + e.what_without_backtrace();
+            return -1;
+        }
+
+        const int grid8 = config_.input_width / 8;
+        const int grid16 = config_.input_width / 16;
+        const int grid32 = config_.input_width / 32;
+        const int predictions = 3 * (grid8 * grid8 + grid16 * grid16 + grid32 * grid32);
+        if (set_output_shape({1, predictions, 5 + config_.class_count}, TENSOR_DTYPE_FP32) != 0) {
+            return -1;
+        }
+        return init_common();
+    }
+
+protected:
+    const char *backend_name() const override { return "TorchScript"; }
+
+    int run_backend(CudaSlot &slot, FrameTiming *timing) override {
+        if (cudaStreamSynchronize(slot.stream) != cudaSuccess) {
+            g_last_error = "failed to synchronize CUDA preprocess before TorchScript execution";
+            return -1;
+        }
+
+        const auto dtype = input_dtype_ == TENSOR_DTYPE_FP16 ? torch::kFloat16 : torch::kFloat32;
+        auto options = torch::TensorOptions().device(torch::kCUDA).dtype(dtype);
+        torch::Tensor input = torch::from_blob(slot.d_input,
+                                               {1, 3, config_.input_height, config_.input_width},
+                                               options);
+        auto inference_start = std::chrono::high_resolution_clock::now();
+        torch::NoGradGuard no_grad;
+        torch::Tensor output;
+        try {
+            torch::jit::IValue raw = module_.forward({input});
+            if (raw.isTensor()) {
+                output = raw.toTensor();
+            } else if (raw.isTuple() && !raw.toTuple()->elements().empty() && raw.toTuple()->elements()[0].isTensor()) {
+                output = raw.toTuple()->elements()[0].toTensor();
+            } else if (raw.isList() && raw.toList().size() > 0 && raw.toList().get(0).isTensor()) {
+                output = raw.toList().get(0).toTensor();
+            } else {
+                g_last_error = "TorchScript model output is not a tensor or tensor tuple/list";
+                return -1;
+            }
+            output = output.contiguous();
+            torch::Tensor host = output.to(torch::kCPU).to(torch::kFloat32).contiguous();
+            auto inference_end = std::chrono::high_resolution_clock::now();
+            timing->inference_ms = std::chrono::duration<double, std::milli>(inference_end - inference_start).count();
+            timing->download_ms = 0.0;
+
+            const int64_t elements = host.numel();
+            if (elements <= 0) {
+                g_last_error = "TorchScript output tensor is empty";
+                return -1;
+            }
+            slot.h_output_float.resize((size_t)elements);
+            std::memcpy(slot.h_output_float.data(), host.data_ptr<float>(), (size_t)elements * sizeof(float));
+            slot.output_dims.clear();
+            for (int64_t dim : host.sizes()) {
+                slot.output_dims.push_back((int)dim);
+            }
+        } catch (const c10::Error &e) {
+            g_last_error = std::string("TorchScript inference failed: ") + e.what_without_backtrace();
+            return -1;
+        }
+        return 0;
+    }
+
+private:
+    char validation_[256] = {0};
+    torch::jit::script::Module module_;
+};
+#endif
 
 }  // namespace
 
 struct InferenceEngine {
-    TensorRTYoloEngine *impl;
+    InferenceEngineImpl *impl;
 };
 
 extern "C" int inference_engine_create(InferenceEngine **engine, const InferenceConfig *config) {
@@ -808,10 +1606,49 @@ extern "C" int inference_engine_create(InferenceEngine **engine, const Inference
 
     *engine = nullptr;
     std::unique_ptr<InferenceEngine> wrapper(new InferenceEngine{});
-    std::unique_ptr<TensorRTYoloEngine> impl(new TensorRTYoloEngine(*config));
-    if (impl->init() != 0) {
+    const InferenceRuntime selected_runtime = config->runtime == INFERENCE_RUNTIME_AUTO
+                                                  ? inference_runtime_from_model_path(config->model_path)
+                                                  : config->runtime;
+    std::unique_ptr<InferenceEngineImpl> impl;
+
+    if (selected_runtime == INFERENCE_RUNTIME_TENSORRT) {
+#ifdef VCP_ENABLE_TENSORRT
+        std::unique_ptr<TensorRTYoloEngine> trt_impl(new TensorRTYoloEngine(*config));
+        if (trt_impl->init() != 0) {
+            return -1;
+        }
+        impl = std::move(trt_impl);
+#else
+        g_last_error = "TensorRT backend was not compiled. Rebuild with ENABLE_TENSORRT=ON.";
+        return -1;
+#endif
+    } else if (selected_runtime == INFERENCE_RUNTIME_ONNXRUNTIME) {
+#ifdef VCP_ENABLE_ONNXRUNTIME
+        std::unique_ptr<OnnxRuntimeYoloEngine> onnx_impl(new OnnxRuntimeYoloEngine(*config));
+        if (onnx_impl->init() != 0) {
+            return -1;
+        }
+        impl = std::move(onnx_impl);
+#else
+        g_last_error = "ONNX Runtime backend was not compiled. Rebuild with ENABLE_ONNXRUNTIME=ON.";
+        return -1;
+#endif
+    } else if (selected_runtime == INFERENCE_RUNTIME_TORCHSCRIPT) {
+#ifdef VCP_ENABLE_LIBTORCH
+        std::unique_ptr<TorchScriptYoloEngine> torch_impl(new TorchScriptYoloEngine(*config));
+        if (torch_impl->init() != 0) {
+            return -1;
+        }
+        impl = std::move(torch_impl);
+#else
+        g_last_error = "TorchScript backend was not compiled. Rebuild with ENABLE_LIBTORCH=ON.";
+        return -1;
+#endif
+    } else {
+        g_last_error = "could not infer inference runtime from model extension";
         return -1;
     }
+
     wrapper->impl = impl.release();
     *engine = wrapper.release();
     return 0;

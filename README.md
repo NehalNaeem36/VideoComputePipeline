@@ -196,6 +196,12 @@ Experimental annotated detection without full-frame CPU transfers:
 --classes person,car
 --class-ids 0,2
 --input-size N
+--runtime auto|tensorrt|onnxruntime|torchscript
+--backend-device cuda|cpu
+--allow-host-backend
+--list-backends
+--model-info
+--model-type auto|yolov5
 --inference-backend tensorrt
 --precision fp16|fp32
 --batch-size auto|N
@@ -226,6 +232,13 @@ Experimental annotated detection without full-frame CPU transfers:
 --help
 --version
 ```
+
+`--runtime auto` selects by model extension:
+- `.engine` and `.plan` use TensorRT.
+- `.onnx` selects ONNX Runtime.
+- `.pt`, `.ts`, and `.torchscript` select TorchScript.
+
+TensorRT is the default compiled runtime for CUDA builds. ONNX Runtime and TorchScript are optional: install ONNX Runtime GPU or LibTorch CUDA, then configure with `-DENABLE_ONNXRUNTIME=ON -DONNXRUNTIME_ROOT=...` or `-DENABLE_LIBTORCH=ON -DLIBTORCH_ROOT=...`. `--inference-backend tensorrt` remains a backward-compatible alias for `--runtime tensorrt`.
 
 `--max-frames` is frame-count based, not time based. For a 25 FPS video:
 
@@ -349,4 +362,4 @@ VideoComputePipeline/benchmarks
 
 FFmpeg code is isolated in video modules. OpenCL code is isolated in GPU modules. Frame memory is isolated in core/pipeline frame modules. Timing and benchmark output are isolated in benchmark modules.
 
-Detection mode is CSV-only by default: it decodes NV12 frames, runs TensorRT inference, writes `detections.csv`, and records detection timing fields in the benchmark CSV. Annotated video output is enabled only when `--draw-boxes` and `--output` are provided, with `--output-format mkv` recommended for hardware-video smoke tests.
+Detection mode is CSV-only by default: it decodes NV12 frames, runs the selected inference runtime, writes `detections.csv`, and records detection timing fields in the benchmark CSV. Annotated video output is enabled only when `--draw-boxes` and `--output` are provided, with `--output-format mkv` recommended for hardware-video smoke tests.

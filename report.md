@@ -204,6 +204,32 @@ NVDEC decode -> GPU processing -> NVENC encode
 
 That would reduce CPU/GPU round trips, but requires a larger FFmpeg hardware-frames integration.
 
+## Multi-Backend Detection Runtime Direction
+
+The detection pipeline is being refactored so the video path remains shared while only the inference runtime is selected by model/runtime:
+
+```text
+NVDEC or CPU NV12 decode
+  -> CUDA preprocess
+  -> selected runtime backend
+  -> YOLOv5 model adapter
+  -> CUDA overlay when requested
+  -> NVENC or CSV-only output
+```
+
+Runtime selection flags:
+
+```text
+--runtime auto|tensorrt|onnxruntime|torchscript
+--backend-device cuda|cpu
+--allow-host-backend
+--list-backends
+--model-info
+--model-type auto|yolov5
+```
+
+Auto runtime selection is extension based: `.engine`/`.plan` -> TensorRT, `.onnx` -> ONNX Runtime, and `.pt`/`.ts`/`.torchscript` -> TorchScript. TensorRT remains the default CUDA runtime. ONNX Runtime and TorchScript are optional builds that require the matching ONNX Runtime GPU or LibTorch CUDA packages at configure time.
+
 ## CUDA/TensorRT Detection Workflow
 
 The detection milestone is separate from the filter-and-encode pipeline:

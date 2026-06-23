@@ -10,6 +10,7 @@
 #include "cpu/cpu_filters.h"
 #include "gpu/cuda_overlay.h"
 #include "gpu/gpu_filters.h"
+#include "inference/backend_registry.h"
 #include "inference/detection_result.h"
 #include "inference/detection_writer.h"
 #include "inference/inference_engine.h"
@@ -640,6 +641,10 @@ static void fill_inference_config_from_pipeline(const PipelineConfig *config, In
     memset(inference_config, 0, sizeof(*inference_config));
     strncpy(inference_config->model_path, config->model_path, sizeof(inference_config->model_path) - 1u);
     strncpy(inference_config->labels_path, config->labels_path, sizeof(inference_config->labels_path) - 1u);
+    inference_config->runtime = config->runtime;
+    inference_config->backend_device = config->backend_device;
+    inference_config->model_type = config->model_type;
+    inference_config->allow_host_backend = config->allow_host_backend;
     inference_config->input_width = config->inference_input_size;
     inference_config->input_height = config->inference_input_size;
     inference_config->class_count = config->detection_class_count;
@@ -658,7 +663,7 @@ static int validate_detection_paths(const PipelineConfig *config) {
     }
 
     if (config->model_path[0] == '\0' || !file_exists /* module: utils/file_utils */ (config->model_path)) {
-        log_error /* module: utils/logger */ ("missing TensorRT model: %s", config->model_path);
+        log_error /* module: utils/logger */ ("missing model file: %s", config->model_path);
         return -1;
     }
     if (config->labels_path[0] == '\0' || !file_exists /* module: utils/file_utils */ (config->labels_path)) {
@@ -767,6 +772,20 @@ static double bytes_to_mib(size_t bytes) {
     return (double)bytes / (1024.0 * 1024.0);
 }
 
+static size_t nv12_frame_bytes_for_info(const VideoInfo *info) {
+    if (!info || info->width <= 0 || info->height <= 0) {
+        return 0u;
+    }
+    return (size_t)info->width * (size_t)info->height * 3u / 2u;
+}
+
+static void timing_copy_string(char *dst, size_t dst_size, const char *src) {
+    if (!dst || dst_size == 0u) {
+        return;
+    }
+    snprintf(dst, dst_size, "%s", src ? src : "");
+}
+
 static void apply_execution_plan_to_timing(const PipelineExecutionPlan *plan, FrameTiming *timing) {
     if (!plan || !timing) {
         return;
@@ -780,6 +799,52 @@ static void apply_execution_plan_to_timing(const PipelineExecutionPlan *plan, Fr
     timing->inference_context_count = plan->inference_context_count;
     timing->vram_budget_mb = bytes_to_mib /* module: pipeline/pipeline_runner */ (plan->vram_budget_bytes);
     timing->estimated_batch_mb = bytes_to_mib /* module: pipeline/pipeline_runner */ (plan->estimated_batch_bytes);
+}
+
+static void apply_detection_metadata_to_timing(const PipelineConfig *config,
+                                               const VideoInfo *info,
+                                               const DetectionResult *detections,
+                                               int requires_raw_upload,
+                                               int requires_raw_download,
+                                               FrameTiming *timing) {
+    InferenceRuntime runtime = INFERENCE_RUNTIME_AUTO;
+    const size_t frame_bytes = nv12_frame_bytes_for_info /* module: pipeline/pipeline_runner */ (info);
+
+    if (!config || !timing) {
+        return;
+    }
+
+    runtime = config->runtime == INFERENCE_RUNTIME_AUTO
+                  ? inference_runtime_from_model_path /* module: inference/backend_registry */ (config->model_path)
+                  : config->runtime;
+
+    timing_copy_string /* module: pipeline/pipeline_runner */ (timing->runtime_backend,
+                                                               sizeof(timing->runtime_backend),
+                                                               inference_runtime_to_string /* module: inference/backend_registry */ (runtime));
+    timing_copy_string /* module: pipeline/pipeline_runner */ (timing->model_format,
+                                                               sizeof(timing->model_format),
+                                                               inference_model_format_from_path /* module: inference/backend_registry */ (config->model_path));
+    timing_copy_string /* module: pipeline/pipeline_runner */ (timing->model_adapter,
+                                                               sizeof(timing->model_adapter),
+                                                               config->model_type == MODEL_TYPE_AUTO ? "yolov5" : model_type_to_string /* module: inference/backend_registry */ (config->model_type));
+    timing_copy_string /* module: pipeline/pipeline_runner */ (timing->backend_device,
+                                                               sizeof(timing->backend_device),
+                                                               backend_device_to_string /* module: inference/backend_registry */ (config->backend_device));
+    timing_copy_string /* module: pipeline/pipeline_runner */ (timing->input_layout, sizeof(timing->input_layout), "nchw");
+    timing_copy_string /* module: pipeline/pipeline_runner */ (timing->input_dtype,
+                                                               sizeof(timing->input_dtype),
+                                                               strcmp(config->inference_precision, "fp16") == 0 ? "fp16" : "fp32");
+    timing_copy_string /* module: pipeline/pipeline_runner */ (timing->output_device, sizeof(timing->output_device), "metadata_host");
+    timing_copy_string /* module: pipeline/pipeline_runner */ (timing->precision, sizeof(timing->precision), config->inference_precision);
+    timing->video_width = info ? info->width : 0;
+    timing->video_height = info ? info->height : 0;
+    timing->video_fps = info ? info->fps : 0.0;
+    timing->frame_bytes = frame_bytes;
+    timing->backend_inference_ms = timing->inference_ms;
+    timing->raw_frame_upload_bytes = requires_raw_upload ? frame_bytes : 0u;
+    timing->raw_frame_download_bytes = requires_raw_download ? frame_bytes : 0u;
+    timing->metadata_download_bytes = detections ? detections->count * sizeof(Detection) : 0u;
+    timing->detections_count = detections ? detections->count : 0u;
 }
 
 static int run_detection_pipeline_cpu(const PipelineConfig *config) {
@@ -934,6 +999,7 @@ static int run_detection_pipeline_cpu(const PipelineConfig *config) {
             timing->process_ms = timing->upload_ms + timing->preprocess_ms + timing->inference_ms + timing->download_ms + timing->postprocess_ms;
             timing->total_ms = timing->decode_ms + timing->process_ms;
             apply_execution_plan_to_timing /* module: pipeline/pipeline_runner */ (&plan, timing);
+            apply_detection_metadata_to_timing /* module: pipeline/pipeline_runner */ (config, info, result, 1, 0, timing);
 
             if (detection_writer_write_frame /* module: inference/detection_writer */ (&detections, result) != 0) {
                 log_error /* module: utils/logger */ ("failed to write detections for frame %d", current_frame_id);
@@ -1175,6 +1241,7 @@ static int run_detection_pipeline_hw(const PipelineConfig *config) {
             timing->process_ms = timing->upload_ms + timing->preprocess_ms + timing->inference_ms + timing->download_ms + timing->postprocess_ms + timing->overlay_ms;
             timing->total_ms = timing->decode_ms + timing->process_ms + timing->encode_ms + timing->mux_write_ms;
             apply_execution_plan_to_timing /* module: pipeline/pipeline_runner */ (&plan, timing);
+            apply_detection_metadata_to_timing /* module: pipeline/pipeline_runner */ (config, info, result, 0, 0, timing);
 
             if (config->enable_benchmark &&
                 benchmark_add_frame_result /* module: benchmark/benchmark */ (&benchmark, timing) != 0) {

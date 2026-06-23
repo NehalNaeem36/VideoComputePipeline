@@ -61,6 +61,12 @@ static int pipeline_config_test_defaults(void) {
     TEST_ASSERT(config.parallel_inference_mode == PIPELINE_FEATURE_AUTO);
     TEST_ASSERT(config.inference_contexts_mode == BATCH_SETTING_AUTO);
     TEST_ASSERT(config.inference_contexts == DEFAULT_INFERENCE_CONTEXTS);
+    TEST_ASSERT(config.runtime == INFERENCE_RUNTIME_AUTO);
+    TEST_ASSERT(config.backend_device == BACKEND_DEVICE_CUDA);
+    TEST_ASSERT(config.model_type == MODEL_TYPE_AUTO);
+    TEST_ASSERT(config.allow_host_backend == DEFAULT_ALLOW_HOST_BACKEND);
+    TEST_ASSERT(config.list_backends == DEFAULT_LIST_BACKENDS);
+    TEST_ASSERT(config.model_info == DEFAULT_MODEL_INFO);
     return 0;
 }
 
@@ -109,6 +115,10 @@ static int pipeline_config_test_parse_args(void) {
         "--pipeline-overlap", "on",
         "--parallel-inference", "off",
         "--inference-contexts", "2",
+        "--runtime", "tensorrt",
+        "--backend-device", "cuda",
+        "--model-type", "yolov5",
+        "--allow-host-backend",
         "--no-benchmark"
     };
     const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
@@ -166,6 +176,10 @@ static int pipeline_config_test_parse_args(void) {
     TEST_ASSERT(config.parallel_inference_mode == PIPELINE_FEATURE_OFF);
     TEST_ASSERT(config.inference_contexts_mode == BATCH_SETTING_MANUAL);
     TEST_ASSERT(config.inference_contexts == 2);
+    TEST_ASSERT(config.runtime == INFERENCE_RUNTIME_TENSORRT);
+    TEST_ASSERT(config.backend_device == BACKEND_DEVICE_CUDA);
+    TEST_ASSERT(config.model_type == MODEL_TYPE_YOLOV5);
+    TEST_ASSERT(config.allow_host_backend == 1);
     return 0;
 }
 
@@ -278,6 +292,61 @@ static int pipeline_config_test_bad_batch_size(void) {
     return 0;
 }
 
+static int pipeline_config_test_runtime_auto_onnx(void) {
+    char *argv[] = {
+        "VideoComputePipeline",
+        "--task", "detect",
+        "--runtime", "auto",
+        "--model", "models/model.onnx",
+        "--model-info"
+    };
+    const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+
+    PipelineConfig config;
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+
+    TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) == 0);
+    TEST_ASSERT(config.runtime == INFERENCE_RUNTIME_AUTO);
+    TEST_ASSERT(config.model_info == 1);
+    TEST_ASSERT(strcmp(config.model_path, "models/model.onnx") == 0);
+    return 0;
+}
+
+static int pipeline_config_test_runtime_mismatch_fails(void) {
+    char *argv[] = {
+        "VideoComputePipeline",
+        "--task", "detect",
+        "--runtime", "tensorrt",
+        "--model", "models/model.onnx"
+    };
+    const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+
+    PipelineConfig config;
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+
+    TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) != 0);
+    TEST_ASSERT(strstr(pipeline_config_last_error /* module: pipeline/pipeline_config */ (), "model extension selects onnxruntime") != NULL);
+    return 0;
+}
+
+static int pipeline_config_test_list_backends_skips_model_validation(void) {
+    char *argv[] = {
+        "VideoComputePipeline",
+        "--task", "detect",
+        "--runtime", "tensorrt",
+        "--model", "models/model.onnx",
+        "--list-backends"
+    };
+    const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+
+    PipelineConfig config;
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+
+    TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) == 0);
+    TEST_ASSERT(config.list_backends == 1);
+    return 0;
+}
+
 static int pipeline_config_test_detect_summary(void) {
     PipelineConfig config;
     char summary[4096];
@@ -292,6 +361,9 @@ static int pipeline_config_test_detect_summary(void) {
     TEST_ASSERT(pipeline_config_format_summary /* module: pipeline/pipeline_config */ (&config, summary, sizeof(summary)) == 0);
     TEST_ASSERT(strstr(summary, "task: detect") != NULL);
     TEST_ASSERT(strstr(summary, "decoder: cpu") != NULL);
+    TEST_ASSERT(strstr(summary, "runtime: auto") != NULL);
+    TEST_ASSERT(strstr(summary, "backend_device: cuda") != NULL);
+    TEST_ASSERT(strstr(summary, "model_type: auto") != NULL);
     TEST_ASSERT(strstr(summary, "model_path:") != NULL);
     TEST_ASSERT(strstr(summary, "labels_path:") != NULL);
     TEST_ASSERT(strstr(summary, "detections_path:") != NULL);
@@ -375,6 +447,15 @@ int main(void) {
         return 1;
     }
     if (pipeline_config_test_bad_batch_size() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_runtime_auto_onnx() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_runtime_mismatch_fails() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_list_backends_skips_model_validation() != 0) {
         return 1;
     }
     if (pipeline_config_test_detect_summary() != 0) {

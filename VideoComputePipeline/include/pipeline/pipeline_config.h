@@ -2,6 +2,7 @@
 #define VIDEOCOMPUTEPIPELINE_PIPELINE_CONFIG_H
 
 #include "config.h"
+#include "inference/inference_types.h"
 
 #include <stddef.h>
 
@@ -109,6 +110,12 @@ typedef struct {
     PipelineFeatureMode parallel_inference_mode;
     BatchSettingMode inference_contexts_mode;
     int inference_contexts;
+    InferenceRuntime runtime;
+    BackendDevice backend_device;
+    ModelType model_type;
+    int allow_host_backend;
+    int list_backends;
+    int model_info;
 } PipelineConfig;
 
 void pipeline_config_default(PipelineConfig *config);

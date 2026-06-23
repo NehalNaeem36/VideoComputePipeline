@@ -10,11 +10,16 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
 option(BUILD_TESTING "Build tests" ON)
+option(ENABLE_TENSORRT "Build TensorRT inference runtime when CUDA inference is enabled" ON)
 option(ENABLE_CUDA_INFERENCE "Build CUDA/TensorRT inference backend" OFF)
 option(ENABLE_HW_VIDEO "Build NVDEC/NVENC CUDA hardware video path" OFF)
+option(ENABLE_ONNXRUNTIME "Build ONNX Runtime inference backend" OFF)
+option(ENABLE_LIBTORCH "Build LibTorch TorchScript inference backend" OFF)
 set(FFMPEG_ROOT "" CACHE PATH "Optional FFmpeg installation root")
 set(OPENCL_ROOT "" CACHE PATH "Optional OpenCL installation root")
 set(TENSORRT_ROOT "" CACHE PATH "Optional TensorRT installation root")
+set(ONNXRUNTIME_ROOT "" CACHE PATH "Optional ONNX Runtime installation root")
+set(LIBTORCH_ROOT "" CACHE PATH "Optional LibTorch installation root")
 set(VCP_TEST_TENSORRT_ENGINE "" CACHE FILEPATH "Optional TensorRT engine for CUDA inference tests")
 
 function(vcp_reject_msys_path VAR_NAME)
@@ -41,24 +46,59 @@ if(ENABLE_CUDA_INFERENCE)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     find_package(CUDAToolkit REQUIRED)
 
-    find_path(TENSORRT_INCLUDE_DIR NvInfer.h
-        HINTS
-            "${TENSORRT_ROOT}/include"
-            "$ENV{TENSORRT_ROOT}/include"
-            "$ENV{TensorRT_ROOT}/include"
-    )
-    find_library(TENSORRT_NVINFER_LIBRARY
-        NAMES nvinfer nvinfer_11
-        HINTS
-            "${TENSORRT_ROOT}/lib"
-            "${TENSORRT_ROOT}/lib/x64"
-            "$ENV{TENSORRT_ROOT}/lib"
-            "$ENV{TENSORRT_ROOT}/lib/x64"
-            "$ENV{TensorRT_ROOT}/lib"
-            "$ENV{TensorRT_ROOT}/lib/x64"
-    )
-    if(NOT TENSORRT_INCLUDE_DIR OR NOT TENSORRT_NVINFER_LIBRARY)
-        message(FATAL_ERROR "ENABLE_CUDA_INFERENCE=ON requires TensorRT. Set -DTENSORRT_ROOT=C:/path/to/TensorRT from a VS Developer Prompt.")
+    if(ENABLE_TENSORRT)
+        find_path(TENSORRT_INCLUDE_DIR NvInfer.h
+            HINTS
+                "${TENSORRT_ROOT}/include"
+                "$ENV{TENSORRT_ROOT}/include"
+                "$ENV{TensorRT_ROOT}/include"
+        )
+        find_library(TENSORRT_NVINFER_LIBRARY
+            NAMES nvinfer nvinfer_11
+            HINTS
+                "${TENSORRT_ROOT}/lib"
+                "${TENSORRT_ROOT}/lib/x64"
+                "$ENV{TENSORRT_ROOT}/lib"
+                "$ENV{TENSORRT_ROOT}/lib/x64"
+                "$ENV{TensorRT_ROOT}/lib"
+                "$ENV{TensorRT_ROOT}/lib/x64"
+        )
+        if(NOT TENSORRT_INCLUDE_DIR OR NOT TENSORRT_NVINFER_LIBRARY)
+            message(FATAL_ERROR "ENABLE_TENSORRT=ON requires TensorRT. Set -DTENSORRT_ROOT=C:/path/to/TensorRT from a VS Developer Prompt.")
+        endif()
+    endif()
+
+    if(ENABLE_ONNXRUNTIME)
+        find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
+            HINTS
+                "${ONNXRUNTIME_ROOT}/include"
+                "$ENV{ONNXRUNTIME_ROOT}/include"
+                "$ENV{OnnxRuntime_ROOT}/include"
+        )
+        find_library(ONNXRUNTIME_LIBRARY
+            NAMES onnxruntime
+            HINTS
+                "${ONNXRUNTIME_ROOT}/lib"
+                "${ONNXRUNTIME_ROOT}/lib/x64"
+                "$ENV{ONNXRUNTIME_ROOT}/lib"
+                "$ENV{ONNXRUNTIME_ROOT}/lib/x64"
+                "$ENV{OnnxRuntime_ROOT}/lib"
+                "$ENV{OnnxRuntime_ROOT}/lib/x64"
+        )
+        if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
+            message(FATAL_ERROR "ENABLE_ONNXRUNTIME=ON requires ONNX Runtime. Set -DONNXRUNTIME_ROOT=C:/path/to/onnxruntime-win-x64-gpu.")
+        endif()
+    endif()
+
+    if(ENABLE_LIBTORCH)
+        if(LIBTORCH_ROOT)
+            list(APPEND CMAKE_PREFIX_PATH "${LIBTORCH_ROOT}")
+        endif()
+        find_package(Torch REQUIRED)
+        if(NOT Torch_FOUND)
+            message(FATAL_ERROR "ENABLE_LIBTORCH=ON requires LibTorch. Set -DLIBTORCH_ROOT=C:/path/to/libtorch or add it to CMAKE_PREFIX_PATH.")
+        endif()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
     endif()
 endif()
 
@@ -88,13 +128,14 @@ set(PROJECT_SOURCES
     src/benchmark/timer.c
     src/benchmark/benchmark.c
     src/benchmark/matrix_report.c
+    src/inference/backend_registry.c
     src/inference/detection_result.c
     src/inference/detection_writer.c
     src/utils/logger.c
     src/utils/file_utils.c
 )
 
-if(ENABLE_CUDA_INFERENCE)
+if(ENABLE_CUDA_INFERENCE AND (ENABLE_TENSORRT OR ENABLE_ONNXRUNTIME OR ENABLE_LIBTORCH))
     list(APPEND PROJECT_SOURCES
         src/inference/inference_engine_tensorrt.cpp
         src/inference/yolo_postprocess.cpp
@@ -233,8 +274,27 @@ endif()
 
 if(ENABLE_CUDA_INFERENCE)
     target_compile_definitions(vcp_core PUBLIC VCP_ENABLE_CUDA_INFERENCE=1)
+endif()
+
+if(ENABLE_CUDA_INFERENCE AND ENABLE_TENSORRT)
+    target_compile_definitions(vcp_core PUBLIC VCP_ENABLE_TENSORRT=1)
     target_include_directories(vcp_core PUBLIC ${TENSORRT_INCLUDE_DIR})
     target_link_libraries(vcp_core PUBLIC CUDA::cudart ${TENSORRT_NVINFER_LIBRARY})
+endif()
+
+if(ENABLE_CUDA_INFERENCE AND ENABLE_ONNXRUNTIME)
+    target_compile_definitions(vcp_core PUBLIC VCP_ENABLE_ONNXRUNTIME=1)
+    target_include_directories(vcp_core PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
+    target_link_libraries(vcp_core PUBLIC ${ONNXRUNTIME_LIBRARY})
+endif()
+
+if(ENABLE_CUDA_INFERENCE AND ENABLE_LIBTORCH)
+    target_compile_definitions(vcp_core PUBLIC VCP_ENABLE_LIBTORCH=1)
+    target_include_directories(vcp_core PUBLIC ${TORCH_INCLUDE_DIRS})
+    target_link_libraries(vcp_core PUBLIC ${TORCH_LIBRARIES})
+    if(MSVC)
+        target_compile_options(vcp_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/bigobj>)
+    endif()
 endif()
 
 if(ENABLE_HW_VIDEO)
@@ -281,6 +341,15 @@ message(STATUS "OpenCL found: ${OpenCL_FOUND}")
 message(STATUS "CUDA inference enabled: ${ENABLE_CUDA_INFERENCE}")
 message(STATUS "Hardware video enabled: ${ENABLE_HW_VIDEO}")
 if(ENABLE_CUDA_INFERENCE)
-    message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIR}")
-    message(STATUS "TensorRT nvinfer: ${TENSORRT_NVINFER_LIBRARY}")
+    if(ENABLE_TENSORRT)
+        message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIR}")
+        message(STATUS "TensorRT nvinfer: ${TENSORRT_NVINFER_LIBRARY}")
+    endif()
+    if(ENABLE_ONNXRUNTIME)
+        message(STATUS "ONNX Runtime include: ${ONNXRUNTIME_INCLUDE_DIR}")
+        message(STATUS "ONNX Runtime library: ${ONNXRUNTIME_LIBRARY}")
+    endif()
+    if(ENABLE_LIBTORCH)
+        message(STATUS "LibTorch libraries: ${TORCH_LIBRARIES}")
+    endif()
 endif()

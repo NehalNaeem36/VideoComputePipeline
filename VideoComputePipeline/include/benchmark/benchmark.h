@@ -26,6 +26,23 @@ typedef struct {
     int inference_context_count;
     double vram_budget_mb;
     double estimated_batch_mb;
+    char runtime_backend[32];
+    char model_format[32];
+    char model_adapter[32];
+    char backend_device[16];
+    char input_layout[16];
+    char input_dtype[16];
+    char output_device[16];
+    char precision[16];
+    int video_width;
+    int video_height;
+    double video_fps;
+    size_t frame_bytes;
+    double backend_inference_ms;
+    size_t raw_frame_upload_bytes;
+    size_t raw_frame_download_bytes;
+    size_t metadata_download_bytes;
+    size_t detections_count;
 } FrameTiming;
 
 typedef struct {
