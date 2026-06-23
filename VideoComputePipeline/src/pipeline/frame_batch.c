@@ -1,3 +1,8 @@
+/*
+ * Frame batch module: groups CPU or CUDA frames for detection planning and
+ * staged execution. Detection runners use it to batch scheduling while keeping
+ * ownership and release rules explicit.
+ */
 #include "pipeline/frame_batch.h"
 
 #include <stdlib.h>

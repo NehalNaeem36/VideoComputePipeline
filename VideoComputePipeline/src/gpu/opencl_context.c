@@ -1,3 +1,8 @@
+/*
+ * OpenCL context module: selects an OpenCL platform/device and creates the
+ * context and command queue used by GPU filters. It isolates OpenCL setup from
+ * pipeline and filter orchestration.
+ */
 #include "gpu/opencl_context.h"
 #include "utils/logger.h"
 

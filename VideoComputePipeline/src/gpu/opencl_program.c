@@ -1,3 +1,8 @@
+/*
+ * OpenCL program module: loads kernel source files and builds OpenCL programs
+ * for GPU filters. It depends on an OpenCL context and keeps kernel compilation
+ * details out of the filter and pipeline modules.
+ */
 #include "gpu/opencl_program.h"
 #include "utils/logger.h"
 

@@ -1,3 +1,8 @@
+/*
+ * Video profile module: converts VideoInfo into frame-size and transfer
+ * requirements for the execution planner. It lets detection planning reason
+ * about 1080p/4K memory cost without depending on video reader internals.
+ */
 #include "pipeline/video_profile.h"
 
 #include <string.h>

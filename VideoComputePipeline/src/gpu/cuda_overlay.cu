@@ -1,3 +1,8 @@
+/*
+ * CUDA overlay module: draws detection boxes directly into GPU-resident NV12
+ * frames. The hardware detection runner calls this after inference/postprocess
+ * and before NVENC writes annotated output.
+ */
 #include "gpu/cuda_overlay.h"
 
 #include <cuda_runtime.h>

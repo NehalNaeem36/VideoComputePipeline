@@ -1,3 +1,8 @@
+/*
+ * Frame slot module: wraps an in-progress Frame with pipeline metadata for
+ * staged processing. It is used where a reusable container is simpler than
+ * passing raw Frame pointers through pipeline code.
+ */
 #include "pipeline/frame_slot.h"
 
 void frame_slot_init(FrameSlot *slot) {

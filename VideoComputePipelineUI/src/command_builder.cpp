@@ -1,3 +1,8 @@
+/*
+ * Command builder module: translates UI run configuration into a quoted
+ * VideoComputePipeline command line. The UI preview, copy action, and process
+ * runner all use this module so subprocess invocation stays consistent.
+ */
 #include "command_builder.h"
 
 #include "path_utils.h"

@@ -1,3 +1,8 @@
+/*
+ * File utilities module: centralizes path, directory, and file-existence helpers
+ * used by writers, benchmark output, and support code. It keeps platform file
+ * handling details out of pipeline logic.
+ */
 #include "utils/file_utils.h"
 
 #include <errno.h>

@@ -1,3 +1,8 @@
+/*
+ * Frame module: owns CPU frame layout, allocation, plane metadata, and memory
+ * cleanup for RGB24, GRAY8, and NV12 frames. Video readers fill these frames,
+ * filters and inference consume them, and pools reuse them for bounded memory.
+ */
 #include "core/frame.h"
 
 #include <limits.h>

@@ -1,3 +1,8 @@
+/*
+ * UI path utilities module: handles path checks, path resolution, file sizing,
+ * and UTF-8/Windows string conversion for the desktop wrapper. Command building,
+ * validation, monitoring, and process launch code share these helpers.
+ */
 #include "path_utils.h"
 
 #include <filesystem>

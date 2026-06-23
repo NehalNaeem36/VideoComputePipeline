@@ -1,3 +1,9 @@
+/*
+ * UI app module: owns the Dear ImGui interface, user-editable pipeline config,
+ * command preview, monitor, logs, and help tabs. It coordinates command_builder,
+ * process_runner, progress_parser, and path utilities without linking pipeline
+ * internals.
+ */
 #include "ui_app.h"
 
 #include "path_utils.h"

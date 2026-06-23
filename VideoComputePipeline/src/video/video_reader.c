@@ -1,3 +1,8 @@
+/*
+ * Video reader module: uses FFmpeg software decode and libswscale to produce
+ * CPU Frames in RGB24, GRAY8, or NV12. Filter and CPU-decoded detection paths
+ * rely on this module while FFmpeg details stay out of core/pipeline code.
+ */
 #include "video/video_reader.h"
 #include "utils/logger.h"
 

@@ -1,3 +1,8 @@
+/*
+ * Win32 process runner module: launches VideoComputePipeline.exe as a child
+ * process, captures stdout/stderr asynchronously, tracks status/progress, and
+ * provides stop support for the UI.
+ */
 #include "process_runner.h"
 
 #include "path_utils.h"

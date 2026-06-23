@@ -1,3 +1,8 @@
+/*
+ * YOLO postprocess module: decodes raw YOLOv5 TensorRT output, applies
+ * confidence filtering and NMS, and maps boxes back to original frame
+ * coordinates. The TensorRT engine calls it after output download.
+ */
 #include "yolo_postprocess.h"
 
 #include <algorithm>

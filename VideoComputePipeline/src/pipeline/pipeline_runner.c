@@ -1,3 +1,8 @@
+/*
+ * Pipeline runner module: orchestrates end-to-end filter and detection tasks.
+ * It connects video readers, frame pools/queues, CPU/OpenCL/CUDA processing,
+ * inference, writers, and benchmark recording while preserving task boundaries.
+ */
 #include "pipeline/pipeline_runner.h"
 
 #include "benchmark/benchmark.h"

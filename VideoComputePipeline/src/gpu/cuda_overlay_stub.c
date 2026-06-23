@@ -1,3 +1,8 @@
+/*
+ * CUDA overlay stub module: provides the same overlay API when hardware video
+ * support is not built. Pipeline code can link consistently and report a clear
+ * runtime error instead of depending on CUDA symbols.
+ */
 #include "gpu/cuda_overlay.h"
 
 static const char *g_last_error = "CUDA overlay backend was not built";

@@ -1,3 +1,8 @@
+/*
+ * Hardware video reader stub module: preserves the NVDEC reader API when
+ * hardware video support is disabled. Detection runners can report a clear
+ * backend-not-built error while CPU decode paths remain available.
+ */
 #include "video/video_hw_reader.h"
 
 #include <string.h>

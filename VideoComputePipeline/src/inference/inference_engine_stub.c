@@ -1,3 +1,8 @@
+/*
+ * Inference engine stub module: satisfies the inference C API when CUDA/TensorRT
+ * support is disabled. Detection mode can fail cleanly at runtime while non-CUDA
+ * builds continue to compile and run filter paths.
+ */
 #include "inference/inference_engine.h"
 
 #include <stdlib.h>

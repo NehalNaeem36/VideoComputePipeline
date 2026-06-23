@@ -1,3 +1,8 @@
+/*
+ * Progress parser module: extracts frame progress, FPS, execution-plan fields,
+ * and timing estimates from pipeline log lines. ProcessRunner updates this
+ * state as logs arrive so the Monitor tab can stay responsive.
+ */
 #include "progress_parser.h"
 
 #include <algorithm>

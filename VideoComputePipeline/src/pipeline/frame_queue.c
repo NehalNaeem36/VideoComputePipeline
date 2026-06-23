@@ -1,3 +1,8 @@
+/*
+ * Frame queue module: provides a bounded thread-safe queue for frame handoff
+ * between decoder, processor, and writer stages. Threaded pipelines use it to
+ * apply backpressure and preserve bounded memory.
+ */
 #include "pipeline/frame_queue.h"
 
 #include <stdlib.h>

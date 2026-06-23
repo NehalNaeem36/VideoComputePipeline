@@ -1,3 +1,8 @@
+/*
+ * Hardware video reader module: decodes input video with FFmpeg CUDA/NVDEC and
+ * returns GPU-resident NV12 frames. The hardware detection runner passes these
+ * frames directly to TensorRT/overlay/NVENC without full-frame CPU transfer.
+ */
 #include "video/video_hw_reader.h"
 
 #include "utils/logger.h"

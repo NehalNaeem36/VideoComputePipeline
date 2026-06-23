@@ -1,3 +1,8 @@
+/*
+ * Detection writer module: streams detection results to CSV without retaining
+ * full-run state in memory. Detection pipelines call it after each frame or
+ * batch, optionally resolving class names from the labels file.
+ */
 #include "inference/detection_writer.h"
 #include "utils/file_utils.h"
 

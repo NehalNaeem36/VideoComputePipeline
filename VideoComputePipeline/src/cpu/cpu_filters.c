@@ -1,3 +1,8 @@
+/*
+ * CPU filters module: implements CPU grayscale and box-blur processing over
+ * RGB24 Frame data. Pipeline runners call this when filter mode selects CPU
+ * processing, and all frame memory remains owned by the core frame module.
+ */
 #include "cpu/cpu_filters.h"
 
 #include <string.h>

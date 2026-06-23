@@ -1,3 +1,8 @@
+/*
+ * Hardware video writer stub module: preserves the NVENC writer API when
+ * hardware video support is disabled. It lets non-hardware builds link cleanly
+ * while returning explicit runtime errors for annotated hardware output.
+ */
 #include "video/video_hw_writer.h"
 
 #include <string.h>

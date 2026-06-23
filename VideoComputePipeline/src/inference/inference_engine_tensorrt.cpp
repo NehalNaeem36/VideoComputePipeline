@@ -1,3 +1,9 @@
+/*
+ * TensorRT inference engine module: implements the opaque C inference API with
+ * CUDA streams, TensorRT execution contexts, preprocess buffers, and YOLO
+ * postprocess integration. Detection runners pass CPU NV12 or CUDA NV12 frames
+ * here and receive compact DetectionResult data.
+ */
 #include "inference/inference_engine.h"
 
 #include "cuda_preprocess.h"

@@ -1,3 +1,8 @@
+/*
+ * Matrix report module: reads benchmark CSV files and summarizes CPU/GPU
+ * performance comparisons. It stays downstream of pipeline execution and does
+ * not participate in frame processing.
+ */
 #include "benchmark/matrix_report.h"
 
 #include <stdio.h>

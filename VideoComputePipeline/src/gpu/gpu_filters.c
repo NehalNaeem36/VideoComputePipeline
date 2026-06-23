@@ -1,3 +1,8 @@
+/*
+ * GPU filters module: runs OpenCL grayscale and blur kernels over RGB24 frames.
+ * It owns GPU filter execution while reusing OpenCL context/program helpers and
+ * returns results to pipeline-managed Frame buffers.
+ */
 #include "gpu/gpu_filters.h"
 #include "benchmark/timer.h"
 #include "utils/logger.h"

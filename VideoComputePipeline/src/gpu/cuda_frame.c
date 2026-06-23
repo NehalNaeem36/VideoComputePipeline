@@ -1,3 +1,8 @@
+/*
+ * CUDA frame module: describes GPU-resident NV12 frame metadata without owning
+ * FFmpeg or CUDA APIs in the public C interface. Hardware video, CUDA overlay,
+ * and TensorRT inference share this structure to avoid raw CPU frame copies.
+ */
 #include "gpu/cuda_frame.h"
 
 #include <string.h>

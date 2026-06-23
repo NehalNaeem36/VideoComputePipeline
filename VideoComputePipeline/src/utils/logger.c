@@ -1,3 +1,8 @@
+/*
+ * Logger module: provides simple leveled logging for pipeline, video, GPU, and
+ * inference modules. It keeps user-facing status and error messages consistent
+ * without coupling modules to a larger logging framework.
+ */
 #include "utils/logger.h"
 
 #include <stdarg.h>

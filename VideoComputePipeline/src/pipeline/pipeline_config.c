@@ -1,3 +1,8 @@
+/*
+ * Pipeline config module: owns command-line parsing, defaults, validation, and
+ * task-aware configuration summaries. main.c builds a PipelineConfig here before
+ * handing execution to the pipeline runner.
+ */
 #include "pipeline/pipeline_config.h"
 
 #include <errno.h>

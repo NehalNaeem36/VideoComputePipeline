@@ -1,3 +1,8 @@
+/*
+ * Detection result module: manages reusable per-frame detection containers.
+ * Inference/postprocess fills these results, detection writers stream them, and
+ * pipeline runners clear/reuse them to keep memory bounded.
+ */
 #include "inference/detection_result.h"
 
 #include <stdlib.h>

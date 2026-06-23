@@ -1,3 +1,8 @@
+/*
+ * CUDA preprocess module: converts NV12 frames to TensorRT NCHW input tensors
+ * with letterbox resize, color conversion, and normalization. TensorRT inference
+ * calls these kernels for both CPU-uploaded and GPU-resident frames.
+ */
 #include "cuda_preprocess.h"
 
 #include <math.h>

@@ -1,3 +1,8 @@
+/*
+ * Pipeline execution plan module: chooses detection batch size, in-flight work,
+ * transfer behavior, and TensorRT context usage from config, video metadata,
+ * inference capability, and hardware profile data.
+ */
 #include "pipeline/pipeline_execution_plan.h"
 
 #include <stdio.h>

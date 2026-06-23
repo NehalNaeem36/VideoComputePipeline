@@ -1,3 +1,8 @@
+/*
+ * Video writer module: encodes CPU RGB24 frames to output video through FFmpeg.
+ * The filter pipeline uses it after CPU/OpenCL processing; hardware detection
+ * uses the separate NVENC GPU-frame writer instead.
+ */
 #include "video/video_writer.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"

@@ -1,3 +1,8 @@
+/*
+ * Benchmark module: records per-frame timing rows and aggregate wall-clock
+ * metrics. Pipeline runners feed FrameTiming data here after processing,
+ * while report modules consume the CSV output for summaries.
+ */
 #include "benchmark/benchmark.h"
 #include "utils/file_utils.h"
 

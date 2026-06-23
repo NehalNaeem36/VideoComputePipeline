@@ -1,3 +1,8 @@
+/*
+ * Hardware video writer module: sends GPU-resident NV12 frames to FFmpeg/NVENC
+ * and muxes annotated output video. It is used only by the hardware detection
+ * path after CUDA overlay has modified the frame in place.
+ */
 #include "video/video_hw_writer.h"
 
 #include "utils/file_utils.h"

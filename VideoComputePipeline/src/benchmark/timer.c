@@ -1,3 +1,8 @@
+/*
+ * Timer module: provides small high-resolution timing helpers used by pipeline,
+ * benchmark, video, and inference stages. It owns timing mechanics so other
+ * modules only measure stage boundaries.
+ */
 #include "benchmark/timer.h"
 
 void timer_start(Timer *timer) {

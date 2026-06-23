@@ -1,3 +1,8 @@
+/*
+ * Frame pool module: preallocates reusable CPU Frame objects to keep heap growth
+ * bounded during long video runs. Pipeline stages acquire/release frames through
+ * this pool instead of allocating per frame.
+ */
 #include "pipeline/frame_pool.h"
 
 #include <stdlib.h>

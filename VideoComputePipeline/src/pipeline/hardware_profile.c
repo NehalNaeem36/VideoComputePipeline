@@ -1,3 +1,8 @@
+/*
+ * Hardware profile module: queries CUDA device capabilities, VRAM availability,
+ * and transfer bandwidth for execution planning. Detection planners use this
+ * information to choose batch, in-flight, and inference-context settings.
+ */
 #include "pipeline/hardware_profile.h"
 
 #include <stdio.h>

@@ -1,3 +1,7 @@
+/*
+ * UI entry module: starts the Dear ImGui desktop wrapper process. It delegates
+ * all application state, rendering, and subprocess control to UiApp.
+ */
 #include "ui_app.h"
 
 #include <exception>
