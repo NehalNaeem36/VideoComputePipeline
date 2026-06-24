@@ -78,6 +78,13 @@ std::string resolve_path(const std::string &baseDirectory, const std::string &pa
     return (std::filesystem::u8path(baseDirectory) / p).lexically_normal().u8string();
 }
 
+std::string parent_directory(const std::string &path) {
+    if (path.empty()) {
+        return {};
+    }
+    return std::filesystem::u8path(path).parent_path().u8string();
+}
+
 std::string format_bytes(std::uint64_t bytes) {
     static const char *units[] = {"B", "KB", "MB", "GB", "TB"};
     double value = (double)bytes;

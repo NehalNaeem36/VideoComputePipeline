@@ -1159,7 +1159,8 @@ static int run_detection_pipeline_hw(const PipelineConfig *config) {
         writer_opened = 1;
     }
 
-    log_info /* module: utils/logger */ ("hardware detection pipeline: decoder=nvdec inference=tensorrt draw_boxes=%s encoder=%s",
+    log_info /* module: utils/logger */ ("hardware detection pipeline: decoder=nvdec runtime=%s draw_boxes=%s encoder=%s",
+             inference_runtime_to_string /* module: inference/backend_registry */ (config->runtime),
              config->draw_boxes ? "true" : "false",
              config->draw_boxes ? config->encoder_name : "none");
     timer_start /* module: benchmark/timer */ (&wall_timer);
@@ -1310,6 +1311,10 @@ static int run_detection_pipeline(const PipelineConfig *config) {
     if (config->decoder_mode == VIDEO_DECODER_NVDEC) {
         const int hw_result = run_detection_pipeline_hw /* module: pipeline/pipeline_runner */ (config);
         if (hw_result == 0 || config->decoder_fallback == DECODER_FALLBACK_NONE) {
+            return hw_result;
+        }
+        if (config->draw_boxes) {
+            log_error /* module: utils/logger */ ("NVDEC detection path failed and annotated output requires the hardware path; rerun without --draw-boxes for CSV-only CPU fallback");
             return hw_result;
         }
         log_warn /* module: utils/logger */ ("NVDEC detection path failed; falling back to CPU decoder");

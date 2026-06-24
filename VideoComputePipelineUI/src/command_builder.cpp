@@ -25,6 +25,7 @@ const std::vector<const char *> kPresetNames = {
 const std::vector<const char *> kTaskNames = {"filter", "detect"};
 const std::vector<const char *> kDecoderNames = {"cpu", "nvdec"};
 const std::vector<const char *> kEncoderNames = {"none", "h264_nvenc", "libx264", "libx264rgb", "mpeg4"};
+const std::vector<const char *> kRuntimeNames = {"tensorrt", "onnxruntime", "torchscript", "auto"};
 const std::vector<const char *> kPrecisionNames = {"fp32", "fp16"};
 const std::vector<const char *> kOutputFormatNames = {"auto", "mp4", "mkv"};
 const std::vector<const char *> kFilterNames = {"grayscale", "blur3x3", "blur5x5", "blur9x9", "blur13x13"};
@@ -91,6 +92,7 @@ const std::vector<const char *> &preset_names() { return kPresetNames; }
 const std::vector<const char *> &task_names() { return kTaskNames; }
 const std::vector<const char *> &decoder_names() { return kDecoderNames; }
 const std::vector<const char *> &encoder_names() { return kEncoderNames; }
+const std::vector<const char *> &runtime_names() { return kRuntimeNames; }
 const std::vector<const char *> &precision_names() { return kPrecisionNames; }
 const std::vector<const char *> &output_format_names() { return kOutputFormatNames; }
 const std::vector<const char *> &filter_names() { return kFilterNames; }
@@ -101,6 +103,15 @@ const std::vector<const char *> &ffmpeg_log_level_names() { return kFfmpegLogLev
 
 const char *to_cli(Task value) { return value == Task::Detect ? "detect" : "filter"; }
 const char *to_cli(Decoder value) { return value == Decoder::Nvdec ? "nvdec" : "cpu"; }
+const char *to_cli(Runtime value) {
+    switch (value) {
+        case Runtime::OnnxRuntime: return "onnxruntime";
+        case Runtime::TorchScript: return "torchscript";
+        case Runtime::Auto: return "auto";
+        case Runtime::TensorRt:
+        default: return "tensorrt";
+    }
+}
 const char *to_cli(Precision value) { return value == Precision::Fp16 ? "fp16" : "fp32"; }
 const char *to_cli(OutputFormat value) {
     switch (value) {
@@ -150,13 +161,14 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
     config.pipelineExePath = "..\\VideoComputePipeline\\build-win-cuda12\\Release\\VideoComputePipeline.exe";
     config.workingDirectory = "..\\VideoComputePipeline";
     config.inputVideoPath = "data\\input\\people_4k_30min_stream_test.mp4";
-    config.modelPath = "models\\yolov5s_trt11.engine";
+    config.modelPath = "models\\yolov5s.onnx";
     config.labelsPath = "models\\coco.names";
     config.outputVideoPath = "data\\output\\people_annotated_live.mkv";
     config.detectionsCsvPath = "benchmarks\\people_detections.csv";
     config.benchmarkCsvPath = "benchmarks\\people_full_inference.csv";
     config.ffmpegLogLevel = "error";
     config.task = Task::Detect;
+    config.runtime = Runtime::OnnxRuntime;
     config.filter = Filter::Grayscale;
     config.processMode = ProcessMode::Gpu;
     config.confidence = 0.25f;
@@ -187,6 +199,8 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
         case Preset::PeopleDetectionCsvOnly:
             config.decoder = Decoder::Cpu;
             config.encoder = Encoder::None;
+            config.runtime = Runtime::OnnxRuntime;
+            config.modelPath = "models\\yolov5s.onnx";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Auto;
             config.drawBoxes = false;
@@ -195,6 +209,8 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
         case Preset::PeopleDetectionAnnotatedVideo:
             config.decoder = Decoder::Nvdec;
             config.encoder = Encoder::H264Nvenc;
+            config.runtime = Runtime::OnnxRuntime;
+            config.modelPath = "models\\yolov5s.onnx";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Mkv;
             config.drawBoxes = true;
@@ -206,6 +222,8 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
         case Preset::FastGpuAnnotatedVideo:
             config.decoder = Decoder::Nvdec;
             config.encoder = Encoder::H264Nvenc;
+            config.runtime = Runtime::TensorRt;
+            config.modelPath = "models\\yolov5s_trt11.engine";
             config.precision = Precision::Fp16;
             config.outputFormat = OutputFormat::Mkv;
             config.drawBoxes = true;
@@ -218,6 +236,8 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
         case Preset::SafeCpuDetection:
             config.decoder = Decoder::Cpu;
             config.encoder = Encoder::None;
+            config.runtime = Runtime::OnnxRuntime;
+            config.modelPath = "models\\yolov5s.onnx";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Auto;
             config.drawBoxes = false;
@@ -227,6 +247,8 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.decoder = Decoder::Nvdec;
             config.decoderFallbackCpu = false;
             config.encoder = Encoder::H264Nvenc;
+            config.runtime = Runtime::TensorRt;
+            config.modelPath = "models\\yolov5s_trt11.engine";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Mkv;
             config.drawBoxes = true;
@@ -259,10 +281,28 @@ std::vector<std::string> validate_config(const PipelineRunConfig &config) {
     }
     if (config.task == Task::Detect) {
         if (!file_exists(resolve_path(config.workingDirectory, config.modelPath))) {
-            issues.emplace_back("TensorRT model engine was not found relative to the pipeline working directory.");
+            issues.emplace_back("Model file was not found relative to the pipeline working directory.");
         }
         if (!file_exists(resolve_path(config.workingDirectory, config.labelsPath))) {
             issues.emplace_back("Labels file was not found relative to the pipeline working directory.");
+        }
+        if (config.benchmarkEnabled && config.detectionsCsvPath == config.benchmarkCsvPath) {
+            issues.emplace_back("Detections CSV and benchmark CSV should use different paths.");
+        }
+        const std::string exeDir = parent_directory(config.pipelineExePath);
+        const char *ffmpegDlls[] = {
+            "avcodec-62.dll",
+            "avformat-62.dll",
+            "avutil-60.dll",
+            "swscale-9.dll",
+            "swresample-6.dll",
+            "avdevice-62.dll",
+            "avfilter-11.dll",
+        };
+        for (const char *dll : ffmpegDlls) {
+            if (!file_exists(resolve_path(exeDir, dll))) {
+                issues.emplace_back(std::string("Expected vcpkg FFmpeg DLL beside the pipeline executable is missing: ") + dll);
+            }
         }
     }
     return issues;
@@ -354,7 +394,7 @@ BuiltCommand build_command(const PipelineRunConfig &config) {
         add_arg(command.args, "--confidence", config.confidence);
         add_arg(command.args, "--iou-threshold", config.iouThreshold);
         add_arg(command.args, "--input-size", config.inputSize);
-        add_arg(command.args, "--inference-backend", "tensorrt");
+        add_arg(command.args, "--runtime", to_cli(config.runtime));
         add_arg(command.args, "--precision", to_cli(config.precision));
         if (config.autoTune) {
             command.args.emplace_back("--auto-tune");

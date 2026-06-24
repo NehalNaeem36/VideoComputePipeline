@@ -108,6 +108,26 @@ std::string lower_copy(std::string value) {
     return value;
 }
 
+std::vector<std::string> missing_ffmpeg_runtime_dlls(const PipelineRunConfig &config) {
+    const std::string exeDir = parent_directory(config.pipelineExePath);
+    const char *dlls[] = {
+        "avcodec-62.dll",
+        "avformat-62.dll",
+        "avutil-60.dll",
+        "swscale-9.dll",
+        "swresample-6.dll",
+        "avdevice-62.dll",
+        "avfilter-11.dll",
+    };
+    std::vector<std::string> missing;
+    for (const char *dll : dlls) {
+        if (!file_exists(resolve_path(exeDir, dll))) {
+            missing.emplace_back(dll);
+        }
+    }
+    return missing;
+}
+
 }  // namespace
 
 int UiApp::run() {
@@ -234,6 +254,13 @@ void UiApp::render_run_config_tab() {
     render_tooltip("Path to VideoComputePipeline.exe. Use build-win-cuda12 or build-win-cuda12-onnx for CUDA, TensorRT, NVDEC, and NVENC. build-win is usually the MinGW/OpenCL build.");
     if (input_text_string("Working directory", config_.workingDirectory)) mark_custom();
     render_tooltip("Subprocess working directory. Relative input, model, label, output, benchmark, and detection paths are resolved from the VideoComputePipeline folder.");
+    const std::vector<std::string> missingFfmpegDlls = missing_ffmpeg_runtime_dlls(config_);
+    if (missingFfmpegDlls.empty()) {
+        ImGui::TextColored(ImVec4(0.40f, 0.90f, 0.55f, 1.0f), "FFmpeg runtime: vcpkg DLLs found beside selected executable");
+    } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.24f, 1.0f), "FFmpeg runtime: %zu expected DLL(s) missing beside selected executable", missingFfmpegDlls.size());
+    }
+    render_tooltip("MSVC/CUDA runs should load vcpkg FFmpeg DLLs from the same folder as VideoComputePipeline.exe. This avoids accidentally loading MSYS2 or another FFmpeg from PATH.");
 
     ImGui::SeparatorText("Task");
     int taskIndex = (int)config_.task;
@@ -260,6 +287,15 @@ void UiApp::render_run_config_tab() {
     ImGui::EndDisabled();
     render_tooltip("Allows CPU decode if NVDEC cannot open the input. Disable this when you want NVDEC failures to be visible.");
 
+    int runtimeIndex = (int)config_.runtime;
+    ImGui::BeginDisabled(!detectMode);
+    if (combo_from_vector("Runtime", runtimeIndex, runtime_names())) {
+        config_.runtime = (Runtime)runtimeIndex;
+        mark_custom();
+    }
+    ImGui::EndDisabled();
+    render_tooltip("Inference runtime passed as --runtime. ONNX Runtime uses .onnx models. TensorRT uses .engine/.plan models. TorchScript requires a LibTorch-enabled build.");
+
     int encoderIndex = (int)config_.encoder;
     ImGui::BeginDisabled(profileOnly || (detectMode && !annotatedDetection));
     if (combo_from_vector("Encoder", encoderIndex, encoder_names())) {
@@ -276,7 +312,7 @@ void UiApp::render_run_config_tab() {
         mark_custom();
     }
     ImGui::EndDisabled();
-    render_tooltip("Runtime precision label. The actual TensorRT engine input tensor type still determines whether FP32 or FP16 preprocessing is used.");
+    render_tooltip("Runtime precision label. The actual model input tensor type still determines whether FP32 or FP16 preprocessing is used.");
 
     int outputFormatIndex = (int)config_.outputFormat;
     ImGui::BeginDisabled(profileOnly || (detectMode && !annotatedDetection));
@@ -307,8 +343,8 @@ void UiApp::render_run_config_tab() {
 
     ImGui::SeparatorText("Detection Model");
     ImGui::BeginDisabled(!detectMode);
-    if (input_text_string("TensorRT model", config_.modelPath)) mark_custom();
-    render_tooltip("TensorRT engine file. It must match the model family, input size, GPU/runtime support, and expected YOLO output layout.");
+    if (input_text_string("Model", config_.modelPath)) mark_custom();
+    render_tooltip("Model file for the selected runtime: .engine/.plan for TensorRT, .onnx for ONNX Runtime, or TorchScript .pt/.ts when LibTorch is enabled. It must match model family, input size, and YOLO output layout.");
     if (input_text_string("Labels file", config_.labelsPath)) mark_custom();
     render_tooltip("Class labels file. One label per line; class IDs are the line numbers starting at 0.");
     ImGui::EndDisabled();
@@ -563,10 +599,21 @@ void UiApp::render_logs_tab() {
     }
     ImGui::SameLine();
     if (ImGui::Button("Save logs")) {
-        std::ofstream out("VideoComputePipelineUI_logs.txt");
-        for (const auto &line : runner_.logs_snapshot()) {
-            out << line.text << '\n';
+        const std::string logPath = resolve_path(executable_directory(), "VideoComputePipelineUI_logs.txt");
+        const auto lines = runner_.logs_snapshot();
+        std::ofstream out(std::filesystem::u8path(logPath), std::ios::out | std::ios::trunc);
+        if (!out) {
+            logSaveStatus_ = "Failed to save logs: " + logPath;
+        } else {
+            for (const auto &line : lines) {
+                out << line.text << '\n';
+            }
+            out.close();
+            logSaveStatus_ = "Saved " + std::to_string(lines.size()) + " log lines to " + logPath;
         }
+    }
+    if (!logSaveStatus_.empty()) {
+        ImGui::TextWrapped("%s", logSaveStatus_.c_str());
     }
 
     ImGui::BeginChild("log-window", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
@@ -608,31 +655,35 @@ void UiApp::render_logs_tab() {
 
 void UiApp::render_help_tab() {
     help_section("Pipeline modes",
-                 "Filter mode changes pixels and writes a processed video. Detection mode runs TensorRT object detection, writes detections CSV by default, and writes annotated video only when Draw boxes and Output video are enabled.");
+                 "Filter mode changes pixels and writes a processed video. Detection mode runs the selected inference runtime, writes detections CSV by default, and writes annotated video only when Draw boxes and Output video are enabled.");
     help_section("CSV-only detection",
                  "CSV-only detection uses the model and labels paths, writes detections and benchmark CSV files, and does not need an encoder or output video path. This is the simplest mode for analytics-only inference.");
     help_section("Annotated detection",
                  "Annotated detection requires Draw boxes, an output path, and normally h264_nvenc. MKV is recommended for long hardware-video runs because it is more tolerant while writing and after interrupted runs.");
     help_section("CPU decode vs NVDEC",
                  "CPU decoding produces system-memory NV12 frames and uploads them to CUDA. NVDEC keeps decoded frames GPU-resident, avoiding raw-frame upload and enabling GPU overlay plus NVENC output.");
+    help_section("FFmpeg runtime DLLs",
+                 "The MSVC/CUDA build must use the vcpkg FFmpeg DLLs copied beside VideoComputePipeline.exe. The UI validates avcodec, avformat, avutil, swscale, swresample, avdevice, and avfilter DLLs in the executable directory so launches do not depend on PATH or accidentally load MSYS2 FFmpeg.");
+    help_section("Inference runtimes",
+                 "TensorRT loads .engine or .plan files and supports multi-context execution. ONNX Runtime loads .onnx files and can use CUDA I/O binding. TorchScript is listed for future LibTorch builds and is unavailable unless the pipeline is rebuilt with ENABLE_LIBTORCH=ON.");
     help_section("Execution plan modes",
-                 "Mode 0 is single-frame compatibility. Mode 1 enables batched transfers around sequential inference. Mode 2 overlaps pipeline stages while inference remains sequential. Mode 3 overlaps stages and uses parallel TensorRT execution contexts when the GPU and engine allow it.");
-    help_section("Batch size vs TensorRT batch",
-                 "The UI batch size is a scheduling and transfer batch. It can help uploads, downloads, and stage overlap even if the TensorRT engine is static batch-1. True TensorRT batch enqueue is used only when the engine reports support.");
+                 "Mode 0 is single-frame compatibility. Mode 1 enables batched transfers around sequential inference. Mode 2 overlaps pipeline stages while inference remains sequential. Mode 3 overlaps stages and uses parallel inference contexts when the runtime and GPU allow it.");
+    help_section("Batch size vs backend batch",
+                 "The UI batch size is a scheduling and transfer batch. It can help uploads, downloads, and stage overlap even if the selected model/runtime executes one frame at a time. True backend batch execution is used only when the runtime reports support.");
     help_section("Parallel inference",
-                 "Parallel inference means multiple TensorRT execution contexts. The pipeline never shares one execution context across concurrent streams. If parallel contexts are unsupported or not useful, auto mode falls back cleanly.");
+                 "Parallel inference means multiple runtime-owned contexts or sessions. TensorRT supports multiple execution contexts in this pipeline; ONNX Runtime currently uses one session here. If parallel contexts are unsupported or not useful, auto mode falls back cleanly.");
     help_section("VRAM budgeting",
-                 "Auto tune estimates video frame memory, TensorRT engine memory, active batch memory, and reserved GPU memory. VRAM budget ratio limits how much total GPU memory the planner may consume; reserve MB keeps memory free for the OS, driver, desktop, and other GPU work.");
-    help_section("TensorRT, models, and labels",
-                 "Detection needs a TensorRT engine file and a labels file. The input size must match the engine. The precision selector is a runtime label; the engine tensor type still controls FP32 or FP16 preprocessing.");
+                 "Auto tune estimates video frame memory, model/backend memory, active batch memory, and reserved GPU memory. VRAM budget ratio limits how much total GPU memory the planner may consume; reserve MB keeps memory free for the OS, driver, desktop, and other GPU work.");
+    help_section("Models and labels",
+                 "Detection needs a model file and a labels file. TensorRT uses .engine/.plan, ONNX Runtime uses .onnx, and TorchScript uses serialized TorchScript files. The input size must match the model. The precision selector is a runtime label; the model tensor type still controls FP32 or FP16 preprocessing.");
     help_section("Confidence, IoU, and input size",
                  "Confidence filters weak detections. IoU controls overlap suppression. Input size is the model resolution; the whole frame is letterboxed into that resolution, not cropped.");
     help_section("Class filtering",
                  "By default detection keeps every class the model can output. Select one or more labels in the Run Config tab to emit class IDs and restrict both CSV and annotated output.");
     help_section("Recommended presets",
-                 "Use CSV Only for analytics and easiest validation. Use Safe CPU Detection when CUDA video is unavailable. Use Annotated Video for normal NVDEC/TensorRT/NVENC output. Use Fast GPU or Stress Test when measuring long-run hardware throughput.");
+                 "Use CSV Only for analytics and easiest validation. Use Safe CPU Detection when CUDA video is unavailable. Use Annotated Video for normal NVDEC/runtime/NVENC output. Use Fast GPU or Stress Test when measuring long-run hardware throughput.");
     help_section("Common errors",
-                 "Check the working directory, build-win-cuda12-onnx/build-win-cuda12 vs build-win executable choice, missing TensorRT or FFmpeg DLLs, missing model or labels file, engine/input-size mismatch, unavailable NVDEC/NVENC, locked output files, and MP4 files that are not playable until finalized.");
+                 "Check the working directory, build-win-cuda12 Release executable choice, missing vcpkg FFmpeg DLLs beside the EXE, missing TensorRT or ONNX Runtime DLLs, missing model or labels file, model/input-size mismatch, unavailable NVDEC/NVENC, locked output files, and MP4 files that are not playable until finalized.");
 }
 
 void UiApp::render_tooltip(const char *text) {
@@ -674,9 +725,8 @@ void UiApp::normalize_default_paths() {
 
             const fs::path candidates[] = {
                 pipelineDir / "build-win-cuda12" / "Release" / "VideoComputePipeline.exe",
-                pipelineDir / "build-win-cuda12-onnx" / "Release" / "VideoComputePipeline.exe",
-                pipelineDir / "build-win" / "bin" / "VideoComputePipeline.exe",
                 pipelineDir / "build-vs" / "Release" / "VideoComputePipeline.exe",
+                pipelineDir / "build-win" / "bin" / "VideoComputePipeline.exe",
             };
             for (const fs::path &candidate : candidates) {
                 if (fs::is_regular_file(candidate)) {

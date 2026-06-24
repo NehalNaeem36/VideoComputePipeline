@@ -29,22 +29,40 @@ Run the UI from `E:\wAI\first_task\VideoComputePipelineUI` so the default relati
 ..\VideoComputePipeline
 ```
 
-If your pipeline binary is in `build-win-cuda12-onnx` or `build-win-cuda12`, edit the Pipeline exe field in the Run Config tab.
+Use the CUDA 12 pipeline executable for TensorRT, ONNX Runtime, NVDEC, CUDA overlay, and NVENC:
+
+```text
+..\VideoComputePipeline\build-win-cuda12\Release\VideoComputePipeline.exe
+```
+
+The pipeline build is expected to copy the vcpkg FFmpeg DLLs beside the executable. The UI checks for:
+
+```text
+avcodec-62.dll
+avformat-62.dll
+avutil-60.dll
+swscale-9.dll
+swresample-6.dll
+avdevice-62.dll
+avfilter-11.dll
+```
+
+This keeps launches independent of global `PATH` and avoids accidentally loading MSYS2 FFmpeg DLLs.
 
 ## Presets
 
-- People Detection - CSV Only: CPU decode, TensorRT detection, detections CSV, no output video.
-- People Detection - Annotated Video: NVDEC decode, TensorRT detection, CUDA boxes, NVENC MKV output.
+- People Detection - CSV Only: CPU decode, ONNX Runtime detection, detections CSV, no output video.
+- People Detection - Annotated Video: NVDEC decode, ONNX Runtime detection, CUDA boxes, NVENC MKV output.
 - Fast GPU Annotated Video: same as annotated video, with FP16 selected.
 - Safe CPU Detection: CPU decode, FP32, small max-frame smoke default.
-- NVDEC/NVENC Stress Test: hardware decode/encode, no CPU decoder fallback.
+- NVDEC/NVENC Stress Test: TensorRT hardware decode/encode, no CPU decoder fallback.
 - Custom: selected automatically when you edit fields manually.
 
 Detection presets load the labels file into a searchable class list. Leaving the class selection empty detects every class. Selecting one or more labels makes the UI emit `--class-ids`, so CSV output and annotated boxes contain only the selected classes.
 
 ## Tabs
 
-- Run Config: presets, paths, model/labels, class selection, decoder/encoder, thresholds, command preview, Run/Stop.
+- Run Config: presets, paths, runtime, model/labels, class selection, decoder/encoder, thresholds, command preview, Run/Stop.
 - Monitor: process status, elapsed time, parsed frame count, FPS, output size when available.
 - Logs: live stdout/stderr, filtering, highlighting for errors/warnings/TensorRT lines, save/clear.
 - Help: short explanations for pipeline modes and common failures.
@@ -52,3 +70,5 @@ Detection presets load the labels file into a searchable class list. Leaving the
 ## Notes
 
 The pipeline currently emits human-readable progress logs. The UI parses those lines and is ready for future `PROGRESS key=value` output if the pipeline adds it later.
+
+TensorRT uses `.engine` or `.plan` models. ONNX Runtime uses `.onnx` models. TorchScript appears in the runtime selector only for forward compatibility; it requires a pipeline build with `ENABLE_LIBTORCH=ON`.

@@ -73,6 +73,19 @@ function(vcp_copy_runtime_dlls TARGET_NAME)
     endforeach()
 endfunction()
 
+function(vcp_collect_existing_dlls OUT_VAR DLL_DIR)
+    set(VCP_FOUND_DLLS)
+    foreach(VCP_DLL_NAME IN LISTS ARGN)
+        set(VCP_DLL_PATH "${DLL_DIR}/${VCP_DLL_NAME}")
+        if(EXISTS "${VCP_DLL_PATH}")
+            list(APPEND VCP_FOUND_DLLS "${VCP_DLL_PATH}")
+        else()
+            message(WARNING "Expected runtime DLL is missing and will not be copied: ${VCP_DLL_PATH}")
+        endif()
+    endforeach()
+    set(${OUT_VAR} "${VCP_FOUND_DLLS}" PARENT_SCOPE)
+endfunction()
+
 if(ENABLE_HW_VIDEO AND NOT ENABLE_CUDA_INFERENCE)
     message(FATAL_ERROR "ENABLE_HW_VIDEO=ON requires ENABLE_CUDA_INFERENCE=ON")
 endif()
@@ -301,23 +314,48 @@ if(NOT MSVC)
     find_package(PkgConfig QUIET)
 endif()
 
-if(PkgConfig_FOUND AND NOT MSVC)
+if(PkgConfig_FOUND AND NOT MSVC AND NOT FFMPEG_ROOT)
     pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET libavformat libavcodec libavutil libswscale)
 endif()
 
 if(NOT FFMPEG_FOUND)
     if(MSVC)
+        if(NOT FFMPEG_ROOT)
+            message(FATAL_ERROR "MSVC builds require -DFFMPEG_ROOT=C:/vcpkg/installed/x64-windows so FFmpeg headers, import libraries, and runtime DLLs all come from one MSVC-compatible build.")
+        endif()
+        get_filename_component(FFMPEG_ROOT "${FFMPEG_ROOT}" ABSOLUTE)
+        set(FFMPEG_INCLUDE_ROOT "${FFMPEG_ROOT}/include")
+        set(FFMPEG_LIBRARY_ROOT "${FFMPEG_ROOT}/lib")
+        set(FFMPEG_RUNTIME_ROOT "${FFMPEG_ROOT}/bin")
+        vcp_reject_msys_path(FFMPEG_ROOT)
+        vcp_reject_msys_path(FFMPEG_INCLUDE_ROOT)
+        vcp_reject_msys_path(FFMPEG_LIBRARY_ROOT)
+        vcp_reject_msys_path(FFMPEG_RUNTIME_ROOT)
+        if(NOT EXISTS "${FFMPEG_INCLUDE_ROOT}" OR NOT EXISTS "${FFMPEG_LIBRARY_ROOT}" OR NOT EXISTS "${FFMPEG_RUNTIME_ROOT}")
+            message(FATAL_ERROR
+                "FFMPEG_ROOT must contain include, lib, and bin directories.\n"
+                "Configured FFMPEG_ROOT: ${FFMPEG_ROOT}")
+        endif()
         find_path(FFMPEG_INCLUDE_DIR libavformat/avformat.h
-            HINTS
-                "${FFMPEG_ROOT}/include"
-                "$ENV{FFMPEG_ROOT}/include"
-                "C:/vcpkg/installed/x64-windows/include"
+            HINTS "${FFMPEG_INCLUDE_ROOT}"
             NO_DEFAULT_PATH
         )
-        find_library(AVFORMAT_LIBRARY avformat PATHS "${FFMPEG_ROOT}/lib" "$ENV{FFMPEG_ROOT}/lib" "C:/vcpkg/installed/x64-windows/lib" NO_DEFAULT_PATH)
-        find_library(AVCODEC_LIBRARY avcodec PATHS "${FFMPEG_ROOT}/lib" "$ENV{FFMPEG_ROOT}/lib" "C:/vcpkg/installed/x64-windows/lib" NO_DEFAULT_PATH)
-        find_library(AVUTIL_LIBRARY avutil PATHS "${FFMPEG_ROOT}/lib" "$ENV{FFMPEG_ROOT}/lib" "C:/vcpkg/installed/x64-windows/lib" NO_DEFAULT_PATH)
-        find_library(SWSCALE_LIBRARY swscale PATHS "${FFMPEG_ROOT}/lib" "$ENV{FFMPEG_ROOT}/lib" "C:/vcpkg/installed/x64-windows/lib" NO_DEFAULT_PATH)
+        find_library(AVFORMAT_LIBRARY avformat PATHS "${FFMPEG_LIBRARY_ROOT}" NO_DEFAULT_PATH)
+        find_library(AVCODEC_LIBRARY avcodec PATHS "${FFMPEG_LIBRARY_ROOT}" NO_DEFAULT_PATH)
+        find_library(AVUTIL_LIBRARY avutil PATHS "${FFMPEG_LIBRARY_ROOT}" NO_DEFAULT_PATH)
+        find_library(SWSCALE_LIBRARY swscale PATHS "${FFMPEG_LIBRARY_ROOT}" NO_DEFAULT_PATH)
+        find_library(SWRESAMPLE_LIBRARY swresample PATHS "${FFMPEG_LIBRARY_ROOT}" NO_DEFAULT_PATH)
+        find_library(AVDEVICE_LIBRARY avdevice PATHS "${FFMPEG_LIBRARY_ROOT}" NO_DEFAULT_PATH)
+        find_library(AVFILTER_LIBRARY avfilter PATHS "${FFMPEG_LIBRARY_ROOT}" NO_DEFAULT_PATH)
+        vcp_collect_existing_dlls(FFMPEG_RUNTIME_DLLS "${FFMPEG_RUNTIME_ROOT}"
+            avcodec-62.dll
+            avformat-62.dll
+            avutil-60.dll
+            swscale-9.dll
+            swresample-6.dll
+            avdevice-62.dll
+            avfilter-11.dll
+        )
     else()
         find_path(FFMPEG_INCLUDE_DIR libavformat/avformat.h
             HINTS
@@ -342,6 +380,15 @@ if(NOT FFMPEG_FOUND)
     endif()
     if(AVFORMAT_LIBRARY AND AVCODEC_LIBRARY AND AVUTIL_LIBRARY AND SWSCALE_LIBRARY)
         set(FFMPEG_LIBRARIES ${AVFORMAT_LIBRARY} ${AVCODEC_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY})
+        if(SWRESAMPLE_LIBRARY)
+            list(APPEND FFMPEG_LIBRARIES ${SWRESAMPLE_LIBRARY})
+        endif()
+        if(AVDEVICE_LIBRARY)
+            list(APPEND FFMPEG_LIBRARIES ${AVDEVICE_LIBRARY})
+        endif()
+        if(AVFILTER_LIBRARY)
+            list(APPEND FFMPEG_LIBRARIES ${AVFILTER_LIBRARY})
+        endif()
     else()
         set(FFMPEG_LIBRARIES avformat avcodec avutil swscale)
     endif()
@@ -460,6 +507,9 @@ target_link_libraries(VideoComputePipeline PRIVATE vcp_core)
 if(ENABLE_CUDA_INFERENCE)
     set_target_properties(VideoComputePipeline PROPERTIES LINKER_LANGUAGE CXX)
 endif()
+if(MSVC AND FFMPEG_RUNTIME_DLLS)
+    vcp_copy_runtime_dlls(VideoComputePipeline ${FFMPEG_RUNTIME_DLLS})
+endif()
 if(ENABLE_CUDA_INFERENCE AND ENABLE_TENSORRT)
     vcp_copy_runtime_dlls(VideoComputePipeline
         "${TENSORRT_NVINFER_DLL}"
@@ -486,6 +536,9 @@ if(BUILD_TESTING)
             set_target_properties(${TEST_NAME} PROPERTIES LINKER_LANGUAGE CXX)
             target_compile_definitions(${TEST_NAME} PRIVATE VCP_TEST_TENSORRT_ENGINE="${VCP_TEST_TENSORRT_ENGINE}")
         endif()
+        if(MSVC AND FFMPEG_RUNTIME_DLLS)
+            vcp_copy_runtime_dlls(${TEST_NAME} ${FFMPEG_RUNTIME_DLLS})
+        endif()
         if(ENABLE_CUDA_INFERENCE AND ENABLE_TENSORRT)
             vcp_copy_runtime_dlls(${TEST_NAME}
                 "${TENSORRT_NVINFER_DLL}"
@@ -507,6 +560,13 @@ endif()
 message(STATUS "Project: ${PROJECT_NAME}")
 message(STATUS "C standard: C11")
 message(STATUS "FFmpeg found via pkg-config: ${FFMPEG_FOUND}")
+if(MSVC)
+    message(STATUS "FFmpeg root: ${FFMPEG_ROOT}")
+    message(STATUS "FFmpeg include: ${FFMPEG_INCLUDE_DIR}")
+    message(STATUS "FFmpeg lib dir: ${FFMPEG_LIBRARY_ROOT}")
+    message(STATUS "FFmpeg runtime dir: ${FFMPEG_RUNTIME_ROOT}")
+    message(STATUS "FFmpeg runtime DLLs copied: ${FFMPEG_RUNTIME_DLLS}")
+endif()
 message(STATUS "OpenCL found: ${OpenCL_FOUND}")
 message(STATUS "CUDA inference enabled: ${ENABLE_CUDA_INFERENCE}")
 message(STATUS "Hardware video enabled: ${ENABLE_HW_VIDEO}")

@@ -145,18 +145,26 @@ extern "C" int video_hw_reader_open(VideoHWReader *reader, const char *path, int
 
     AVStream *stream = format_ctx->streams[stream_index];
     const AVCodec *decoder = avcodec_find_decoder(stream->codecpar->codec_id);
-    if (!decoder || !decoder_supports_cuda(decoder)) {
+    if (!decoder) {
         avformat_close_input(&format_ctx);
-        g_last_error = "selected decoder does not expose CUDA/NVDEC hardware frames";
+        const char *codec_name = avcodec_get_name(stream->codecpar->codec_id);
+        g_last_error = std::string("no decoder available for codec ") + (codec_name ? codec_name : "unknown");
         return -1;
+    }
+    if (!decoder_supports_cuda(decoder)) {
+        log_warn("generic decoder %s does not advertise CUDA frames; attempting CUDA hw_device path anyway", decoder->name ? decoder->name : "unknown");
     }
 
     AVBufferRef *hw_device_ctx = nullptr;
     result = av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, AV_CUDA_USE_PRIMARY_CONTEXT);
     if (result < 0) {
-        avformat_close_input(&format_ctx);
-        set_av_error("failed to create CUDA hardware device", result);
-        return -1;
+        log_warn("failed to create CUDA hardware device with primary context; retrying with a private FFmpeg CUDA context");
+        result = av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
+        if (result < 0) {
+            avformat_close_input(&format_ctx);
+            set_av_error("failed to create CUDA hardware device", result);
+            return -1;
+        }
     }
 
     AVCodecContext *codec_ctx = avcodec_alloc_context3(decoder);

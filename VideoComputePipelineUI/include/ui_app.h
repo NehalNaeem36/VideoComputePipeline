@@ -35,6 +35,7 @@ private:
     std::string loadedLabelsPath_;
     std::string classSearch_;
     std::string logFilter_;
+    std::string logSaveStatus_;
     bool autoScroll_ = true;
     bool validationEnabled_ = true;
     bool logShowErrors_ = true;

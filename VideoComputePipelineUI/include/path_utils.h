@@ -12,6 +12,7 @@ bool file_exists(const std::string &path);
 bool directory_exists(const std::string &path);
 std::uint64_t file_size_bytes(const std::string &path);
 std::string resolve_path(const std::string &baseDirectory, const std::string &path);
+std::string parent_directory(const std::string &path);
 std::string format_bytes(std::uint64_t bytes);
 std::string executable_directory();
 

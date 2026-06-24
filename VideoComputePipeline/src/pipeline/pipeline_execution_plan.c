@@ -1,6 +1,6 @@
 /*
  * Pipeline execution plan module: chooses detection batch size, in-flight work,
- * transfer behavior, and TensorRT context usage from config, video metadata,
+ * transfer behavior, and backend inference context usage from config, video metadata,
  * inference capability, and hardware profile data.
  */
 #include "pipeline/pipeline_execution_plan.h"
@@ -129,11 +129,11 @@ int pipeline_execution_plan_build(PipelineExecutionPlan *plan,
 
     if (capability && best > capability->max_batch_size) {
         best = capability->max_batch_size > 0 ? capability->max_batch_size : 1;
-        snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "limited by TensorRT engine batch capability");
+        snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "limited by selected runtime batch capability");
     } else if (!config->enable_auto_tune && config->batch_size_mode != BATCH_SETTING_MANUAL) {
         snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "auto-tune disabled; preserving single-frame behavior");
     } else if (!plan->supports_true_tensorrt_batching && best > 1) {
-        snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "engine uses batch-1; FrameBatch will loop per frame");
+        snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "selected runtime/model uses batch-1; FrameBatch will loop per frame");
     } else {
         snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "selected by execution planner");
     }
@@ -192,7 +192,7 @@ int pipeline_execution_plan_build(PipelineExecutionPlan *plan,
     }
 
     if (config->parallel_inference_mode == PIPELINE_FEATURE_ON && !plan->parallel_inference_enabled) {
-        snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "parallel inference requested but unsupported by current engine/resources");
+        snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "parallel inference requested but unsupported by current runtime/resources");
     }
 
     if (plan->parallel_inference_enabled) {
@@ -227,7 +227,7 @@ void pipeline_execution_plan_print(const PipelineExecutionPlan *plan) {
     printf("  use_pinned_memory: %s\n", plan->use_pinned_memory ? "true" : "false");
     printf("  use_contiguous_batch_buffers: %s\n", plan->use_contiguous_batch_buffers ? "true" : "false");
     printf("  use_async_copies: %s\n", plan->use_async_copies ? "true" : "false");
-    printf("  supports_true_tensorrt_batching: %s\n", plan->supports_true_tensorrt_batching ? "true" : "false");
+    printf("  supports_true_backend_batching: %s\n", plan->supports_true_tensorrt_batching ? "true" : "false");
     printf("  transfer_batching_enabled: %s\n", plan->transfer_batching_enabled ? "true" : "false");
     printf("  pipeline_overlap_enabled: %s\n", plan->pipeline_overlap_enabled ? "true" : "false");
     printf("  parallel_inference_enabled: %s\n", plan->parallel_inference_enabled ? "true" : "false");
