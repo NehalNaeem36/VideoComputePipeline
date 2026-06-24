@@ -19,10 +19,6 @@
 
 #ifdef VCP_ENABLE_ONNXRUNTIME
 #include <onnxruntime_cxx_api.h>
-#if __has_include(<cuda_provider_factory.h>)
-#include <cuda_provider_factory.h>
-#define VCP_HAS_ORT_CUDA_PROVIDER_FACTORY 1
-#endif
 #endif
 
 #ifdef VCP_ENABLE_LIBTORCH
@@ -43,6 +39,7 @@
 #include <numeric>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -1338,17 +1335,15 @@ public:
 
         session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         if (config_.backend_device == BACKEND_DEVICE_CUDA) {
-#ifdef VCP_HAS_ORT_CUDA_PROVIDER_FACTORY
-            OrtCUDAProviderOptions cuda_options{};
-            cuda_options.device_id = 0;
-            if (OrtSessionOptionsAppendExecutionProvider_CUDA(session_options_, &cuda_options) != nullptr) {
-                g_last_error = "failed to enable ONNX Runtime CUDA execution provider";
+            try {
+                Ort::CUDAProviderOptions cuda_options;
+                cuda_options.Update({{"device_id", "0"}});
+                const OrtCUDAProviderOptionsV2 *provider_options = cuda_options;
+                session_options_.AppendExecutionProvider_CUDA_V2(*provider_options);
+            } catch (const Ort::Exception &e) {
+                g_last_error = std::string("failed to enable ONNX Runtime CUDA execution provider: ") + e.what();
                 return -1;
             }
-#else
-            g_last_error = "ONNX Runtime CUDA provider factory header was not found in this installation";
-            return -1;
-#endif
         }
 
 #ifdef _WIN32
