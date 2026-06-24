@@ -42,11 +42,11 @@ void benchmark_set_wall_clock_ms(Benchmark *bench, double wall_clock_ms) {
 }
 
 static int write_csv_header(FILE *file) {
-    return fprintf(file, "frame_index,decode_ms,process_ms,upload_ms,kernel_ms,download_ms,encode_ms,total_ms,preprocess_ms,inference_ms,postprocess_ms,overlay_ms,mux_write_ms,batch_size,inflight_batches,total_active_frames,frames_per_upload_batch,frames_per_download_batch,execution_mode,inference_context_count,vram_budget_mb,estimated_batch_mb,runtime_backend,model_format,model_adapter,backend_device,input_layout,input_dtype,output_device,precision,video_width,video_height,video_fps,frame_bytes,backend_inference_ms,raw_frame_upload_bytes,raw_frame_download_bytes,metadata_download_bytes,detections_count\n") < 0 ? -1 : 0;
+    return fprintf(file, "frame_index,decode_ms,process_ms,upload_ms,kernel_ms,download_ms,encode_ms,total_ms,preprocess_ms,inference_ms,postprocess_ms,overlay_ms,mux_write_ms,batch_size,inflight_batches,total_active_frames,frames_per_upload_batch,frames_per_download_batch,execution_mode,inference_context_count,vram_budget_mb,estimated_batch_mb,runtime_backend,model_format,model_adapter,backend_device,input_layout,input_dtype,output_device,precision,video_width,video_height,video_fps,frame_bytes,backend_inference_ms,raw_frame_upload_bytes,raw_frame_download_bytes,metadata_download_bytes,detections_count,schedule_batch_size,backend_batch_size,active_frame_capacity,inference_lane_count,unused_vram_budget_mb\n") < 0 ? -1 : 0;
 }
 
 static int write_csv_row(FILE *file, const FrameTiming *t) {
-    return fprintf(file, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%s,%s,%s,%s,%s,%s,%s,%s,%d,%d,%.6f,%zu,%.6f,%zu,%zu,%zu,%zu\n",
+    return fprintf(file, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%s,%s,%s,%s,%s,%s,%s,%s,%d,%d,%.6f,%zu,%.6f,%zu,%zu,%zu,%zu,%d,%d,%d,%d,%.6f\n",
                    t->frame_index,
                    t->decode_ms,
                    t->process_ms,
@@ -85,7 +85,12 @@ static int write_csv_row(FILE *file, const FrameTiming *t) {
                    t->raw_frame_upload_bytes,
                    t->raw_frame_download_bytes,
                    t->metadata_download_bytes,
-                   t->detections_count) < 0 ? -1 : 0;
+                   t->detections_count,
+                   t->schedule_batch_size,
+                   t->backend_batch_size,
+                   t->active_frame_capacity,
+                   t->inference_lane_count,
+                   t->unused_vram_budget_mb) < 0 ? -1 : 0;
 }
 
 int benchmark_open_csv(Benchmark *bench, const char *path) {

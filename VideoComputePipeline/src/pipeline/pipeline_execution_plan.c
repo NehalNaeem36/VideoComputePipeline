@@ -23,9 +23,13 @@ void pipeline_execution_plan_init(PipelineExecutionPlan *plan) {
     memset(plan, 0, sizeof(*plan));
     plan->execution_mode = 0;
     plan->batch_size = 1;
+    plan->schedule_batch_size = 1;
+    plan->backend_batch_size = 1;
     plan->inflight_batches = 1;
     plan->total_active_frames = 1;
+    plan->active_frame_capacity = 1;
     plan->inference_context_count = 1;
+    plan->inference_lane_count = 1;
     plan->inference_serialized = 1;
     strcpy(plan->fallback_reason, "default single-frame execution");
 }
@@ -86,7 +90,7 @@ int pipeline_execution_plan_build(PipelineExecutionPlan *plan,
     plan->use_pinned_memory = video->requires_raw_upload || video->requires_raw_download;
     plan->use_contiguous_batch_buffers = plan->use_pinned_memory;
     plan->use_async_copies = hardware && hardware->async_engine_count > 0;
-    plan->supports_true_tensorrt_batching = capability && capability->supports_true_batching;
+    plan->supports_true_backend_batching = capability && capability->supports_true_batching;
     plan->inference_context_count = 1;
     plan->inference_serialized = 1;
 
@@ -114,9 +118,6 @@ int pipeline_execution_plan_build(PipelineExecutionPlan *plan,
         for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
             const int candidate = candidates[i];
             const size_t estimate = per_frame_gpu_bytes * (size_t)candidate + 16u * 1024u * 1024u;
-            if (capability && candidate > capability->max_batch_size) {
-                continue;
-            }
             if (estimate > plan->vram_budget_bytes) {
                 continue;
             }
@@ -127,13 +128,10 @@ int pipeline_execution_plan_build(PipelineExecutionPlan *plan,
         }
     }
 
-    if (capability && best > capability->max_batch_size) {
-        best = capability->max_batch_size > 0 ? capability->max_batch_size : 1;
-        snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "limited by selected runtime batch capability");
-    } else if (!config->enable_auto_tune && config->batch_size_mode != BATCH_SETTING_MANUAL) {
+    if (!config->enable_auto_tune && config->batch_size_mode != BATCH_SETTING_MANUAL) {
         snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "auto-tune disabled; preserving single-frame behavior");
-    } else if (!plan->supports_true_tensorrt_batching && best > 1) {
-        snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "selected runtime/model uses batch-1; FrameBatch will loop per frame");
+    } else if (!plan->supports_true_backend_batching && best > 1) {
+        snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "schedule batch exceeds backend batch; running single-frame inference lanes");
     } else {
         snprintf(plan->fallback_reason, sizeof(plan->fallback_reason), "selected by execution planner");
     }
@@ -142,6 +140,12 @@ int pipeline_execution_plan_build(PipelineExecutionPlan *plan,
         best = 1;
     }
     plan->batch_size = best;
+    plan->schedule_batch_size = best;
+    plan->backend_batch_size = 1;
+    if (capability && capability->supports_true_batching && capability->max_batch_size > 1) {
+        plan->backend_batch_size = best < capability->max_batch_size ? best : capability->max_batch_size;
+    }
+    plan->true_backend_batching_enabled = plan->backend_batch_size > 1;
     if (config->inflight_batches_mode == BATCH_SETTING_MANUAL) {
         plan->inflight_batches = config->inflight_batches;
     } else if (config->enable_auto_tune && plan->vram_budget_bytes >= per_frame_gpu_bytes * (size_t)best * 4u) {
@@ -153,9 +157,13 @@ int pipeline_execution_plan_build(PipelineExecutionPlan *plan,
         plan->inflight_batches = 1;
     }
     plan->total_active_frames = plan->batch_size * plan->inflight_batches;
+    plan->active_frame_capacity = plan->total_active_frames;
     plan->frames_per_upload_batch = video->requires_raw_upload ? plan->batch_size : 0;
     plan->frames_per_download_batch = video->requires_raw_download ? plan->batch_size : 0;
     plan->estimated_batch_bytes = per_frame_gpu_bytes * (size_t)plan->batch_size + 16u * 1024u * 1024u;
+    plan->unused_vram_budget_bytes = plan->vram_budget_bytes > plan->estimated_batch_bytes
+                                          ? plan->vram_budget_bytes - plan->estimated_batch_bytes
+                                          : 0u;
     plan->transfer_batching_enabled = (video->requires_raw_upload || video->requires_raw_download) && plan->batch_size > 1;
     plan->pinned_host_batch_bytes = plan->transfer_batching_enabled ? video->frame_bytes * (size_t)plan->batch_size : 0u;
     plan->device_raw_batch_bytes = video->requires_raw_upload ? video->frame_bytes * (size_t)plan->batch_size : 0u;
@@ -187,6 +195,7 @@ int pipeline_execution_plan_build(PipelineExecutionPlan *plan,
         if (requested_contexts > 1) {
             plan->parallel_inference_enabled = 1;
             plan->inference_context_count = requested_contexts;
+            plan->inference_lane_count = requested_contexts;
             plan->inference_serialized = 0;
         }
     }
@@ -218,20 +227,26 @@ void pipeline_execution_plan_print(const PipelineExecutionPlan *plan) {
     printf("Execution plan:\n");
     printf("  execution_mode: %d\n", plan->execution_mode);
     printf("  batch_size: %d\n", plan->batch_size);
+    printf("  schedule_batch_size: %d\n", plan->schedule_batch_size);
+    printf("  backend_batch_size: %d\n", plan->backend_batch_size);
     printf("  inflight_batches: %d\n", plan->inflight_batches);
     printf("  total_active_frames: %d\n", plan->total_active_frames);
+    printf("  active_frame_capacity: %d\n", plan->active_frame_capacity);
     printf("  frames_per_upload_batch: %d\n", plan->frames_per_upload_batch);
     printf("  frames_per_download_batch: %d\n", plan->frames_per_download_batch);
     printf("  vram_budget_mb: %.3f\n", mib(plan->vram_budget_bytes));
     printf("  estimated_batch_mb: %.3f\n", mib(plan->estimated_batch_bytes));
+    printf("  unused_vram_budget_mb: %.3f\n", mib(plan->unused_vram_budget_bytes));
     printf("  use_pinned_memory: %s\n", plan->use_pinned_memory ? "true" : "false");
     printf("  use_contiguous_batch_buffers: %s\n", plan->use_contiguous_batch_buffers ? "true" : "false");
     printf("  use_async_copies: %s\n", plan->use_async_copies ? "true" : "false");
-    printf("  supports_true_backend_batching: %s\n", plan->supports_true_tensorrt_batching ? "true" : "false");
+    printf("  supports_true_backend_batching: %s\n", plan->supports_true_backend_batching ? "true" : "false");
+    printf("  true_backend_batching_enabled: %s\n", plan->true_backend_batching_enabled ? "true" : "false");
     printf("  transfer_batching_enabled: %s\n", plan->transfer_batching_enabled ? "true" : "false");
     printf("  pipeline_overlap_enabled: %s\n", plan->pipeline_overlap_enabled ? "true" : "false");
     printf("  parallel_inference_enabled: %s\n", plan->parallel_inference_enabled ? "true" : "false");
     printf("  inference_context_count: %d\n", plan->inference_context_count);
+    printf("  inference_lane_count: %d\n", plan->inference_lane_count);
     printf("  inference_serialized: %s\n", plan->inference_serialized ? "true" : "false");
     printf("  pinned_host_batch_mb: %.3f\n", mib(plan->pinned_host_batch_bytes));
     printf("  device_raw_batch_mb: %.3f\n", mib(plan->device_raw_batch_bytes));

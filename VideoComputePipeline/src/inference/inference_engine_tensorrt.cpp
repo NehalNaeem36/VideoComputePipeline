@@ -242,6 +242,7 @@ struct CudaSlot {
 #ifdef VCP_ENABLE_TENSORRT
     std::unique_ptr<nvinfer1::IExecutionContext> context;
 #endif
+    int slot_index = 0;
     cudaStream_t stream = nullptr;
     cudaEvent_t start = nullptr;
     cudaEvent_t upload_done = nullptr;
@@ -597,9 +598,8 @@ public:
         capability->output_bytes_per_frame = output_bytes_per_frame_;
         std::snprintf(capability->description,
                       sizeof(capability->description),
-                      "TensorRT %s batch, max_batch=%d",
-                      supports_dynamic_batch_ ? "dynamic" : "static",
-                      capability->max_batch_size);
+                      "TensorRT single-frame enqueue with %d parallel context slots",
+                      capability->max_parallel_contexts);
         return 0;
     }
 
@@ -827,7 +827,9 @@ private:
         slots_.resize(3);
         const size_t input_element_size = input_type_ == nvinfer1::DataType::kHALF ? sizeof(__half) : sizeof(float);
         const size_t input_bytes = (size_t)3 * (size_t)config_.input_width * (size_t)config_.input_height * input_element_size;
-        for (CudaSlot &slot : slots_) {
+        for (size_t i = 0; i < slots_.size(); ++i) {
+            CudaSlot &slot = slots_[i];
+            slot.slot_index = (int)i;
             slot.context.reset(engine_->createExecutionContext());
             if (!slot.context) {
                 g_last_error = "failed to create TensorRT slot execution context";
@@ -1027,28 +1029,32 @@ public:
         capability->min_batch_size = 1;
         capability->max_batch_size = max_batch_size_;
         capability->supports_dynamic_batch = supports_dynamic_batch_ ? 1 : 0;
-        capability->supports_true_batching = max_batch_size_ > 1 ? 1 : 0;
-        capability->supports_parallel_contexts = 0;
-        capability->max_parallel_contexts = 1;
-        capability->selected_context_count = 1;
+        capability->supports_true_batching = 0;
+        capability->supports_parallel_contexts = slots_.size() > 1 ? 1 : 0;
+        capability->max_parallel_contexts = (int)slots_.size();
+        capability->selected_context_count = selected_context_count_;
         capability->input_width = config_.input_width;
         capability->input_height = config_.input_height;
         capability->input_bytes_per_frame = input_bytes_;
         capability->output_bytes_per_frame = output_bytes_;
         std::snprintf(capability->description,
                       sizeof(capability->description),
-                      "%s %s batch, max_batch=%d",
+                      "%s single-frame execution with %d inference lane slots",
                       backend_name(),
-                      supports_dynamic_batch_ ? "dynamic" : "static",
-                      max_batch_size_);
+                      capability->max_parallel_contexts);
         return 0;
     }
 
     int set_parallel_contexts(int context_count) override {
-        if (context_count != 1) {
-            g_last_error = std::string(backend_name()) + " backend currently exposes one runtime session/module per engine";
+        if (context_count < 1) {
+            g_last_error = "parallel inference context count must be positive";
             return -1;
         }
+        if (context_count > (int)slots_.size()) {
+            g_last_error = std::string(backend_name()) + " requested inference lanes exceed allocated CUDA slots";
+            return -1;
+        }
+        selected_context_count_ = context_count;
         return 0;
     }
 
@@ -1057,8 +1063,32 @@ public:
             g_last_error = "invalid CPU FrameBatch for inference";
             return -1;
         }
-        for (int i = 0; i < batch->valid_frames; ++i) {
-            if (run(&batch->cpu_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+        if (selected_context_count_ <= 1 || batch->valid_frames <= 1) {
+            for (int i = 0; i < batch->valid_frames; ++i) {
+                if (run(&batch->cpu_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+                    return -1;
+                }
+            }
+            return 0;
+        }
+
+        for (int begin = 0; begin < batch->valid_frames; begin += selected_context_count_) {
+            const int end = std::min(batch->valid_frames, begin + selected_context_count_);
+            std::vector<std::thread> workers;
+            std::atomic<int> failed{0};
+            workers.reserve((size_t)(end - begin));
+            for (int i = begin; i < end; ++i) {
+                workers.emplace_back([this, batch, i, &failed]() {
+                    if (run(&batch->cpu_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+                        failed.store(1);
+                    }
+                });
+            }
+            for (std::thread &worker : workers) {
+                worker.join();
+            }
+            if (failed.load() != 0) {
+                g_last_error = std::string(backend_name()) + " parallel CPU batch inference worker failed";
                 return -1;
             }
         }
@@ -1070,8 +1100,32 @@ public:
             g_last_error = "invalid CUDA FrameBatch for inference";
             return -1;
         }
-        for (int i = 0; i < batch->valid_frames; ++i) {
-            if (run_device(&batch->cuda_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+        if (selected_context_count_ <= 1 || batch->valid_frames <= 1) {
+            for (int i = 0; i < batch->valid_frames; ++i) {
+                if (run_device(&batch->cuda_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+                    return -1;
+                }
+            }
+            return 0;
+        }
+
+        for (int begin = 0; begin < batch->valid_frames; begin += selected_context_count_) {
+            const int end = std::min(batch->valid_frames, begin + selected_context_count_);
+            std::vector<std::thread> workers;
+            std::atomic<int> failed{0};
+            workers.reserve((size_t)(end - begin));
+            for (int i = begin; i < end; ++i) {
+                workers.emplace_back([this, batch, i, &failed]() {
+                    if (run_device(&batch->cuda_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+                        failed.store(1);
+                    }
+                });
+            }
+            for (std::thread &worker : workers) {
+                worker.join();
+            }
+            if (failed.load() != 0) {
+                g_last_error = std::string(backend_name()) + " parallel CUDA batch inference worker failed";
                 return -1;
             }
         }
@@ -1099,7 +1153,9 @@ protected:
             return -1;
         }
         slots_.resize(3);
-        for (CudaSlot &slot : slots_) {
+        for (size_t i = 0; i < slots_.size(); ++i) {
+            CudaSlot &slot = slots_[i];
+            slot.slot_index = (int)i;
             if (cudaStreamCreate(&slot.stream) != cudaSuccess ||
                 cudaEventCreate(&slot.start) != cudaSuccess ||
                 cudaEventCreate(&slot.upload_done) != cudaSuccess ||
@@ -1312,6 +1368,7 @@ protected:
     size_t output_bytes_ = 0;
     size_t output_elements_ = 0;
     int max_batch_size_ = 1;
+    int selected_context_count_ = 1;
     bool supports_dynamic_batch_ = false;
     int frame_width_ = 0;
     int frame_height_ = 0;
@@ -1348,15 +1405,18 @@ public:
 
 #ifdef _WIN32
         const std::wstring model_path = widen(config_.model_path);
-        session_.reset(new Ort::Session(env_, model_path.c_str(), session_options_));
+        sessions_.emplace_back(new Ort::Session(env_, model_path.c_str(), session_options_));
 #else
-        session_.reset(new Ort::Session(env_, config_.model_path, session_options_));
+        sessions_.emplace_back(new Ort::Session(env_, config_.model_path, session_options_));
 #endif
         allocator_.reset(new Ort::AllocatorWithDefaultOptions());
         if (discover_model() != 0) {
             return -1;
         }
-        return init_common();
+        if (init_common() != 0) {
+            return -1;
+        }
+        return ensure_session_count(slots_.size());
     }
 
 protected:
@@ -1385,10 +1445,15 @@ protected:
 
         auto inference_start = std::chrono::high_resolution_clock::now();
         try {
-            Ort::IoBinding binding(*session_);
+            Ort::Session *session = session_for_slot(slot);
+            if (!session) {
+                g_last_error = "ONNX Runtime lane session is unavailable";
+                return -1;
+            }
+            Ort::IoBinding binding(*session);
             binding.BindInput(input_name_.c_str(), input_tensor);
             binding.BindOutput(output_name_.c_str(), output_tensor);
-            session_->Run(Ort::RunOptions{nullptr}, binding);
+            session->Run(Ort::RunOptions{nullptr}, binding);
         } catch (const Ort::Exception &e) {
             g_last_error = std::string("ONNX Runtime inference failed: ") + e.what();
             return -1;
@@ -1430,6 +1495,34 @@ private:
     }
 #endif
 
+    Ort::Session *session_for_slot(const CudaSlot &slot) {
+        if (sessions_.empty()) {
+            return nullptr;
+        }
+        const size_t index = (size_t)slot.slot_index < sessions_.size() ? (size_t)slot.slot_index : 0u;
+        return sessions_[index].get();
+    }
+
+    int ensure_session_count(size_t count) {
+        if (count == 0) {
+            return 0;
+        }
+        try {
+            while (sessions_.size() < count) {
+#ifdef _WIN32
+                const std::wstring model_path = widen(config_.model_path);
+                sessions_.emplace_back(new Ort::Session(env_, model_path.c_str(), session_options_));
+#else
+                sessions_.emplace_back(new Ort::Session(env_, config_.model_path, session_options_));
+#endif
+            }
+        } catch (const Ort::Exception &e) {
+            g_last_error = std::string("failed to create ONNX Runtime inference lane session: ") + e.what();
+            return -1;
+        }
+        return 0;
+    }
+
     TensorDataType from_ort_type(ONNXTensorElementDataType type) const {
         switch (type) {
             case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT: return TENSOR_DTYPE_FP32;
@@ -1441,21 +1534,22 @@ private:
     }
 
     int discover_model() {
-        if (!session_ || !allocator_) {
+        if (sessions_.empty() || !sessions_[0] || !allocator_) {
             g_last_error = "ONNX Runtime session was not initialized";
             return -1;
         }
-        if (session_->GetInputCount() != 1 || session_->GetOutputCount() < 1) {
+        Ort::Session &session = *sessions_[0];
+        if (session.GetInputCount() != 1 || session.GetOutputCount() < 1) {
             g_last_error = "ONNX Runtime backend expects one input and at least one output";
             return -1;
         }
 
-        auto input_name = session_->GetInputNameAllocated(0, *allocator_);
-        auto output_name = session_->GetOutputNameAllocated(0, *allocator_);
+        auto input_name = session.GetInputNameAllocated(0, *allocator_);
+        auto output_name = session.GetOutputNameAllocated(0, *allocator_);
         input_name_ = input_name.get();
         output_name_ = output_name.get();
 
-        const auto input_info = session_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
+        const auto input_info = session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
         std::vector<int64_t> input_shape = input_info.GetShape();
         if (input_shape.size() != 4 ||
             input_shape[1] != 3 ||
@@ -1473,7 +1567,7 @@ private:
             return -1;
         }
 
-        const auto output_info = session_->GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo();
+        const auto output_info = session.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo();
         output_ort_type_ = output_info.GetElementType();
         if (set_output_shape(output_info.GetShape(), from_ort_type(output_ort_type_)) != 0) {
             return -1;
@@ -1484,7 +1578,7 @@ private:
     char validation_[256] = {0};
     Ort::Env env_;
     Ort::SessionOptions session_options_;
-    std::unique_ptr<Ort::Session> session_;
+    std::vector<std::unique_ptr<Ort::Session>> sessions_;
     std::unique_ptr<Ort::AllocatorWithDefaultOptions> allocator_;
     std::string input_name_;
     std::string output_name_;

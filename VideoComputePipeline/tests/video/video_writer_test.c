@@ -18,7 +18,7 @@ int main(void) {
         }
     }
 
-    TEST_ASSERT(video_writer_open_with_options /* module: video/video_writer */ (&writer, "data/output/video_writer_test.mp4", 64, 64, 30.0, 1, "libx264", 0) == 0);
+    TEST_ASSERT(video_writer_open_with_options /* module: video/video_writer */ (&writer, "data/output/video_writer_test.mp4", 64, 64, 30.0, 1, "mpeg4", 0) == 0);
     TEST_ASSERT(video_writer_write_frame /* module: video/video_writer */ (&writer, &frame) == 0);
     TEST_ASSERT(video_writer_flush /* module: video/video_writer */ (&writer) == 0);
     video_writer_close /* module: video/video_writer */ (&writer);

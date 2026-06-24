@@ -87,7 +87,7 @@ static void print_detect_usage(const char *program_name) {
     printf("  --model-type name            auto or yolov5\n");
     printf("  --inference-backend name     Backward-compatible alias for --runtime\n");
     printf("  --precision name             fp16 or fp32 runtime label\n");
-    printf("  --batch-size auto|N          Frames per detection batch, default 1\n");
+    printf("  --batch-size auto|N          Frames per detection scheduling batch, default 1\n");
     printf("  --inflight-batches auto|N    Batches allowed in flight, default 1\n");
     printf("  --auto-tune                  Select batch settings from video/GPU/model profile\n");
     printf("  --target-fps N               Target FPS for transfer budget calculations\n");
@@ -95,8 +95,8 @@ static void print_detect_usage(const char *program_name) {
     printf("  --vram-reserve-mb N          Explicit VRAM reserve, 0 means automatic reserve\n");
     printf("  --profile-hardware           Print CUDA/VRAM/bandwidth profile and exit\n");
     printf("  --pipeline-overlap auto|on|off Overlap detection stages when supported\n");
-    printf("  --parallel-inference auto|on|off Use multiple TensorRT contexts when supported\n");
-    printf("  --inference-contexts auto|N  TensorRT execution contexts for parallel inference\n");
+    printf("  --parallel-inference auto|on|off Use multiple inference lanes when supported\n");
+    printf("  --inference-contexts auto|N  Inference lanes/contexts for parallel inference\n");
 }
 
 static void print_matrix_usage(const char *program_name) {

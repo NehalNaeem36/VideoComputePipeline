@@ -791,14 +791,19 @@ static void apply_execution_plan_to_timing(const PipelineExecutionPlan *plan, Fr
         return;
     }
     timing->batch_size = plan->batch_size;
+    timing->schedule_batch_size = plan->schedule_batch_size;
+    timing->backend_batch_size = plan->backend_batch_size;
     timing->inflight_batches = plan->inflight_batches;
     timing->total_active_frames = plan->total_active_frames;
+    timing->active_frame_capacity = plan->active_frame_capacity;
     timing->frames_per_upload_batch = plan->frames_per_upload_batch;
     timing->frames_per_download_batch = plan->frames_per_download_batch;
     timing->execution_mode = plan->execution_mode;
     timing->inference_context_count = plan->inference_context_count;
+    timing->inference_lane_count = plan->inference_lane_count;
     timing->vram_budget_mb = bytes_to_mib /* module: pipeline/pipeline_runner */ (plan->vram_budget_bytes);
     timing->estimated_batch_mb = bytes_to_mib /* module: pipeline/pipeline_runner */ (plan->estimated_batch_bytes);
+    timing->unused_vram_budget_mb = bytes_to_mib /* module: pipeline/pipeline_runner */ (plan->unused_vram_budget_bytes);
 }
 
 static void apply_detection_metadata_to_timing(const PipelineConfig *config,

@@ -63,7 +63,10 @@ int main(void) {
 
     make_config(&config);
     TEST_ASSERT(pipeline_execution_plan_build /* module: pipeline/pipeline_execution_plan */ (&plan, &config, &video, &hardware, &capability) == 0);
-    TEST_ASSERT(plan.batch_size == 1);
+    TEST_ASSERT(plan.batch_size > 1);
+    TEST_ASSERT(plan.schedule_batch_size == plan.batch_size);
+    TEST_ASSERT(plan.backend_batch_size == 1);
+    TEST_ASSERT(plan.true_backend_batching_enabled == 0);
     TEST_ASSERT(plan.frames_per_upload_batch == 0);
     TEST_ASSERT(plan.frames_per_download_batch == 0);
     TEST_ASSERT(plan.vram_budget_bytes <= (size_t)(4.0 * 1024.0 * 1024.0 * 1024.0 * DEFAULT_VRAM_BUDGET_RATIO));
@@ -85,10 +88,17 @@ int main(void) {
     config.inference_contexts_mode = BATCH_SETTING_MANUAL;
     config.inference_contexts = 2;
     config.pipeline_overlap_mode = PIPELINE_FEATURE_ON;
+    capability.max_batch_size = 1;
+    capability.supports_true_batching = 0;
+    capability.supports_parallel_contexts = 1;
+    capability.max_parallel_contexts = 3;
     TEST_ASSERT(pipeline_execution_plan_build /* module: pipeline/pipeline_execution_plan */ (&plan, &config, &video, &hardware, &capability) == 0);
     TEST_ASSERT(plan.pipeline_overlap_enabled == 1);
     TEST_ASSERT(plan.parallel_inference_enabled == 1);
     TEST_ASSERT(plan.inference_context_count == 2);
+    TEST_ASSERT(plan.inference_lane_count == 2);
+    TEST_ASSERT(plan.backend_batch_size == 1);
+    TEST_ASSERT(plan.schedule_batch_size >= 2);
     TEST_ASSERT(plan.execution_mode == 3);
     return 0;
 }
