@@ -1172,9 +1172,9 @@ static int run_detection_pipeline_hw(const PipelineConfig *config) {
 
     int frame_id = 0;
     for (;;) {
-        int reached_eof = 0;
-        release_hw_frame_batch /* module: pipeline/pipeline_runner */ (&reader, &batch);
-        frame_batch_clear /* module: pipeline/frame_batch */ (&batch);
+        int reached_eof = 0;//flag for end of file
+        release_hw_frame_batch /* module: pipeline/pipeline_runner */ (&reader, &batch);// releases hw or ffmpeg frames stored inside the batch
+        frame_batch_clear /* module: pipeline/frame_batch */ (&batch);// resets the frame batch book keeping and meta data
 
         for (int slot = 0; slot < batch.capacity; ++slot) {
             Timer decode_timer;
