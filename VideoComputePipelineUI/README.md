@@ -52,10 +52,10 @@ This keeps launches independent of global `PATH` and avoids accidentally loading
 ## Presets
 
 - People Detection - CSV Only: CPU decode, ONNX Runtime detection, detections CSV, no output video.
-- People Detection - Annotated Video: NVDEC decode, ONNX Runtime detection, CUDA boxes, NVENC MKV output.
-- Fast GPU Annotated Video: same as annotated video, with FP16 selected.
+- People Detection - Staged Annotated Video: NVDEC decode, ONNX Runtime detection, CUDA boxes, NVENC MKV output.
+- Fast Staged GPU Annotated Video: TensorRT hardware path with schedule batch 2, three in-flight batches, pipeline overlap on, and two inference lanes.
 - Safe CPU Detection: CPU decode, FP32, small max-frame smoke default.
-- NVDEC/NVENC Stress Test: TensorRT hardware decode/encode, no CPU decoder fallback.
+- NVDEC/NVENC Stress Test: TensorRT hardware decode/encode, no CPU decoder fallback, staged overlap on, and two requested inference lanes.
 - Custom: selected automatically when you edit fields manually.
 
 Detection presets load the labels file into a searchable class list. Leaving the class selection empty detects every class. Selecting one or more labels makes the UI emit `--class-ids`, so CSV output and annotated boxes contain only the selected classes.
@@ -63,12 +63,14 @@ Detection presets load the labels file into a searchable class list. Leaving the
 ## Tabs
 
 - Run Config: presets, paths, runtime, model/labels, class selection, decoder/encoder, thresholds, command preview, Run/Stop.
-- Monitor: process status, elapsed time, parsed frame count, FPS, output size when available.
+- Monitor: process status, elapsed time, parsed frame count, FPS, staged topology, schedule/backend batch, in-flight batch pool, inference workers, and output size when available.
 - Logs: live stdout/stderr, filtering, highlighting for errors/warnings/TensorRT lines, save/clear.
 - Help: short explanations for pipeline modes and common failures.
 
 ## Notes
 
 The pipeline currently emits human-readable progress logs. The UI parses those lines and is ready for future `PROGRESS key=value` output if the pipeline adds it later.
+
+Hardware detection uses a staged NVDEC -> inference -> output pipeline. `Schedule batch` is the number of frames per reusable `FrameBatch`. `In-flight batches` is the number of active reusable batch objects, so decode can fill batch N+2 while inference processes N+1 and output/NVENC writes N. `Backend batch` is separate: it is the number of frames the selected runtime can infer in one model call. Static batch-1 models can still benefit from schedule batches and multiple inference workers.
 
 TensorRT uses `.engine` or `.plan` models. ONNX Runtime uses `.onnx` models. TorchScript appears in the runtime selector only for forward compatibility; it requires a pipeline build with `ENABLE_LIBTORCH=ON`.

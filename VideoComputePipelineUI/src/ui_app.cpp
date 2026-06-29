@@ -416,10 +416,10 @@ void UiApp::render_run_config_tab() {
     }
     ImGui::EndDisabled();
 
-    ImGui::SeparatorText("Execution Plan");
+    ImGui::SeparatorText("Staged Execution");
     ImGui::BeginDisabled(!detectMode);
     if (ImGui::Checkbox("Auto tune", &config_.autoTune)) mark_custom();
-    render_tooltip("Lets the pipeline choose schedule batch, in-flight, and inference lane settings from the video, GPU, and selected model/runtime limits.");
+    render_tooltip("Lets the pipeline choose physical schedule batch, in-flight batch pool size, and inference lane settings from the video, GPU, and selected model/runtime limits.");
     if (ImGui::Checkbox("Profile hardware only", &config_.profileHardwareOnly)) mark_custom();
     render_tooltip("Prints CUDA/VRAM capability information without requiring a full detection run.");
 
@@ -428,22 +428,22 @@ void UiApp::render_run_config_tab() {
         config_.batchSizeMode = (AutoIntMode)batchModeIndex;
         mark_custom();
     }
-    render_tooltip("Auto lets the planner choose. Manual sends the selected scheduling/transfer batch size.");
+    render_tooltip("Auto lets the planner choose. Manual sends the selected physical scheduling batch size.");
     ImGui::BeginDisabled(config_.batchSizeMode == AutoIntMode::Auto);
     if (ImGui::InputInt("Schedule batch size", &config_.batchSize)) mark_custom();
     ImGui::EndDisabled();
-    render_tooltip("Number of frames grouped for scheduling. If the model is static batch-1, the pipeline can still process this group through one or more single-frame inference lanes.");
+    render_tooltip("Frames per reusable FrameBatch. This controls how many decoded NV12 frames move together through the staged pipeline. If backend batch is 1, frames still run through single-frame inference lanes.");
 
     int inflightModeIndex = (int)config_.inflightBatchesMode;
     if (combo_from_vector("In-flight batches mode", inflightModeIndex, auto_int_mode_names())) {
         config_.inflightBatchesMode = (AutoIntMode)inflightModeIndex;
         mark_custom();
     }
-    render_tooltip("Auto lets the planner choose how many batches can be active across stages.");
+    render_tooltip("Auto lets the planner choose how many reusable FrameBatch objects can be active across stages.");
     ImGui::BeginDisabled(config_.inflightBatchesMode == AutoIntMode::Auto);
     if (ImGui::InputInt("In-flight batches", &config_.inflightBatches)) mark_custom();
     ImGui::EndDisabled();
-    render_tooltip("Number of batches allowed active across decode, preprocess, inference, postprocess, overlay, and encode stages.");
+    render_tooltip("Number of reusable FrameBatch objects in the free/decoded/completed queues. Higher values let NVDEC decode N+2 while inference handles N+1 and output/NVENC writes N.");
 
     if (ImGui::InputFloat("Target FPS", &config_.targetFps, 1.0f, 10.0f, "%.1f")) mark_custom();
     render_tooltip("Tuning goal used by the planner. It is not a guaranteed output rate.");
@@ -457,24 +457,24 @@ void UiApp::render_run_config_tab() {
         config_.pipelineOverlap = (FeatureMode)overlapIndex;
         mark_custom();
     }
-    render_tooltip("Overlaps decode, upload/preprocess, inference, download/postprocess, overlay, and encode stages when supported.");
+    render_tooltip("Enables real stage overlap: decoder thread fills batches, inference worker(s) process decoded batches, and the output stage writes detections/overlay/NVENC in frame order.");
     int parallelIndex = (int)config_.parallelInference;
     if (combo_from_vector("Parallel inference", parallelIndex, feature_mode_names())) {
         config_.parallelInference = (FeatureMode)parallelIndex;
         mark_custom();
     }
-    render_tooltip("Uses multiple model execution lanes when supported. TensorRT uses separate execution contexts; ONNX Runtime uses separate lane sessions.");
+    render_tooltip("Uses multiple inference workers/lanes when supported. Each lane owns its backend resources, so static batch-1 models can still process different frames concurrently.");
 
     int contextsModeIndex = (int)config_.inferenceContextsMode;
     if (combo_from_vector("Inference contexts mode", contextsModeIndex, auto_int_mode_names())) {
         config_.inferenceContextsMode = (AutoIntMode)contextsModeIndex;
         mark_custom();
     }
-    render_tooltip("Auto lets the planner choose inference lane count. Manual requests a specific number.");
+    render_tooltip("Auto lets the planner choose inference worker count. Manual requests a specific number of lanes.");
     ImGui::BeginDisabled(config_.inferenceContextsMode == AutoIntMode::Auto);
     if (ImGui::InputInt("Inference lanes", &config_.inferenceContexts)) mark_custom();
     ImGui::EndDisabled();
-    render_tooltip("Requested parallel single-frame inference lanes. Use this to benchmark multiple model contexts even when true model batching is unavailable.");
+    render_tooltip("Requested inference workers. Use this to benchmark multiple model contexts/sessions even when true backend batching is unavailable.");
     ImGui::EndDisabled();
 
     ImGui::SeparatorText("Runtime");
@@ -562,16 +562,19 @@ void UiApp::render_monitor_tab() {
     text_pair("Output size", progress.outputBytes > 0 ? format_bytes(progress.outputBytes) : std::string("--"));
     text_pair("Execution mode", progress.executionMode >= 0 ? std::to_string(progress.executionMode) : std::string("--"));
     const int shownScheduleBatch = progress.scheduleBatchSize > 0 ? progress.scheduleBatchSize : progress.batchSize;
-    text_pair("Schedule / backend batch", shownScheduleBatch > 0 ? std::to_string(shownScheduleBatch) + " / " + std::to_string(progress.backendBatchSize > 0 ? progress.backendBatchSize : 1) : std::string("--"));
-    text_pair("In-flight batches", progress.inflightBatches > 0 ? std::to_string(progress.inflightBatches) : std::string("--"));
-    text_pair("Active frames", progress.totalActiveFrames > 0 ? std::to_string(progress.totalActiveFrames) : std::string("--"));
-    text_pair("Active capacity", progress.activeFrameCapacity > 0 ? std::to_string(progress.activeFrameCapacity) : std::string("--"));
-    text_pair("Inference lanes", progress.inferenceLaneCount > 0 ? std::to_string(progress.inferenceLaneCount) : (progress.inferenceContextCount > 0 ? std::to_string(progress.inferenceContextCount) : std::string("--")));
-    text_pair("Overlap", progress.executionMode >= 0 ? bool_text(progress.pipelineOverlapEnabled) : "--");
-    text_pair("Parallel inference", progress.executionMode >= 0 ? bool_text(progress.parallelInferenceEnabled) : "--");
+    text_pair("Schedule batch", shownScheduleBatch > 0 ? std::to_string(shownScheduleBatch) + " frame(s)" : std::string("--"));
+    text_pair("Backend batch", progress.backendBatchSize > 0 ? std::to_string(progress.backendBatchSize) + " frame(s)" : std::string("--"));
+    text_pair("In-flight batch pool", progress.inflightBatches > 0 ? std::to_string(progress.inflightBatches) + " batch object(s)" : std::string("--"));
+    text_pair("Active frame capacity", progress.activeFrameCapacity > 0 ? std::to_string(progress.activeFrameCapacity) : (progress.totalActiveFrames > 0 ? std::to_string(progress.totalActiveFrames) : std::string("--")));
+    text_pair("Inference workers", progress.inferenceLaneCount > 0 ? std::to_string(progress.inferenceLaneCount) : (progress.inferenceContextCount > 0 ? std::to_string(progress.inferenceContextCount) : std::string("--")));
+    text_pair("Stage overlap", progress.executionMode >= 0 || progress.inflightBatches > 0 ? bool_text(progress.pipelineOverlapEnabled) : "--");
+    text_pair("Parallel inference", progress.executionMode >= 0 || progress.inferenceLaneCount > 0 ? bool_text(progress.parallelInferenceEnabled) : "--");
     text_pair("Upload/download batch", progress.executionMode >= 0 ? std::to_string(progress.framesPerUploadBatch) + " / " + std::to_string(progress.framesPerDownloadBatch) : std::string("--"));
     text_pair("VRAM plan", progress.vramBudgetMb > 0.0 ? format_fixed(progress.vramBudgetMb) + " MB budget, " + format_fixed(progress.estimatedBatchMb) + " MB batch" : std::string("--"));
     text_pair("Unused VRAM budget", progress.unusedVramBudgetMb > 0.0 ? format_fixed(progress.unusedVramBudgetMb) + " MB" : std::string("--"));
+    if (shownScheduleBatch > 0 && progress.inflightBatches > 0) {
+        ImGui::TextWrapped("Topology: decoder fills batch N+2 while inference handles N+1 and output/NVENC writes N.");
+    }
 
     if (progress.progress > 0.0) {
         ImGui::ProgressBar((float)progress.progress, ImVec2(-1.0f, 0.0f));
@@ -674,10 +677,14 @@ void UiApp::render_help_tab() {
                  "TensorRT loads .engine or .plan files and supports multi-context execution. ONNX Runtime loads .onnx files, uses CUDA I/O binding, and can use separate lane sessions for forced parallel single-frame inference. TorchScript is listed for future LibTorch builds and is unavailable unless the pipeline is rebuilt with ENABLE_LIBTORCH=ON.");
     help_section("Execution plan modes",
                  "Mode 0 is single-frame compatibility. Mode 1 enables batched transfers around sequential inference. Mode 2 overlaps pipeline stages while inference remains sequential. Mode 3 overlaps stages and uses parallel inference contexts when the runtime and GPU allow it.");
+    help_section("Staged hardware pipeline",
+                 "NVDEC hardware detection now runs as separate stages. A decoder thread fills reusable FrameBatch objects, inference worker(s) consume decoded batches, and the output stage writes detections, draws boxes, runs NVENC, records benchmarks, releases hardware frames, and returns each batch to the pool.");
     help_section("Batch size vs backend batch",
-                 "The UI batch size is a scheduling and transfer batch. It can help uploads, downloads, and stage overlap even if the selected model/runtime executes one frame at a time. True backend batch execution is used only when the runtime reports support.");
+                 "Schedule batch is frames per reusable FrameBatch. Backend batch is how many frames the model runtime actually accepts in one inference call. A static batch-1 model can still benefit from schedule batches because decode, inference, and output are overlapped around it.");
+    help_section("In-flight batches",
+                 "In-flight batches is the number of reusable FrameBatch objects allocated for the hardware pipeline. Three in-flight batches allows decode batch N+2, inference batch N+1, and output batch N to be active at the same time without reallocating frame storage.");
     help_section("Parallel inference",
-                 "Parallel inference means multiple runtime-owned contexts or sessions. TensorRT uses multiple execution contexts; ONNX Runtime uses separate lane sessions. If parallel lanes are unsupported or not useful, auto mode falls back cleanly.");
+                 "Parallel inference means multiple inference workers, each with its own runtime-owned context or session. TensorRT uses separate execution contexts; ONNX Runtime uses separate lane sessions. This is different from true model batching and works with static batch-1 models when the backend can create multiple lanes.");
     help_section("VRAM budgeting",
                  "Auto tune estimates video frame memory, model/backend memory, active batch memory, and reserved GPU memory. VRAM budget ratio limits how much total GPU memory the planner may consume; reserve MB keeps memory free for the OS, driver, desktop, and other GPU work.");
     help_section("Models and labels",

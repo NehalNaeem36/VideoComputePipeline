@@ -39,6 +39,13 @@ static int run_filter_pipeline(const PipelineConfig *config);
 static int run_detection_pipeline(const PipelineConfig *config);
 static int run_detection_pipeline_cpu(const PipelineConfig *config);
 static int run_detection_pipeline_hw(const PipelineConfig *config);
+static void apply_execution_plan_to_timing(const PipelineExecutionPlan *plan, FrameTiming *timing);
+static void apply_detection_metadata_to_timing(const PipelineConfig *config,
+                                               const VideoInfo *info,
+                                               const DetectionResult *detections,
+                                               int requires_raw_upload,
+                                               int requires_raw_download,
+                                               FrameTiming *timing);
 
 typedef struct {
     Frame frame;
@@ -768,6 +775,608 @@ static void release_hw_frame_batch(VideoHWReader *reader, FrameBatch *batch) {
     batch->valid_frames = 0;
 }
 
+typedef struct {
+    FrameBatch **items;
+    size_t capacity;
+    size_t head;
+    size_t tail;
+    size_t count;
+    int closed;
+#ifdef _WIN32
+    CRITICAL_SECTION lock;
+    CONDITION_VARIABLE not_empty;
+    CONDITION_VARIABLE not_full;
+#else
+    pthread_mutex_t lock;
+    pthread_cond_t not_empty;
+    pthread_cond_t not_full;
+#endif
+} DetectionBatchQueue;
+
+typedef struct PendingBatchNode {
+    FrameBatch *batch;
+    int first_frame_id;
+    struct PendingBatchNode *next;
+} PendingBatchNode;
+
+typedef struct DetectionHwPipelineContext {
+    const PipelineConfig *config;
+    VideoHWReader *reader;
+    const VideoInfo *info;
+    DetectionWriter *detections;
+    VideoHWWriter *writer;
+    Benchmark *benchmark;
+    InferenceEngine **worker_engines;
+    int worker_count;
+    PipelineExecutionPlan *plan;
+    DetectionBatchQueue free_batch_queue;
+    DetectionBatchQueue decoded_batch_queue;
+    DetectionBatchQueue completed_batch_queue;
+    int writer_opened;
+    int benchmark_opened;
+    int failed;
+    int next_frame_id;
+    int active_workers;
+    Timer *wall_timer;
+#ifdef _WIN32
+    CRITICAL_SECTION state_lock;
+#else
+    pthread_mutex_t state_lock;
+#endif
+} DetectionHwPipelineContext;
+
+typedef struct {
+    DetectionHwPipelineContext *ctx;
+    int worker_index;
+} DetectionInferenceWorkerArgs;
+
+static int detection_batch_queue_init(DetectionBatchQueue *queue, size_t capacity) {
+    if (!queue || capacity == 0u) {
+        return -1;
+    }
+    memset(queue, 0, sizeof(*queue));
+    queue->items = (FrameBatch **)calloc(capacity, sizeof(*queue->items));
+    if (!queue->items) {
+        return -1;
+    }
+    queue->capacity = capacity;
+#ifdef _WIN32
+    InitializeCriticalSection(&queue->lock);
+    InitializeConditionVariable(&queue->not_empty);
+    InitializeConditionVariable(&queue->not_full);
+#else
+    pthread_mutex_init(&queue->lock, NULL);
+    pthread_cond_init(&queue->not_empty, NULL);
+    pthread_cond_init(&queue->not_full, NULL);
+#endif
+    return 0;
+}
+
+static void detection_batch_queue_close(DetectionBatchQueue *queue) {
+    if (!queue || !queue->items) {
+        return;
+    }
+#ifdef _WIN32
+    EnterCriticalSection(&queue->lock);
+    queue->closed = 1;
+    WakeAllConditionVariable(&queue->not_empty);
+    WakeAllConditionVariable(&queue->not_full);
+    LeaveCriticalSection(&queue->lock);
+#else
+    pthread_mutex_lock(&queue->lock);
+    queue->closed = 1;
+    pthread_cond_broadcast(&queue->not_empty);
+    pthread_cond_broadcast(&queue->not_full);
+    pthread_mutex_unlock(&queue->lock);
+#endif
+}
+
+static void detection_batch_queue_destroy(DetectionBatchQueue *queue) {
+    if (!queue || !queue->items) {
+        return;
+    }
+    detection_batch_queue_close /* module: pipeline/pipeline_runner */ (queue);
+    free(queue->items);
+    queue->items = NULL;
+    queue->capacity = 0u;
+    queue->count = 0u;
+#ifdef _WIN32
+    DeleteCriticalSection(&queue->lock);
+#else
+    pthread_cond_destroy(&queue->not_empty);
+    pthread_cond_destroy(&queue->not_full);
+    pthread_mutex_destroy(&queue->lock);
+#endif
+}
+
+static int detection_batch_queue_push(DetectionBatchQueue *queue, FrameBatch *batch) {
+    if (!queue || !batch) {
+        return -1;
+    }
+#ifdef _WIN32
+    EnterCriticalSection(&queue->lock);
+    while (!queue->closed && queue->count == queue->capacity) {
+        SleepConditionVariableCS(&queue->not_full, &queue->lock, INFINITE);
+    }
+    if (queue->closed) {
+        LeaveCriticalSection(&queue->lock);
+        return 0;
+    }
+    queue->items[queue->tail] = batch;
+    queue->tail = (queue->tail + 1u) % queue->capacity;
+    queue->count++;
+    WakeConditionVariable(&queue->not_empty);
+    LeaveCriticalSection(&queue->lock);
+#else
+    pthread_mutex_lock(&queue->lock);
+    while (!queue->closed && queue->count == queue->capacity) {
+        pthread_cond_wait(&queue->not_full, &queue->lock);
+    }
+    if (queue->closed) {
+        pthread_mutex_unlock(&queue->lock);
+        return 0;
+    }
+    queue->items[queue->tail] = batch;
+    queue->tail = (queue->tail + 1u) % queue->capacity;
+    queue->count++;
+    pthread_cond_signal(&queue->not_empty);
+    pthread_mutex_unlock(&queue->lock);
+#endif
+    return 1;
+}
+
+static int detection_batch_queue_pop(DetectionBatchQueue *queue, FrameBatch **batch) {
+    if (!queue || !batch) {
+        return -1;
+    }
+    *batch = NULL;
+#ifdef _WIN32
+    EnterCriticalSection(&queue->lock);
+    while (!queue->closed && queue->count == 0u) {
+        SleepConditionVariableCS(&queue->not_empty, &queue->lock, INFINITE);
+    }
+    if (queue->count == 0u && queue->closed) {
+        LeaveCriticalSection(&queue->lock);
+        return 0;
+    }
+    *batch = queue->items[queue->head];
+    queue->items[queue->head] = NULL;
+    queue->head = (queue->head + 1u) % queue->capacity;
+    queue->count--;
+    WakeConditionVariable(&queue->not_full);
+    LeaveCriticalSection(&queue->lock);
+#else
+    pthread_mutex_lock(&queue->lock);
+    while (!queue->closed && queue->count == 0u) {
+        pthread_cond_wait(&queue->not_empty, &queue->lock);
+    }
+    if (queue->count == 0u && queue->closed) {
+        pthread_mutex_unlock(&queue->lock);
+        return 0;
+    }
+    *batch = queue->items[queue->head];
+    queue->items[queue->head] = NULL;
+    queue->head = (queue->head + 1u) % queue->capacity;
+    queue->count--;
+    pthread_cond_signal(&queue->not_full);
+    pthread_mutex_unlock(&queue->lock);
+#endif
+    return 1;
+}
+
+static int detection_hw_is_failed(DetectionHwPipelineContext *ctx) {
+    int failed = 0;
+    if (!ctx) {
+        return 1;
+    }
+#ifdef _WIN32
+    EnterCriticalSection(&ctx->state_lock);
+    failed = ctx->failed;
+    LeaveCriticalSection(&ctx->state_lock);
+#else
+    pthread_mutex_lock(&ctx->state_lock);
+    failed = ctx->failed;
+    pthread_mutex_unlock(&ctx->state_lock);
+#endif
+    return failed;
+}
+
+static void detection_hw_fail(DetectionHwPipelineContext *ctx) {
+    if (!ctx) {
+        return;
+    }
+#ifdef _WIN32
+    EnterCriticalSection(&ctx->state_lock);
+    ctx->failed = 1;
+    LeaveCriticalSection(&ctx->state_lock);
+#else
+    pthread_mutex_lock(&ctx->state_lock);
+    ctx->failed = 1;
+    pthread_mutex_unlock(&ctx->state_lock);
+#endif
+    detection_batch_queue_close /* module: pipeline/pipeline_runner */ (&ctx->free_batch_queue);
+    detection_batch_queue_close /* module: pipeline/pipeline_runner */ (&ctx->decoded_batch_queue);
+    detection_batch_queue_close /* module: pipeline/pipeline_runner */ (&ctx->completed_batch_queue);
+}
+
+static void detection_inference_worker_finished(DetectionHwPipelineContext *ctx) {
+    int close_completed = 0;
+    if (!ctx) {
+        return;
+    }
+#ifdef _WIN32
+    EnterCriticalSection(&ctx->state_lock);
+    ctx->active_workers--;
+    close_completed = ctx->active_workers == 0;
+    LeaveCriticalSection(&ctx->state_lock);
+#else
+    pthread_mutex_lock(&ctx->state_lock);
+    ctx->active_workers--;
+    close_completed = ctx->active_workers == 0;
+    pthread_mutex_unlock(&ctx->state_lock);
+#endif
+    if (close_completed) {
+        detection_batch_queue_close /* module: pipeline/pipeline_runner */ (&ctx->completed_batch_queue);
+    }
+}
+
+static int detection_batch_first_frame_id(const FrameBatch *batch) {
+    if (!batch || batch->valid_frames <= 0) {
+        return -1;
+    }
+    return batch->timings[0].frame_index;
+}
+
+static int detection_pending_batch_insert(PendingBatchNode **head, FrameBatch *batch) {
+    PendingBatchNode *node = NULL;
+    const int first_frame_id = detection_batch_first_frame_id /* module: pipeline/pipeline_runner */ (batch);
+    if (!head || !batch || first_frame_id < 0) {
+        return -1;
+    }
+    node = (PendingBatchNode *)calloc(1, sizeof(*node));
+    if (!node) {
+        return -1;
+    }
+    node->batch = batch;
+    node->first_frame_id = first_frame_id;
+    if (!*head || first_frame_id < (*head)->first_frame_id) {
+        node->next = *head;
+        *head = node;
+        return 0;
+    }
+    PendingBatchNode *cur = *head;
+    while (cur->next && cur->next->first_frame_id < first_frame_id) {
+        cur = cur->next;
+    }
+    node->next = cur->next;
+    cur->next = node;
+    return 0;
+}
+
+static FrameBatch *detection_pending_batch_take(PendingBatchNode **head, int frame_id) {
+    PendingBatchNode *prev = NULL;
+    PendingBatchNode *cur = head ? *head : NULL;
+    while (cur) {
+        if (cur->first_frame_id == frame_id) {
+            FrameBatch *batch = cur->batch;
+            if (prev) {
+                prev->next = cur->next;
+            } else {
+                *head = cur->next;
+            }
+            free(cur);
+            return batch;
+        }
+        prev = cur;
+        cur = cur->next;
+    }
+    return NULL;
+}
+
+static void detection_pending_batch_release_all(DetectionHwPipelineContext *ctx, PendingBatchNode *head) {
+    while (head) {
+        PendingBatchNode *next = head->next;
+        if (head->batch) {
+            release_hw_frame_batch /* module: pipeline/pipeline_runner */ (ctx->reader, head->batch);
+            frame_batch_clear /* module: pipeline/frame_batch */ (head->batch);
+        }
+        free(head);
+        head = next;
+    }
+}
+
+static void detection_batch_queue_release_all(DetectionHwPipelineContext *ctx, DetectionBatchQueue *queue) {
+    if (!ctx || !queue || !queue->items) {
+        return;
+    }
+    for (;;) {
+        FrameBatch *batch = NULL;
+        int popped = 0;
+#ifdef _WIN32
+        EnterCriticalSection(&queue->lock);
+        if (queue->count > 0u) {
+            batch = queue->items[queue->head];
+            queue->items[queue->head] = NULL;
+            queue->head = (queue->head + 1u) % queue->capacity;
+            queue->count--;
+            popped = 1;
+        }
+        LeaveCriticalSection(&queue->lock);
+#else
+        pthread_mutex_lock(&queue->lock);
+        if (queue->count > 0u) {
+            batch = queue->items[queue->head];
+            queue->items[queue->head] = NULL;
+            queue->head = (queue->head + 1u) % queue->capacity;
+            queue->count--;
+            popped = 1;
+        }
+        pthread_mutex_unlock(&queue->lock);
+#endif
+        if (!popped) {
+            break;
+        }
+        if (batch) {
+            release_hw_frame_batch /* module: pipeline/pipeline_runner */ (ctx->reader, batch);
+            frame_batch_clear /* module: pipeline/frame_batch */ (batch);
+        }
+    }
+}
+
+static int detection_recycle_batch(DetectionHwPipelineContext *ctx, FrameBatch *batch) {
+    int push_result = 0;
+    if (!ctx || !batch) {
+        return -1;
+    }
+    release_hw_frame_batch /* module: pipeline/pipeline_runner */ (ctx->reader, batch);
+    frame_batch_clear /* module: pipeline/frame_batch */ (batch);
+    if (detection_hw_is_failed /* module: pipeline/pipeline_runner */ (ctx)) {
+        return 0;
+    }
+    push_result = detection_batch_queue_push /* module: pipeline/pipeline_runner */ (&ctx->free_batch_queue, batch);
+    return push_result < 0 ? -1 : 0;
+}
+
+static int detection_output_and_recycle_batch(DetectionHwPipelineContext *ctx, FrameBatch *batch) {
+    if (!ctx || !batch) {
+        return -1;
+    }
+
+    for (int slot = 0; slot < batch->valid_frames; ++slot) {
+        CudaNV12Frame *frame = &batch->cuda_frames[slot];
+        FrameTiming *timing = &batch->timings[slot];
+        DetectionResult *result = &batch->detections[slot];
+        const int current_frame_id = timing->frame_index;
+        const double timestamp_ms = frame->timestamp_ms > 0.0
+                                        ? frame->timestamp_ms
+                                        : (ctx->info && ctx->info->fps > 0.0 ? (double)current_frame_id * 1000.0 / ctx->info->fps : 0.0);
+        for (size_t i = 0; i < result->count; ++i) {
+            result->items[i].timestamp_ms = timestamp_ms;
+        }
+
+        if (detection_writer_write_frame /* module: inference/detection_writer */ (ctx->detections, result) != 0) {
+            log_error /* module: utils/logger */ ("failed to write detections for frame %d", current_frame_id);
+            detection_hw_fail /* module: pipeline/pipeline_runner */ (ctx);
+            detection_recycle_batch /* module: pipeline/pipeline_runner */ (ctx, batch);
+            return -1;
+        }
+
+        if (ctx->config->draw_boxes) {
+            if (cuda_overlay_draw_nv12_boxes /* module: gpu/cuda_overlay */ (frame,
+                                                                             result,
+                                                                             ctx->config->box_thickness,
+                                                                             ctx->config->box_confidence,
+                                                                             -1,
+                                                                             frame->cuda_stream,
+                                                                             &timing->overlay_ms) != 0) {
+                log_error /* module: utils/logger */ ("failed to draw detection boxes on frame %d: %s", current_frame_id, cuda_overlay_last_error /* module: gpu/cuda_overlay */ ());
+                detection_hw_fail /* module: pipeline/pipeline_runner */ (ctx);
+                detection_recycle_batch /* module: pipeline/pipeline_runner */ (ctx, batch);
+                return -1;
+            }
+            if (video_hw_writer_write_cuda_nv12 /* module: video/video_hw_writer */ (ctx->writer, frame, timing) != 0) {
+                log_error /* module: utils/logger */ ("failed to encode annotated frame %d: %s", current_frame_id, video_hw_writer_last_error /* module: video/video_hw_writer */ ());
+                detection_hw_fail /* module: pipeline/pipeline_runner */ (ctx);
+                detection_recycle_batch /* module: pipeline/pipeline_runner */ (ctx, batch);
+                return -1;
+            }
+        }
+
+        timing->process_ms = timing->upload_ms + timing->preprocess_ms + timing->inference_ms + timing->download_ms + timing->postprocess_ms + timing->overlay_ms;
+        timing->total_ms = timing->decode_ms + timing->process_ms + timing->encode_ms + timing->mux_write_ms;
+        apply_execution_plan_to_timing /* module: pipeline/pipeline_runner */ (ctx->plan, timing);
+        apply_detection_metadata_to_timing /* module: pipeline/pipeline_runner */ (ctx->config, ctx->info, result, 0, 0, timing);
+
+        if (ctx->config->enable_benchmark &&
+            benchmark_add_frame_result /* module: benchmark/benchmark */ (ctx->benchmark, timing) != 0) {
+            log_error /* module: utils/logger */ ("failed to write benchmark timing for frame %d", current_frame_id);
+            detection_hw_fail /* module: pipeline/pipeline_runner */ (ctx);
+            detection_recycle_batch /* module: pipeline/pipeline_runner */ (ctx, batch);
+            return -1;
+        }
+
+        if (ctx->config->progress_interval > 0 && (current_frame_id + 1) % ctx->config->progress_interval == 0) {
+            const double wall_ms = timer_stop_ms /* module: benchmark/timer */ (ctx->wall_timer);
+            const double fps = wall_ms > 0.0 ? (double)(current_frame_id + 1) * 1000.0 / wall_ms : 0.0;
+            log_info /* module: utils/logger */ ("progress: completed %d hardware detection frames, wall_clock_fps=%.3f", current_frame_id + 1, fps);
+        }
+    }
+
+    ctx->next_frame_id += batch->valid_frames;
+    return detection_recycle_batch /* module: pipeline/pipeline_runner */ (ctx, batch);
+}
+
+static int detection_output_batch_ordered(DetectionHwPipelineContext *ctx, PendingBatchNode **pending, FrameBatch *batch) {
+    FrameBatch *ready = NULL;
+    if (!ctx || !pending || !batch) {
+        return -1;
+    }
+    if (detection_batch_first_frame_id /* module: pipeline/pipeline_runner */ (batch) == ctx->next_frame_id) {
+        if (detection_output_and_recycle_batch /* module: pipeline/pipeline_runner */ (ctx, batch) != 0) {
+            return -1;
+        }
+        for (;;) {
+            ready = detection_pending_batch_take /* module: pipeline/pipeline_runner */ (pending, ctx->next_frame_id);
+            if (!ready) {
+                break;
+            }
+            if (detection_output_and_recycle_batch /* module: pipeline/pipeline_runner */ (ctx, ready) != 0) {
+                return -1;
+            }
+        }
+        return 0;
+    }
+    if (detection_pending_batch_insert /* module: pipeline/pipeline_runner */ (pending, batch) != 0) {
+        detection_hw_fail /* module: pipeline/pipeline_runner */ (ctx);
+        detection_recycle_batch /* module: pipeline/pipeline_runner */ (ctx, batch);
+        return -1;
+    }
+    return 0;
+}
+
+#ifdef _WIN32
+static DWORD WINAPI detection_decoder_thread_main(LPVOID arg)
+#else
+static void *detection_decoder_thread_main(void *arg)
+#endif
+{
+    DetectionHwPipelineContext *ctx = (DetectionHwPipelineContext *)arg;
+    int frame_id = 0;
+
+    for (;;) {
+        FrameBatch *batch = NULL;
+        int pop_result = 0;
+        int reached_eof = 0;
+
+        if (ctx->config->max_frames > 0 && frame_id >= ctx->config->max_frames) {
+            break;
+        }
+        pop_result = detection_batch_queue_pop /* module: pipeline/pipeline_runner */ (&ctx->free_batch_queue, &batch);
+        if (pop_result == 0) {
+            break;
+        }
+        if (pop_result < 0 || !batch || detection_hw_is_failed /* module: pipeline/pipeline_runner */ (ctx)) {
+            detection_hw_fail /* module: pipeline/pipeline_runner */ (ctx);
+            break;
+        }
+
+        frame_batch_clear /* module: pipeline/frame_batch */ (batch);
+        for (int slot = 0; slot < batch->capacity; ++slot) {
+            Timer decode_timer;
+            int read_result = 0;
+            if (ctx->config->max_frames > 0 && frame_id >= ctx->config->max_frames) {
+                reached_eof = 1;
+                break;
+            }
+            timer_start /* module: benchmark/timer */ (&decode_timer);
+            read_result = video_hw_reader_read_cuda_nv12 /* module: video/video_hw_reader */ (ctx->reader, &batch->cuda_frames[slot]);
+            batch->timings[slot].decode_ms = timer_stop_ms /* module: benchmark/timer */ (&decode_timer);
+            if (read_result == 0) {
+                reached_eof = 1;
+                break;
+            }
+            if (read_result < 0) {
+                log_error /* module: utils/logger */ ("failed to decode CUDA/NV12 frame %d: %s", frame_id, video_hw_reader_last_error /* module: video/video_hw_reader */ ());
+                release_hw_frame_batch /* module: pipeline/pipeline_runner */ (ctx->reader, batch);
+                frame_batch_clear /* module: pipeline/frame_batch */ (batch);
+                detection_hw_fail /* module: pipeline/pipeline_runner */ (ctx);
+                goto done;
+            }
+            batch->cuda_frames[slot].index = frame_id;
+            batch->timings[slot].frame_index = frame_id;
+            batch->valid_frames++;
+            frame_id++;
+        }
+
+        if (batch->valid_frames == 0) {
+            frame_batch_clear /* module: pipeline/frame_batch */ (batch);
+            detection_batch_queue_push /* module: pipeline/pipeline_runner */ (&ctx->free_batch_queue, batch);
+            break;
+        }
+
+        if (detection_batch_queue_push /* module: pipeline/pipeline_runner */ (&ctx->decoded_batch_queue, batch) <= 0) {
+            release_hw_frame_batch /* module: pipeline/pipeline_runner */ (ctx->reader, batch);
+            frame_batch_clear /* module: pipeline/frame_batch */ (batch);
+            break;
+        }
+
+        if (reached_eof) {
+            break;
+        }
+    }
+
+done:
+    detection_batch_queue_close /* module: pipeline/pipeline_runner */ (&ctx->decoded_batch_queue);
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+#ifdef _WIN32
+static DWORD WINAPI detection_inference_worker_main(LPVOID arg)
+#else
+static void *detection_inference_worker_main(void *arg)
+#endif
+{
+    DetectionInferenceWorkerArgs *worker = (DetectionInferenceWorkerArgs *)arg;
+    DetectionHwPipelineContext *ctx = worker ? worker->ctx : NULL;
+    const int worker_index = worker ? worker->worker_index : 0;
+    InferenceEngine *engine = ctx && ctx->worker_engines ? ctx->worker_engines[worker_index] : NULL;
+
+    if (!ctx) {
+        return 0;
+    }
+    if (!engine) {
+        detection_hw_fail /* module: pipeline/pipeline_runner */ (ctx);
+        detection_inference_worker_finished /* module: pipeline/pipeline_runner */ (ctx);
+        return 0;
+    }
+
+    for (;;) {
+        FrameBatch *batch = NULL;
+        const int pop_result = detection_batch_queue_pop /* module: pipeline/pipeline_runner */ (&ctx->decoded_batch_queue, &batch);
+        if (pop_result == 0) {
+            break;
+        }
+        if (pop_result < 0 || !batch || detection_hw_is_failed /* module: pipeline/pipeline_runner */ (ctx)) {
+            if (batch) {
+                release_hw_frame_batch /* module: pipeline/pipeline_runner */ (ctx->reader, batch);
+                frame_batch_clear /* module: pipeline/frame_batch */ (batch);
+            }
+            detection_hw_fail /* module: pipeline/pipeline_runner */ (ctx);
+            break;
+        }
+
+        if (inference_engine_run_cuda_nv12_batch /* module: inference/inference_engine */ (engine, batch) != 0) {
+            log_error /* module: utils/logger */ ("device inference failed on batch starting at frame %d: %s",
+                      batch->valid_frames > 0 ? batch->timings[0].frame_index : -1,
+                      inference_engine_last_error /* module: inference/inference_engine */ ());
+            release_hw_frame_batch /* module: pipeline/pipeline_runner */ (ctx->reader, batch);
+            frame_batch_clear /* module: pipeline/frame_batch */ (batch);
+            detection_hw_fail /* module: pipeline/pipeline_runner */ (ctx);
+            break;
+        }
+
+        if (detection_batch_queue_push /* module: pipeline/pipeline_runner */ (&ctx->completed_batch_queue, batch) <= 0) {
+            release_hw_frame_batch /* module: pipeline/pipeline_runner */ (ctx->reader, batch);
+            frame_batch_clear /* module: pipeline/frame_batch */ (batch);
+            if (!detection_hw_is_failed /* module: pipeline/pipeline_runner */ (ctx)) {
+                detection_hw_fail /* module: pipeline/pipeline_runner */ (ctx);
+            }
+            break;
+        }
+    }
+
+    detection_inference_worker_finished /* module: pipeline/pipeline_runner */ (ctx);
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
 static double bytes_to_mib(size_t bytes) {
     return (double)bytes / (1024.0 * 1024.0);
 }
@@ -1064,24 +1673,43 @@ static int run_detection_pipeline_hw(const PipelineConfig *config) {
 
     int result_code = -1;
     int reader_opened = 0;
-    int writer_opened = 0;
     int benchmark_opened = 0;
     int detections_opened = 0;
+    int queues_initialized = 0;
+    int batches_allocated = 0;
+    int decoder_started = 0;
+    int workers_started = 0;
+    int state_lock_initialized = 0;
     VideoHWReader reader;
     VideoHWWriter writer;
     Benchmark benchmark;
     DetectionWriter detections;
     InferenceEngine *engine = NULL;
-    FrameBatch batch;
+    InferenceEngine **worker_engines = NULL;
+    FrameBatch *batches = NULL;
+    DetectionInferenceWorkerArgs *worker_args = NULL;
+#ifdef _WIN32
+    HANDLE decoder_thread = NULL;
+    HANDLE *worker_threads = NULL;
+#else
+    pthread_t decoder_thread;
+    pthread_t *worker_threads = NULL;
+#endif
     HardwareProfile hardware;
     PipelineExecutionPlan plan;
     Timer wall_timer;
+    DetectionHwPipelineContext hw_ctx;
+    PendingBatchNode *pending = NULL;
+    int worker_count = 1;
+    int batch_capacity = 1;
+    int active_batches = 1;
+    int output_failed = 0;
 
     memset(&reader, 0, sizeof(reader));
     memset(&writer, 0, sizeof(writer));
+    memset(&hw_ctx, 0, sizeof(hw_ctx));
     benchmark_init /* module: benchmark/benchmark */ (&benchmark);
     detection_writer_init /* module: inference/detection_writer */ (&detections);
-    frame_batch_init /* module: pipeline/frame_batch */ (&batch);
     hardware_profile_init /* module: pipeline/hardware_profile */ (&hardware);
     pipeline_execution_plan_init /* module: pipeline/pipeline_execution_plan */ (&plan);
 
@@ -1140,19 +1768,95 @@ static int run_detection_pipeline_hw(const PipelineConfig *config) {
                                                                                &plan) != 0) {
         goto cleanup;
     }
-    if (detection_apply_inference_execution_plan /* module: pipeline/pipeline_runner */ (config, engine, &plan) != 0) {
+
+    worker_count = plan.inference_lane_count > 0 ? plan.inference_lane_count : plan.inference_context_count;
+    if (worker_count <= 0 && config->inference_contexts_mode == BATCH_SETTING_MANUAL && config->inference_contexts > 0) {
+        worker_count = config->inference_contexts;
+    }
+    if (worker_count <= 0) {
+        worker_count = 1;
+    }
+
+    batch_capacity = plan.schedule_batch_size > 0 ? plan.schedule_batch_size : plan.batch_size;
+    if (batch_capacity <= 0) {
+        batch_capacity = 1;
+    }
+    active_batches = plan.inflight_batches > 0 ? plan.inflight_batches : 1;
+    if (active_batches <= 0) {
+        active_batches = 1;
+    }
+    if (worker_count > active_batches) {
+        worker_count = active_batches;
+    }
+
+    plan.schedule_batch_size = batch_capacity;
+    plan.batch_size = batch_capacity;
+    plan.inflight_batches = active_batches;
+    plan.inference_lane_count = worker_count;
+    plan.inference_context_count = worker_count;
+    plan.total_active_frames = batch_capacity * active_batches;
+    plan.active_frame_capacity = plan.total_active_frames;
+
+    if (inference_engine_set_parallel_contexts /* module: inference/inference_engine */ (engine, 1) != 0 &&
+        config->parallel_inference_mode == PIPELINE_FEATURE_ON &&
+        worker_count == 1) {
+        log_error /* module: utils/logger */ ("failed to configure inference context: %s", inference_engine_last_error /* module: inference/inference_engine */ ());
         goto cleanup;
     }
+
+    worker_engines = (InferenceEngine **)calloc((size_t)worker_count, sizeof(*worker_engines));
+    worker_args = (DetectionInferenceWorkerArgs *)calloc((size_t)worker_count, sizeof(*worker_args));
+#ifdef _WIN32
+    worker_threads = (HANDLE *)calloc((size_t)worker_count, sizeof(*worker_threads));
+#else
+    worker_threads = (pthread_t *)calloc((size_t)worker_count, sizeof(*worker_threads));
+#endif
+    if (!worker_engines || !worker_args || !worker_threads) {
+        log_error /* module: utils/logger */ ("failed to allocate hardware inference worker state");
+        goto cleanup;
+    }
+    worker_engines[0] = engine;
+    engine = NULL;
+
+    for (int i = 1; i < worker_count; ++i) {
+        if (inference_engine_create /* module: inference/inference_engine */ (&worker_engines[i], &inference_config) != 0) {
+            log_error /* module: utils/logger */ ("failed to create inference engine for worker %d: %s", i, inference_engine_last_error /* module: inference/inference_engine */ ());
+            goto cleanup;
+        }
+        if (inference_engine_set_parallel_contexts /* module: inference/inference_engine */ (worker_engines[i], 1) != 0 &&
+            config->parallel_inference_mode == PIPELINE_FEATURE_ON) {
+            log_error /* module: utils/logger */ ("failed to configure inference worker %d: %s", i, inference_engine_last_error /* module: inference/inference_engine */ ());
+            goto cleanup;
+        }
+    }
+
     if (config->enable_auto_tune || config->batch_size_mode == BATCH_SETTING_AUTO || config->batch_size > 1) {
         hardware_profile_print /* module: pipeline/hardware_profile */ (&hardware);
         pipeline_execution_plan_print /* module: pipeline/pipeline_execution_plan */ (&plan);
     }
 
-    if (frame_batch_alloc /* module: pipeline/frame_batch */ (&batch,
-                                                              plan.batch_size,
-                                                              1,
-                                                              (size_t)config->max_detections_per_frame) != 0) {
-        log_error /* module: utils/logger */ ("failed to allocate CUDA FrameBatch capacity: %d", plan.batch_size);
+    batches = (FrameBatch *)calloc((size_t)active_batches, sizeof(*batches));
+    if (!batches) {
+        log_error /* module: utils/logger */ ("failed to allocate hardware FrameBatch pool");
+        goto cleanup;
+    }
+    for (int i = 0; i < active_batches; ++i) {
+        frame_batch_init /* module: pipeline/frame_batch */ (&batches[i]);
+        if (frame_batch_alloc /* module: pipeline/frame_batch */ (&batches[i],
+                                                                  batch_capacity,
+                                                                  1,
+                                                                  (size_t)config->max_detections_per_frame) != 0) {
+            log_error /* module: utils/logger */ ("failed to allocate CUDA FrameBatch %d capacity: %d", i, batch_capacity);
+            goto cleanup;
+        }
+        batches_allocated++;
+    }
+
+    queues_initialized = 1;
+    if (detection_batch_queue_init /* module: pipeline/pipeline_runner */ (&hw_ctx.free_batch_queue, (size_t)active_batches) != 0 ||
+        detection_batch_queue_init /* module: pipeline/pipeline_runner */ (&hw_ctx.decoded_batch_queue, (size_t)active_batches) != 0 ||
+        detection_batch_queue_init /* module: pipeline/pipeline_runner */ (&hw_ctx.completed_batch_queue, (size_t)active_batches) != 0) {
+        log_error /* module: utils/logger */ ("failed to initialize hardware detection batch queues");
         goto cleanup;
     }
 
@@ -1161,113 +1865,137 @@ static int run_detection_pipeline_hw(const PipelineConfig *config) {
             log_error /* module: utils/logger */ ("failed to open NVENC writer: %s", video_hw_writer_last_error /* module: video/video_hw_writer */ ());
             goto cleanup;
         }
-        writer_opened = 1;
+        hw_ctx.writer_opened = 1;
     }
 
-    log_info /* module: utils/logger */ ("hardware detection pipeline: decoder=nvdec runtime=%s draw_boxes=%s encoder=%s",
-             inference_runtime_to_string /* module: inference/backend_registry */ (config->runtime),
-             config->draw_boxes ? "true" : "false",
-             config->draw_boxes ? config->encoder_name : "none");
-    timer_start /* module: benchmark/timer */ (&wall_timer);
+    hw_ctx.config = config;
+    hw_ctx.reader = &reader;
+    hw_ctx.info = info;
+    hw_ctx.detections = &detections;
+    hw_ctx.writer = &writer;
+    hw_ctx.benchmark = &benchmark;
+    hw_ctx.worker_engines = worker_engines;
+    hw_ctx.worker_count = worker_count;
+    hw_ctx.plan = &plan;
+    hw_ctx.benchmark_opened = benchmark_opened;
+    hw_ctx.next_frame_id = 0;
+    hw_ctx.active_workers = worker_count;
+    hw_ctx.wall_timer = &wall_timer;
+#ifdef _WIN32
+    InitializeCriticalSection(&hw_ctx.state_lock);
+#else
+    pthread_mutex_init(&hw_ctx.state_lock, NULL);
+#endif
+    state_lock_initialized = 1;
 
-    int frame_id = 0;
-    for (;;) {
-        int reached_eof = 0;//flag for end of file
-        release_hw_frame_batch /* module: pipeline/pipeline_runner */ (&reader, &batch);// releases hw or ffmpeg frames stored inside the batch
-        frame_batch_clear /* module: pipeline/frame_batch */ (&batch);// resets the frame batch book keeping and meta data
-
-        for (int slot = 0; slot < batch.capacity; ++slot) {
-            Timer decode_timer;
-            int read_result = 0;
-            if (config->max_frames > 0 && frame_id >= config->max_frames) {
-                break;
-            }
-            timer_start /* module: benchmark/timer */ (&decode_timer);
-            read_result = video_hw_reader_read_cuda_nv12 /* module: video/video_hw_reader */ (&reader, &batch.cuda_frames[slot]);
-            batch.timings[slot].decode_ms = timer_stop_ms /* module: benchmark/timer */ (&decode_timer);
-            if (read_result == 0) {
-                reached_eof = 1;
-                break;
-            }
-            if (read_result < 0) {
-                log_error /* module: utils/logger */ ("failed to decode CUDA/NV12 frame %d: %s", frame_id, video_hw_reader_last_error /* module: video/video_hw_reader */ ());
-                goto cleanup;
-            }
-            batch.cuda_frames[slot].index = frame_id;
-            batch.timings[slot].frame_index = frame_id;
-            batch.valid_frames++;
-            frame_id++;
-        }
-
-        if (batch.valid_frames == 0) {
-            break;
-        }
-
-        if (inference_engine_run_cuda_nv12_batch /* module: inference/inference_engine */ (engine, &batch) != 0) {
-            log_error /* module: utils/logger */ ("device inference failed on batch starting at frame %d: %s",
-                      batch.timings[0].frame_index,
-                      inference_engine_last_error /* module: inference/inference_engine */ ());
+    for (int i = 0; i < active_batches; ++i) {
+        if (detection_batch_queue_push /* module: pipeline/pipeline_runner */ (&hw_ctx.free_batch_queue, &batches[i]) <= 0) {
+            log_error /* module: utils/logger */ ("failed to seed free hardware FrameBatch pool");
             goto cleanup;
         }
+    }
 
-        for (int slot = 0; slot < batch.valid_frames; ++slot) {
-            CudaNV12Frame *frame = &batch.cuda_frames[slot];
-            FrameTiming *timing = &batch.timings[slot];
-            DetectionResult *result = &batch.detections[slot];
-            const int current_frame_id = timing->frame_index;
-            const double timestamp_ms = frame->timestamp_ms > 0.0
-                                            ? frame->timestamp_ms
-                                            : (info->fps > 0.0 ? (double)current_frame_id * 1000.0 / info->fps : 0.0);
-            for (size_t i = 0; i < result->count; ++i) {
-                result->items[i].timestamp_ms = timestamp_ms;
-            }
+    log_info /* module: utils/logger */ ("hardware detection pipeline: decoder=nvdec runtime=%s draw_boxes=%s encoder=%s batch_capacity=%d inflight_batches=%d inference_workers=%d",
+             inference_runtime_to_string /* module: inference/backend_registry */ (config->runtime),
+             config->draw_boxes ? "true" : "false",
+             config->draw_boxes ? config->encoder_name : "none",
+             batch_capacity,
+             active_batches,
+             worker_count);
+    timer_start /* module: benchmark/timer */ (&wall_timer);
 
-            if (detection_writer_write_frame /* module: inference/detection_writer */ (&detections, result) != 0) {
-                log_error /* module: utils/logger */ ("failed to write detections for frame %d", current_frame_id);
-                goto cleanup;
-            }
-
-            if (config->draw_boxes) {
-                if (cuda_overlay_draw_nv12_boxes /* module: gpu/cuda_overlay */ (frame,
-                                                                                 result,
-                                                                                 config->box_thickness,
-                                                                                 config->box_confidence,
-                                                                                 -1,
-                                                                                 frame->cuda_stream,
-                                                                                 &timing->overlay_ms) != 0) {
-                    log_error /* module: utils/logger */ ("failed to draw detection boxes on frame %d: %s", current_frame_id, cuda_overlay_last_error /* module: gpu/cuda_overlay */ ());
-                    goto cleanup;
-                }
-                if (video_hw_writer_write_cuda_nv12 /* module: video/video_hw_writer */ (&writer, frame, timing) != 0) {
-                    log_error /* module: utils/logger */ ("failed to encode annotated frame %d: %s", current_frame_id, video_hw_writer_last_error /* module: video/video_hw_writer */ ());
-                    goto cleanup;
-                }
-            }
-
-            timing->process_ms = timing->upload_ms + timing->preprocess_ms + timing->inference_ms + timing->download_ms + timing->postprocess_ms + timing->overlay_ms;
-            timing->total_ms = timing->decode_ms + timing->process_ms + timing->encode_ms + timing->mux_write_ms;
-            apply_execution_plan_to_timing /* module: pipeline/pipeline_runner */ (&plan, timing);
-            apply_detection_metadata_to_timing /* module: pipeline/pipeline_runner */ (config, info, result, 0, 0, timing);
-
-            if (config->enable_benchmark &&
-                benchmark_add_frame_result /* module: benchmark/benchmark */ (&benchmark, timing) != 0) {
-                log_error /* module: utils/logger */ ("failed to write benchmark timing for frame %d", current_frame_id);
-                goto cleanup;
-            }
-
-            if (config->progress_interval > 0 && (current_frame_id + 1) % config->progress_interval == 0) {
-                const double wall_ms = timer_stop_ms /* module: benchmark/timer */ (&wall_timer);
-                const double fps = wall_ms > 0.0 ? (double)(current_frame_id + 1) * 1000.0 / wall_ms : 0.0;
-                log_info /* module: utils/logger */ ("progress: completed %d hardware detection frames, wall_clock_fps=%.3f", current_frame_id + 1, fps);
-            }
+#ifdef _WIN32
+    decoder_thread = CreateThread(NULL, 0, detection_decoder_thread_main, &hw_ctx, 0, NULL);
+    if (!decoder_thread) {
+        log_error /* module: utils/logger */ ("failed to start hardware decoder thread");
+        detection_hw_fail /* module: pipeline/pipeline_runner */ (&hw_ctx);
+        goto cleanup;
+    }
+    decoder_started = 1;
+    for (int i = 0; i < worker_count; ++i) {
+        worker_args[i].ctx = &hw_ctx;
+        worker_args[i].worker_index = i;
+        worker_threads[i] = CreateThread(NULL, 0, detection_inference_worker_main, &worker_args[i], 0, NULL);
+        if (!worker_threads[i]) {
+            log_error /* module: utils/logger */ ("failed to start hardware inference worker %d", i);
+            detection_hw_fail /* module: pipeline/pipeline_runner */ (&hw_ctx);
+            goto cleanup;
         }
+        workers_started++;
+    }
+#else
+    if (pthread_create(&decoder_thread, NULL, detection_decoder_thread_main, &hw_ctx) != 0) {
+        log_error /* module: utils/logger */ ("failed to start hardware decoder thread");
+        detection_hw_fail /* module: pipeline/pipeline_runner */ (&hw_ctx);
+        goto cleanup;
+    }
+    decoder_started = 1;
+    for (int i = 0; i < worker_count; ++i) {
+        worker_args[i].ctx = &hw_ctx;
+        worker_args[i].worker_index = i;
+        if (pthread_create(&worker_threads[i], NULL, detection_inference_worker_main, &worker_args[i]) != 0) {
+            log_error /* module: utils/logger */ ("failed to start hardware inference worker %d", i);
+            detection_hw_fail /* module: pipeline/pipeline_runner */ (&hw_ctx);
+            goto cleanup;
+        }
+        workers_started++;
+    }
+#endif
 
-        if (reached_eof) {
+    for (;;) {
+        FrameBatch *completed = NULL;
+        const int pop_result = detection_batch_queue_pop /* module: pipeline/pipeline_runner */ (&hw_ctx.completed_batch_queue, &completed);
+        if (pop_result == 0) {
+            break;
+        }
+        if (pop_result < 0 || !completed) {
+            detection_hw_fail /* module: pipeline/pipeline_runner */ (&hw_ctx);
+            output_failed = 1;
+            break;
+        }
+        if (detection_output_batch_ordered /* module: pipeline/pipeline_runner */ (&hw_ctx, &pending, completed) != 0) {
+            output_failed = 1;
             break;
         }
     }
 
-    if (writer_opened && video_hw_writer_flush /* module: video/video_hw_writer */ (&writer) != 0) {
+    if (output_failed || detection_hw_is_failed /* module: pipeline/pipeline_runner */ (&hw_ctx)) {
+        goto cleanup;
+    }
+
+    if (pending) {
+        log_error /* module: utils/logger */ ("hardware detection output ended with out-of-order pending batches");
+        detection_hw_fail /* module: pipeline/pipeline_runner */ (&hw_ctx);
+        goto cleanup;
+    }
+
+#ifdef _WIN32
+    if (decoder_started) {
+        WaitForSingleObject(decoder_thread, INFINITE);
+        CloseHandle(decoder_thread);
+        decoder_thread = NULL;
+        decoder_started = 0;
+    }
+    for (int i = 0; i < workers_started; ++i) {
+        if (worker_threads[i]) {
+            WaitForSingleObject(worker_threads[i], INFINITE);
+            CloseHandle(worker_threads[i]);
+            worker_threads[i] = NULL;
+        }
+    }
+    workers_started = 0;
+#else
+    if (decoder_started) {
+        pthread_join(decoder_thread, NULL);
+        decoder_started = 0;
+    }
+    for (int i = 0; i < workers_started; ++i) {
+        pthread_join(worker_threads[i], NULL);
+    }
+    workers_started = 0;
+#endif
+
+    if (hw_ctx.writer_opened && video_hw_writer_flush /* module: video/video_hw_writer */ (&writer) != 0) {
         log_error /* module: utils/logger */ ("failed to flush NVENC writer: %s", video_hw_writer_last_error /* module: video/video_hw_writer */ ());
         goto cleanup;
     }
@@ -1285,18 +2013,74 @@ static int run_detection_pipeline_hw(const PipelineConfig *config) {
     result_code = 0;
 
 cleanup:
-    release_hw_frame_batch /* module: pipeline/pipeline_runner */ (&reader, &batch);
+#ifdef _WIN32
+    if (decoder_started && decoder_thread) {
+        detection_hw_fail /* module: pipeline/pipeline_runner */ (&hw_ctx);
+        WaitForSingleObject(decoder_thread, INFINITE);
+        CloseHandle(decoder_thread);
+    }
+    for (int i = 0; i < workers_started; ++i) {
+        if (worker_threads && worker_threads[i]) {
+            detection_hw_fail /* module: pipeline/pipeline_runner */ (&hw_ctx);
+            WaitForSingleObject(worker_threads[i], INFINITE);
+            CloseHandle(worker_threads[i]);
+        }
+    }
+#else
+    if (decoder_started) {
+        detection_hw_fail /* module: pipeline/pipeline_runner */ (&hw_ctx);
+        pthread_join(decoder_thread, NULL);
+    }
+    for (int i = 0; i < workers_started; ++i) {
+        detection_hw_fail /* module: pipeline/pipeline_runner */ (&hw_ctx);
+        pthread_join(worker_threads[i], NULL);
+    }
+#endif
+    detection_pending_batch_release_all /* module: pipeline/pipeline_runner */ (&hw_ctx, pending);
+    pending = NULL;
+    if (queues_initialized) {
+        detection_batch_queue_release_all /* module: pipeline/pipeline_runner */ (&hw_ctx, &hw_ctx.decoded_batch_queue);
+        detection_batch_queue_release_all /* module: pipeline/pipeline_runner */ (&hw_ctx, &hw_ctx.completed_batch_queue);
+        detection_batch_queue_release_all /* module: pipeline/pipeline_runner */ (&hw_ctx, &hw_ctx.free_batch_queue);
+    }
     if (benchmark_opened) {
         benchmark_close_csv /* module: benchmark/benchmark */ (&benchmark);
     }
     if (detections_opened) {
         detection_writer_close /* module: inference/detection_writer */ (&detections);
     }
-    if (writer_opened) {
+    if (hw_ctx.writer_opened) {
         video_hw_writer_close /* module: video/video_hw_writer */ (&writer);
     }
+    if (worker_engines) {
+        for (int i = 0; i < worker_count; ++i) {
+            inference_engine_destroy /* module: inference/inference_engine */ (worker_engines[i]);
+        }
+    }
     inference_engine_destroy /* module: inference/inference_engine */ (engine);
-    frame_batch_free /* module: pipeline/frame_batch */ (&batch);
+    if (batches) {
+        for (int i = 0; i < batches_allocated; ++i) {
+            frame_batch_free /* module: pipeline/frame_batch */ (&batches[i]);
+        }
+    }
+    if (queues_initialized) {
+        detection_batch_queue_destroy /* module: pipeline/pipeline_runner */ (&hw_ctx.free_batch_queue);
+        detection_batch_queue_destroy /* module: pipeline/pipeline_runner */ (&hw_ctx.decoded_batch_queue);
+        detection_batch_queue_destroy /* module: pipeline/pipeline_runner */ (&hw_ctx.completed_batch_queue);
+    }
+#ifdef _WIN32
+    if (state_lock_initialized) {
+        DeleteCriticalSection(&hw_ctx.state_lock);
+    }
+#else
+    if (state_lock_initialized) {
+        pthread_mutex_destroy(&hw_ctx.state_lock);
+    }
+#endif
+    free(worker_threads);
+    free(worker_args);
+    free(worker_engines);
+    free(batches);
     benchmark_free /* module: benchmark/benchmark */ (&benchmark);
     if (reader_opened) {
         video_hw_reader_close /* module: video/video_hw_reader */ (&reader);

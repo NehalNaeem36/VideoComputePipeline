@@ -16,8 +16,8 @@ namespace {
 
 const std::vector<const char *> kPresetNames = {
     "People Detection - CSV Only",
-    "People Detection - Annotated Video",
-    "Fast GPU Annotated Video",
+    "People Detection - Staged Annotated Video",
+    "Fast Staged GPU Annotated Video",
     "Safe CPU Detection",
     "NVDEC/NVENC Stress Test",
     "Custom"};
@@ -229,8 +229,14 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.drawBoxes = true;
             config.maxFrames = 0;
             config.autoTune = true;
-            config.batchSizeMode = AutoIntMode::Auto;
-            config.inflightBatchesMode = AutoIntMode::Auto;
+            config.batchSizeMode = AutoIntMode::Manual;
+            config.batchSize = 2;
+            config.inflightBatchesMode = AutoIntMode::Manual;
+            config.inflightBatches = 3;
+            config.pipelineOverlap = FeatureMode::On;
+            config.parallelInference = FeatureMode::On;
+            config.inferenceContextsMode = AutoIntMode::Manual;
+            config.inferenceContexts = 2;
             config.targetFps = 60.0f;
             break;
         case Preset::SafeCpuDetection:
@@ -254,9 +260,14 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.drawBoxes = true;
             config.maxFrames = 0;
             config.autoTune = true;
-            config.batchSizeMode = AutoIntMode::Auto;
-            config.inflightBatchesMode = AutoIntMode::Auto;
+            config.batchSizeMode = AutoIntMode::Manual;
+            config.batchSize = 2;
+            config.inflightBatchesMode = AutoIntMode::Manual;
+            config.inflightBatches = 3;
             config.pipelineOverlap = FeatureMode::On;
+            config.parallelInference = FeatureMode::On;
+            config.inferenceContextsMode = AutoIntMode::Manual;
+            config.inferenceContexts = 2;
             config.targetFps = 60.0f;
             break;
         case Preset::Custom:

@@ -122,6 +122,23 @@ bool parse_progress_line(const std::string &line, RunProgress &progress) {
         return true;
     }
 
+    static const std::regex hardwarePipeline(
+        R"(hardware detection pipeline:.*batch_capacity=([0-9]+).*inflight_batches=([0-9]+).*inference_workers=([0-9]+))",
+        std::regex_constants::icase);
+    if (std::regex_search(line, match, hardwarePipeline)) {
+        progress.scheduleBatchSize = parse_int(match[1].str(), progress.scheduleBatchSize);
+        progress.batchSize = progress.scheduleBatchSize;
+        progress.inflightBatches = parse_int(match[2].str(), progress.inflightBatches);
+        progress.inferenceLaneCount = parse_int(match[3].str(), progress.inferenceLaneCount);
+        progress.inferenceContextCount = progress.inferenceLaneCount;
+        progress.totalActiveFrames = progress.scheduleBatchSize * progress.inflightBatches;
+        progress.activeFrameCapacity = progress.totalActiveFrames;
+        progress.pipelineOverlapEnabled = progress.inflightBatches > 1 || progress.inferenceLaneCount > 1;
+        progress.parallelInferenceEnabled = progress.inferenceLaneCount > 1;
+        progress.fallbackReason = "physical staged NVDEC -> inference -> output pipeline";
+        return true;
+    }
+
     return false;
 }
 
