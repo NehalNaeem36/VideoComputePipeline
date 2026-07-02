@@ -1,6 +1,6 @@
 /*
  * Video writer module: encodes CPU RGB24 frames to output video through FFmpeg.
- * The filter pipeline uses it after CPU/OpenCL processing; hardware detection
+ * The filter pipeline uses it after CPU/CUDA processing; hardware detection
  * uses the separate NVENC GPU-frame writer instead.
  */
 #include "video/video_writer.h"
@@ -81,7 +81,7 @@ int video_writer_open_with_options(VideoWriter *writer, const char *output_path,
         return -1;
     }
     if (lossless && is_nvenc_encoder /* module: video/video_writer */ (encoder_name)) {
-        log_warn /* module: utils/logger */ ("h264_nvenc lossless uses YUV420P to avoid OpenCL/NVENC 4:4:4 resource pressure; use --encoder libx264 for RGB lossless output");
+        log_warn /* module: utils/logger */ ("h264_nvenc lossless uses YUV420P to avoid CUDA filter/NVENC 4:4:4 resource pressure; use --encoder libx264 for RGB lossless output");
     }
 
     memset(writer, 0, sizeof(*writer));
@@ -96,7 +96,12 @@ int video_writer_open_with_options(VideoWriter *writer, const char *output_path,
 
     const AVCodec *encoder = avcodec_find_encoder_by_name(encoder_name);
     if (!encoder && strcmp(encoder_name, "libx264") == 0) {
-        encoder = avcodec_find_encoder(AV_CODEC_ID_H264);
+        log_warn /* module: utils/logger */ ("libx264 encoder is not available; falling back to mpeg4 for CPU-frame output");
+        encoder_name = "mpeg4";
+        encoder = avcodec_find_encoder_by_name(encoder_name);
+        if (!encoder) {
+            encoder = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+        }
     }
     if (!encoder) {
         log_error /* module: utils/logger */ ("requested encoder is not available: %s", encoder_name);

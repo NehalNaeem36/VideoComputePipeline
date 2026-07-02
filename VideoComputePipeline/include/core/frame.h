@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum {
     FRAME_FORMAT_RGB24 = 0,
     FRAME_FORMAT_GRAY8 = 1,
@@ -31,5 +35,9 @@ int frame_move(Frame *dst, Frame *src);
 int frame_is_valid(const Frame *frame);
 size_t frame_calculate_stride(int width, FrameFormat format);
 size_t frame_calculate_size(int width, int height, FrameFormat format);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

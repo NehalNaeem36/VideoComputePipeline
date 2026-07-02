@@ -251,7 +251,7 @@ void UiApp::render_run_config_tab() {
     render_tooltip("Preset command profiles. Custom preserves your manual edits.");
 
     if (input_text_string("Pipeline exe", config_.pipelineExePath)) mark_custom();
-    render_tooltip("Path to VideoComputePipeline.exe. Use build-win-cuda12 or build-win-cuda12-onnx for CUDA, TensorRT, NVDEC, and NVENC. build-win is usually the MinGW/OpenCL build.");
+    render_tooltip("Path to VideoComputePipeline.exe. Use build-win-cuda12 for CUDA filters, TensorRT, ONNX Runtime, NVDEC, and NVENC. CPU-only builds cannot run --mode gpu.");
     if (input_text_string("Working directory", config_.workingDirectory)) mark_custom();
     render_tooltip("Subprocess working directory. Relative input, model, label, output, benchmark, and detection paths are resolved from the VideoComputePipeline folder.");
     const std::vector<std::string> missingFfmpegDlls = missing_ffmpeg_runtime_dlls(config_);

@@ -2,7 +2,7 @@
 
 VideoComputePipeline is a modular C11 CPU/GPU video-processing benchmark.
 
-It uses FFmpeg libraries for MP4 decode/encode, OpenCL for GPU filters, and optional CUDA/TensorRT for YOLO detection. It does not call the FFmpeg CLI from the application.
+It uses FFmpeg libraries for MP4 decode/encode, CUDA for GPU filters, and optional CUDA/TensorRT or ONNX Runtime for YOLO detection. It does not call the FFmpeg CLI from the application.
 
 Project directory:
 
@@ -15,7 +15,7 @@ VideoComputePipeline/
 - FFmpeg video reader: MP4 decode to internal RGB24 `Frame`
 - FFmpeg video writer: RGB24 frame encode to MP4
 - CPU filters: grayscale, 3x3 blur, 5x5 blur, 9x9 blur, 13x13 blur
-- OpenCL GPU filters for the same filter set
+- CUDA GPU filters for the same filter set
 - Threaded pipeline with ordered output by global frame ID
 - NVENC encoder option through FFmpeg: `h264_nvenc`
 - Lossless output mode
@@ -325,7 +325,7 @@ The threaded pipeline uses bounded reusable frame pools:
 raw frame pool -> raw queue -> processor -> processed frame pool -> processed queue -> encoder
 ```
 
-GPU mode returns the CPU input frame to the raw pool immediately after the blocking OpenCL upload finishes. The encoder returns processed frames to the processed pool immediately after writing.
+GPU mode returns the CPU input frame to the raw pool immediately after the CUDA upload finishes. The encoder returns processed frames to the processed pool immediately after writing.
 
 Memory profiles:
 
@@ -405,7 +405,7 @@ This is parallel single-frame inference, not one TensorRT batch enqueue. Each ac
 `--lossless` uses lossless encoder settings where supported.
 
 - `--encoder libx264 --lossless` switches internally to `libx264rgb` for RGB lossless output.
-- `--encoder h264_nvenc --lossless` uses NVENC constant-QP lossless settings with `YUV420P`, which is the stable lower-resource path for OpenCL plus NVENC on the RTX 3050 Laptop GPU.
+- `--encoder h264_nvenc --lossless` uses NVENC constant-QP lossless settings with `YUV420P`, which is the stable lower-resource path for CUDA filters plus NVENC on the RTX 3050 Laptop GPU.
 
 MP4 output is still encoded video, not literal raw uncompressed video.
 
@@ -419,12 +419,11 @@ VideoComputePipeline/include/gpu         VideoComputePipeline/src/gpu         Vi
 VideoComputePipeline/include/pipeline    VideoComputePipeline/src/pipeline    VideoComputePipeline/tests/pipeline
 VideoComputePipeline/include/benchmark   VideoComputePipeline/src/benchmark   VideoComputePipeline/tests/benchmark
 VideoComputePipeline/include/utils       VideoComputePipeline/src/utils       VideoComputePipeline/tests/utils
-VideoComputePipeline/kernels
 VideoComputePipeline/data/input
 VideoComputePipeline/data/output
 VideoComputePipeline/benchmarks
 ```
 
-FFmpeg code is isolated in video modules. OpenCL code is isolated in GPU modules. Frame memory is isolated in core/pipeline frame modules. Timing and benchmark output are isolated in benchmark modules.
+FFmpeg code is isolated in video modules. CUDA GPU code is isolated in GPU and inference modules. Frame memory is isolated in core/pipeline frame modules. Timing and benchmark output are isolated in benchmark modules.
 
 Detection mode is CSV-only by default: it decodes NV12 frames, runs the selected inference runtime, writes `detections.csv`, and records detection timing fields in the benchmark CSV. Annotated video output is enabled only when `--draw-boxes` and `--output` are provided, with `--output-format mkv` recommended for hardware-video smoke tests.

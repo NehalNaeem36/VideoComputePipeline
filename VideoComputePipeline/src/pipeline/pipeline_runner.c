@@ -1,6 +1,6 @@
 /*
  * Pipeline runner module: orchestrates end-to-end filter and detection tasks.
- * It connects video readers, frame pools/queues, CPU/OpenCL/CUDA processing,
+ * It connects video readers, frame pools/queues, CPU/CUDA processing,
  * inference, writers, and benchmark recording while preserving task boundaries.
  */
 #include "pipeline/pipeline_runner.h"
@@ -2331,7 +2331,7 @@ static int run_filter_pipeline(const PipelineConfig *config) {
             return -1;
         }
         ctx.gpu_initialized = 1;
-        opencl_context_print_info /* module: gpu/opencl_context */ (&ctx.gpu.ctx);
+        gpu_filters_print_info /* module: gpu/gpu_filters */ (&ctx.gpu);
     }
 
     if (config->memory_profile != MEMORY_PROFILE_MANUAL &&

@@ -2,7 +2,7 @@
 
 Windows-first Dear ImGui launcher for `VideoComputePipeline.exe`.
 
-The UI is a standalone C++17 project. It does not link FFmpeg, CUDA, TensorRT, OpenCL, or any pipeline internals. It builds command lines from the current pipeline flags, launches the pipeline as a subprocess, captures stdout/stderr asynchronously, and shows partial progress from the pipeline logs.
+The UI is a standalone C++17 project. It does not link FFmpeg, CUDA, TensorRT, ONNX Runtime, or any pipeline internals. It builds command lines from the current pipeline flags, launches the pipeline as a subprocess, captures stdout/stderr asynchronously, and shows partial progress from the pipeline logs.
 
 ## Build
 

@@ -2,7 +2,7 @@
 
 ## Current Workflow
 
-VideoComputePipeline is a C11 video-processing benchmark using FFmpeg libraries and OpenCL.
+VideoComputePipeline is a C11 video-processing benchmark using FFmpeg libraries and CUDA.
 
 Application flow:
 
@@ -11,7 +11,7 @@ MP4 input
   -> FFmpeg decoder
   -> RGB24 Frame
   -> raw frame pool / raw queue
-  -> CPU or OpenCL processor
+  -> CPU or CUDA processor
   -> processed frame pool / processed queue
   -> ordered FFmpeg writer
   -> MP4 output
@@ -23,7 +23,7 @@ Each decoded frame receives a global frame ID before it enters the pipeline. Pro
 
 ```text
 decoder stage: 1 app thread
-processor stage: N CPU workers, or 1 GPU OpenCL worker
+processor stage: N CPU workers, or 1 GPU CUDA worker
 encoder stage: 1 app thread
 ```
 
@@ -34,7 +34,7 @@ FFmpeg also uses internal threads:
 --encoder-threads N
 ```
 
-GPU mode currently uses one OpenCL processor worker because the GPU filter context owns one OpenCL context and command queue.
+GPU filter mode currently uses one CUDA processor worker because the GPU filter context owns reusable CUDA buffers and one CUDA stream.
 
 ## Frame Format
 
@@ -54,7 +54,7 @@ For 4K:
 GPU mode currently transfers:
 
 ```text
-CPU RGB24 -> OpenCL upload -> kernel -> CPU RGB24 download -> FFmpeg encode
+CPU RGB24 -> CUDA upload -> kernel -> CPU RGB24 download -> FFmpeg encode
 ```
 
 This makes upload/download and CPU memory bandwidth major costs.
@@ -135,7 +135,7 @@ libx264 + --lossless -> libx264rgb, RGB lossless, QP/CRF 0
 h264_nvenc + --lossless -> NVENC constant-QP lossless settings, YUV420P
 ```
 
-NVENC 4:4:4 lossless was tested but caused OpenCL/NVENC resource pressure during 4K blur processing on the RTX 3050 Laptop GPU. The stable NVENC lossless path uses `YUV420P`.
+NVENC 4:4:4 lossless was tested but caused CUDA filter/NVENC resource pressure during 4K blur processing on the RTX 3050 Laptop GPU. The stable NVENC lossless path uses `YUV420P`.
 
 ## Observed Performance
 
@@ -188,7 +188,7 @@ CPU memory bandwidth
 disk space for lossless output
 ```
 
-OpenCL kernel time is only one part of total frame time. The RGB24 round trip is expensive.
+CUDA kernel time is only one part of total frame time. The RGB24 round trip is expensive.
 
 ## Recommended Next Optimizations
 

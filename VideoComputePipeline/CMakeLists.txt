@@ -19,13 +19,13 @@ if(CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(BUILD_TESTING "Build tests" ON)
+option(ENABLE_CUDA_FILTERS "Build CUDA GPU filter backend for --mode gpu" ON)
 option(ENABLE_TENSORRT "Build TensorRT inference runtime when CUDA inference is enabled" ON)
 option(ENABLE_CUDA_INFERENCE "Build CUDA/TensorRT inference backend" OFF)
 option(ENABLE_HW_VIDEO "Build NVDEC/NVENC CUDA hardware video path" OFF)
 option(ENABLE_ONNXRUNTIME "Build ONNX Runtime inference backend" OFF)
 option(ENABLE_LIBTORCH "Build LibTorch TorchScript inference backend" OFF)
 set(FFMPEG_ROOT "" CACHE PATH "Optional FFmpeg installation root")
-set(OPENCL_ROOT "" CACHE PATH "Optional OpenCL installation root")
 set(TENSORRT_ROOT "" CACHE PATH "Optional TensorRT installation root")
 set(CUDNN_ROOT "" CACHE PATH "Optional cuDNN installation root")
 set(ONNXRUNTIME_ROOT "" CACHE PATH "Optional ONNX Runtime installation root")
@@ -90,7 +90,7 @@ if(ENABLE_HW_VIDEO AND NOT ENABLE_CUDA_INFERENCE)
     message(FATAL_ERROR "ENABLE_HW_VIDEO=ON requires ENABLE_CUDA_INFERENCE=ON")
 endif()
 
-if(ENABLE_CUDA_INFERENCE)
+if(ENABLE_CUDA_INFERENCE OR ENABLE_CUDA_FILTERS)
     enable_language(CXX CUDA)
     set(CMAKE_CXX_STANDARD 17)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -101,10 +101,11 @@ if(ENABLE_CUDA_INFERENCE)
     endif()
     vcp_reject_cuda13_path(CUDAToolkit_ROOT)
     vcp_reject_cuda13_path(CUDA_TOOLKIT_ROOT_DIR)
-    vcp_reject_cuda13_path(OPENCL_ROOT)
     vcp_reject_cuda13_path(TENSORRT_ROOT)
     find_package(CUDAToolkit REQUIRED)
+endif()
 
+if(ENABLE_CUDA_INFERENCE)
     if(ENABLE_TENSORRT)
         find_path(TENSORRT_INCLUDE_DIR NvInfer.h
             HINTS
@@ -261,9 +262,6 @@ set(PROJECT_SOURCES
     src/video/video_reader.c
     src/video/video_writer.c
     src/cpu/cpu_filters.c
-    src/gpu/opencl_context.c
-    src/gpu/opencl_program.c
-    src/gpu/gpu_filters.c
     src/gpu/cuda_frame.c
     src/pipeline/pipeline_config.c
     src/pipeline/pipeline_runner.c
@@ -283,6 +281,12 @@ set(PROJECT_SOURCES
     src/utils/logger.c
     src/utils/file_utils.c
 )
+
+if(ENABLE_CUDA_FILTERS)
+    list(APPEND PROJECT_SOURCES src/gpu/gpu_filters.cu)
+else()
+    list(APPEND PROJECT_SOURCES src/gpu/gpu_filters_disabled.c)
+endif()
 
 if(ENABLE_CUDA_INFERENCE AND (ENABLE_TENSORRT OR ENABLE_ONNXRUNTIME OR ENABLE_LIBTORCH))
     list(APPEND PROJECT_SOURCES
@@ -394,50 +398,10 @@ if(NOT FFMPEG_FOUND)
     endif()
 endif()
 
-if(MSVC)
-    find_path(OpenCL_INCLUDE_DIRS CL/cl.h
-        HINTS
-            "${OPENCL_ROOT}/include"
-            "$ENV{OPENCL_ROOT}/include"
-            "${CUDAToolkit_TARGET_DIR}/include"
-            "${CUDAToolkit_INCLUDE_DIRS}"
-        NO_DEFAULT_PATH
-    )
-    find_library(OpenCL_LIBRARIES OpenCL
-        HINTS
-            "${OPENCL_ROOT}/lib/x64"
-            "${OPENCL_ROOT}/lib"
-            "$ENV{OPENCL_ROOT}/lib/x64"
-            "$ENV{OPENCL_ROOT}/lib"
-            "${CUDAToolkit_TARGET_DIR}/lib/x64"
-            "${CUDAToolkit_LIBRARY_DIR}"
-        NO_DEFAULT_PATH
-    )
-    if(NOT OpenCL_INCLUDE_DIRS OR NOT OpenCL_LIBRARIES)
-        message(FATAL_ERROR "MSVC builds require MSVC-compatible OpenCL headers/libs. Set -DOPENCL_ROOT=C:/path/to/OpenCL or build with CUDA Toolkit available.")
-    endif()
-    set(OpenCL_FOUND TRUE)
-else()
-    find_package(OpenCL QUIET)
-endif()
-if(NOT OpenCL_FOUND)
-    if(OPENCL_ROOT)
-        include_directories("${OPENCL_ROOT}/include")
-        link_directories("${OPENCL_ROOT}/lib")
-    endif()
-    find_library(OpenCL_LIBRARY OpenCL PATHS "${OPENCL_ROOT}/lib")
-    if(OpenCL_LIBRARY)
-        set(OpenCL_LIBRARIES ${OpenCL_LIBRARY})
-    else()
-        set(OpenCL_LIBRARIES OpenCL)
-    endif()
-endif()
-
 add_library(vcp_core STATIC ${PROJECT_SOURCES})
 target_include_directories(vcp_core PUBLIC ${PROJECT_INCLUDE_DIRS})
 target_compile_definitions(vcp_core PUBLIC
     VCP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
-    VCP_KERNEL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/kernels"
 )
 
 if(FFMPEG_FOUND AND TARGET PkgConfig::FFMPEG)
@@ -449,11 +413,9 @@ else()
     target_link_libraries(vcp_core PUBLIC ${FFMPEG_LIBRARIES})
 endif()
 
-if(OpenCL_FOUND)
-    target_include_directories(vcp_core PUBLIC ${OpenCL_INCLUDE_DIRS})
-    target_link_libraries(vcp_core PUBLIC ${OpenCL_LIBRARIES})
-else()
-    target_link_libraries(vcp_core PUBLIC ${OpenCL_LIBRARIES})
+if(ENABLE_CUDA_FILTERS)
+    target_compile_definitions(vcp_core PUBLIC VCP_ENABLE_CUDA_FILTERS=1)
+    target_link_libraries(vcp_core PUBLIC CUDA::cudart)
 endif()
 
 if(ENABLE_CUDA_INFERENCE)
@@ -504,7 +466,7 @@ endif()
 
 add_executable(VideoComputePipeline main.c)
 target_link_libraries(VideoComputePipeline PRIVATE vcp_core)
-if(ENABLE_CUDA_INFERENCE)
+if(ENABLE_CUDA_INFERENCE OR ENABLE_CUDA_FILTERS)
     set_target_properties(VideoComputePipeline PROPERTIES LINKER_LANGUAGE CXX)
 endif()
 if(MSVC AND FFMPEG_RUNTIME_DLLS)
@@ -532,8 +494,10 @@ if(BUILD_TESTING)
         get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
         add_executable(${TEST_NAME} ${TEST_FILE})
         target_link_libraries(${TEST_NAME} PRIVATE vcp_core)
-        if(ENABLE_CUDA_INFERENCE)
+        if(ENABLE_CUDA_INFERENCE OR ENABLE_CUDA_FILTERS)
             set_target_properties(${TEST_NAME} PROPERTIES LINKER_LANGUAGE CXX)
+        endif()
+        if(ENABLE_CUDA_INFERENCE)
             target_compile_definitions(${TEST_NAME} PRIVATE VCP_TEST_TENSORRT_ENGINE="${VCP_TEST_TENSORRT_ENGINE}")
         endif()
         if(MSVC AND FFMPEG_RUNTIME_DLLS)
@@ -567,11 +531,13 @@ if(MSVC)
     message(STATUS "FFmpeg runtime dir: ${FFMPEG_RUNTIME_ROOT}")
     message(STATUS "FFmpeg runtime DLLs copied: ${FFMPEG_RUNTIME_DLLS}")
 endif()
-message(STATUS "OpenCL found: ${OpenCL_FOUND}")
+message(STATUS "CUDA filters enabled: ${ENABLE_CUDA_FILTERS}")
 message(STATUS "CUDA inference enabled: ${ENABLE_CUDA_INFERENCE}")
 message(STATUS "Hardware video enabled: ${ENABLE_HW_VIDEO}")
-if(ENABLE_CUDA_INFERENCE)
+if(ENABLE_CUDA_INFERENCE OR ENABLE_CUDA_FILTERS)
     message(STATUS "CUDA Toolkit: ${CUDAToolkit_VERSION} at ${CUDAToolkit_TARGET_DIR}")
+endif()
+if(ENABLE_CUDA_INFERENCE)
     message(STATUS "cuDNN include: ${CUDNN_INCLUDE_DIR}")
     message(STATUS "cuDNN library: ${CUDNN_LIBRARY}")
     message(STATUS "cuDNN runtime: ${CUDNN_RUNTIME_DLL}")
