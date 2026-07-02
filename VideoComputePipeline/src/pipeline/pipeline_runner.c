@@ -37,8 +37,9 @@
 
 static int run_filter_pipeline(const PipelineConfig *config);
 static int run_detection_pipeline(const PipelineConfig *config);
-static int run_detection_pipeline_cpu(const PipelineConfig *config);
-static int run_detection_pipeline_hw(const PipelineConfig *config);
+static int run_detection_pipeline_cpu_decoded(const PipelineConfig *config);
+static int run_detection_pipeline_nvdec_cuda(const PipelineConfig *config);
+static int run_detection_pipeline_nvdec_cpu(const PipelineConfig *config);
 static void apply_execution_plan_to_timing(const PipelineExecutionPlan *plan, FrameTiming *timing);
 static void apply_detection_metadata_to_timing(const PipelineConfig *config,
                                                const VideoInfo *info,
@@ -46,6 +47,31 @@ static void apply_detection_metadata_to_timing(const PipelineConfig *config,
                                                int requires_raw_upload,
                                                int requires_raw_download,
                                                FrameTiming *timing);
+
+typedef enum {
+    DETECTION_FRAME_SOURCE_CPU_NV12 = 0,
+    DETECTION_FRAME_SOURCE_CUDA_NV12 = 1
+} DetectionFrameSource;
+
+typedef enum {
+    DETECTION_INFERENCE_CPU = 0,
+    DETECTION_INFERENCE_CUDA = 1
+} DetectionInferenceDevice;
+
+typedef enum {
+    DETECTION_OUTPUT_CSV_ONLY = 0,
+    DETECTION_OUTPUT_CPU_ANNOTATED_VIDEO = 1,
+    DETECTION_OUTPUT_CUDA_ANNOTATED_VIDEO = 2
+} DetectionOutputMode;
+
+typedef struct {
+    DetectionFrameSource frame_source;
+    DetectionInferenceDevice inference_device;
+    DetectionOutputMode output_mode;
+    int requires_raw_upload;
+    int requires_raw_download;
+    const char *description;
+} DetectionTopology;
 
 typedef struct {
     Frame frame;
@@ -682,6 +708,94 @@ static int validate_detection_paths(const PipelineConfig *config) {
         return -1;
     }
     return 0;
+}
+
+static int detection_encoder_is_nvenc(const char *encoder_name) {
+    return encoder_name && strcmp(encoder_name, "h264_nvenc") == 0;
+}
+
+static const char *detection_output_mode_name(DetectionOutputMode mode) {
+    switch (mode) {
+        case DETECTION_OUTPUT_CSV_ONLY:
+            return "csv-only";
+        case DETECTION_OUTPUT_CPU_ANNOTATED_VIDEO:
+            return "cpu-annotated-video";
+        case DETECTION_OUTPUT_CUDA_ANNOTATED_VIDEO:
+            return "cuda-annotated-video";
+        default:
+            return "unknown";
+    }
+}
+
+static int build_detection_topology(const PipelineConfig *config, DetectionTopology *topology) {
+    if (!config || !topology) {
+        return -1;
+    }
+
+    memset(topology, 0, sizeof(*topology));
+    topology->frame_source = config->decoder_mode == VIDEO_DECODER_NVDEC
+                                 ? DETECTION_FRAME_SOURCE_CUDA_NV12
+                                 : DETECTION_FRAME_SOURCE_CPU_NV12;
+    topology->inference_device = config->backend_device == BACKEND_DEVICE_CPU
+                                     ? DETECTION_INFERENCE_CPU
+                                     : DETECTION_INFERENCE_CUDA;
+    topology->output_mode = DETECTION_OUTPUT_CSV_ONLY;
+    topology->description = "csv-only detection";
+
+    if (config->draw_boxes) {
+        if (detection_encoder_is_nvenc /* module: pipeline/pipeline_runner */ (config->encoder_name)) {
+            topology->output_mode = DETECTION_OUTPUT_CUDA_ANNOTATED_VIDEO;
+            topology->description = "CUDA annotated detection";
+        } else {
+            topology->output_mode = DETECTION_OUTPUT_CPU_ANNOTATED_VIDEO;
+            topology->description = "CPU annotated detection";
+        }
+    }
+
+    topology->requires_raw_upload = topology->frame_source == DETECTION_FRAME_SOURCE_CPU_NV12 &&
+                                    topology->inference_device == DETECTION_INFERENCE_CUDA;
+    topology->requires_raw_download = topology->frame_source == DETECTION_FRAME_SOURCE_CUDA_NV12 &&
+                                      topology->inference_device == DETECTION_INFERENCE_CPU;
+
+    if (topology->output_mode == DETECTION_OUTPUT_CPU_ANNOTATED_VIDEO) {
+        log_error /* module: utils/logger */ ("CPU annotated detection output is not implemented; use --draw-boxes with --encoder h264_nvenc and --decoder nvdec, or omit --draw-boxes for CSV-only detection");
+        return -1;
+    }
+
+    if (topology->output_mode == DETECTION_OUTPUT_CUDA_ANNOTATED_VIDEO &&
+        (topology->frame_source != DETECTION_FRAME_SOURCE_CUDA_NV12 ||
+         topology->inference_device != DETECTION_INFERENCE_CUDA)) {
+        log_error /* module: utils/logger */ ("CUDA annotated detection requires --decoder nvdec --backend-device cuda --encoder h264_nvenc");
+        return -1;
+    }
+
+    const InferenceRuntime selected_runtime = config->runtime == INFERENCE_RUNTIME_AUTO
+                                                  ? inference_runtime_from_model_path /* module: inference/backend_registry */ (config->model_path)
+                                                  : config->runtime;
+    if (selected_runtime == INFERENCE_RUNTIME_TENSORRT && topology->inference_device == DETECTION_INFERENCE_CPU) {
+        log_error /* module: utils/logger */ ("TensorRT runtime does not support CPU inference; use --backend-device cuda");
+        return -1;
+    }
+
+    return 0;
+}
+
+static void log_detection_topology(const PipelineConfig *config, const DetectionTopology *topology) {
+    InferenceRuntime selected_runtime;
+
+    if (!config || !topology) {
+        return;
+    }
+    selected_runtime = config->runtime == INFERENCE_RUNTIME_AUTO
+                           ? inference_runtime_from_model_path /* module: inference/backend_registry */ (config->model_path)
+                           : config->runtime;
+    log_info /* module: utils/logger */ ("detection topology: decoder=%s inference_device=%s runtime=%s output_mode=%s raw_upload=%s raw_download=%s",
+             config->decoder_mode == VIDEO_DECODER_NVDEC ? "nvdec" : "cpu",
+             topology->inference_device == DETECTION_INFERENCE_CUDA ? "cuda" : "cpu",
+             inference_runtime_to_string /* module: inference/backend_registry */ (selected_runtime),
+             detection_output_mode_name /* module: pipeline/pipeline_runner */ (topology->output_mode),
+             topology->requires_raw_upload ? "true" : "false",
+             topology->requires_raw_download ? "true" : "false");
 }
 
 static void detection_profile_hardware_before_engine(const PipelineConfig *config, HardwareProfile *hardware) {
@@ -1461,7 +1575,7 @@ static void apply_detection_metadata_to_timing(const PipelineConfig *config,
     timing->detections_count = detections ? detections->count : 0u;
 }
 
-static int run_detection_pipeline_cpu(const PipelineConfig *config) {
+static int run_detection_pipeline_cpu_decoded(const PipelineConfig *config) {
     if (validate_detection_paths /* module: pipeline/pipeline_runner */ (config) != 0) {
         return -1;
     }
@@ -1478,6 +1592,7 @@ static int run_detection_pipeline_cpu(const PipelineConfig *config) {
     HardwareProfile hardware;
     PipelineExecutionPlan plan;
     Timer wall_timer;
+    const int requires_raw_upload = config && config->backend_device == BACKEND_DEVICE_CUDA ? 1 : 0;
 
     memset(&reader, 0, sizeof(reader));
     benchmark_init /* module: benchmark/benchmark */ (&benchmark);
@@ -1535,7 +1650,7 @@ static int run_detection_pipeline_cpu(const PipelineConfig *config) {
     if (detection_build_execution_plan /* module: pipeline/pipeline_runner */ (config,
                                                                                info,
                                                                                FRAME_FORMAT_NV12,
-                                                                               1,
+                                                                               requires_raw_upload,
                                                                                0,
                                                                                &hardware,
                                                                                engine,
@@ -1559,7 +1674,9 @@ static int run_detection_pipeline_cpu(const PipelineConfig *config) {
         goto cleanup;
     }
 
-    log_info /* module: utils/logger */ ("detection pipeline: decoder_stage=1 ffmpeg_decoder_threads=%d inference_workers=1 encoder_stage=0", effective_decoder_threads);
+    log_info /* module: utils/logger */ ("detection pipeline: decoder=cpu inference_device=%s decoder_threads=%d inference_workers=1 encoder_stage=0",
+             config->backend_device == BACKEND_DEVICE_CUDA ? "cuda" : "cpu",
+             effective_decoder_threads);
     timer_start /* module: benchmark/timer */ (&wall_timer);
 
     int frame_id = 0;
@@ -1613,7 +1730,7 @@ static int run_detection_pipeline_cpu(const PipelineConfig *config) {
             timing->process_ms = timing->upload_ms + timing->preprocess_ms + timing->inference_ms + timing->download_ms + timing->postprocess_ms;
             timing->total_ms = timing->decode_ms + timing->process_ms;
             apply_execution_plan_to_timing /* module: pipeline/pipeline_runner */ (&plan, timing);
-            apply_detection_metadata_to_timing /* module: pipeline/pipeline_runner */ (config, info, result, 1, 0, timing);
+            apply_detection_metadata_to_timing /* module: pipeline/pipeline_runner */ (config, info, result, requires_raw_upload, 0, timing);
 
             if (detection_writer_write_frame /* module: inference/detection_writer */ (&detections, result) != 0) {
                 log_error /* module: utils/logger */ ("failed to write detections for frame %d", current_frame_id);
@@ -1666,7 +1783,234 @@ cleanup:
     return result_code;
 }
 
-static int run_detection_pipeline_hw(const PipelineConfig *config) {
+static int run_detection_pipeline_nvdec_cpu(const PipelineConfig *config) {
+    if (validate_detection_paths /* module: pipeline/pipeline_runner */ (config) != 0) {
+        return -1;
+    }
+
+    int result_code = -1;
+    int reader_opened = 0;
+    int benchmark_opened = 0;
+    int detections_opened = 0;
+    VideoHWReader reader;
+    Benchmark benchmark;
+    DetectionWriter detections;
+    InferenceEngine *engine = NULL;
+    FrameBatch cpu_batch;
+    FrameBatch cuda_batch;
+    HardwareProfile hardware;
+    PipelineExecutionPlan plan;
+    Timer wall_timer;
+    double *bridge_download_ms = NULL;
+
+    memset(&reader, 0, sizeof(reader));
+    benchmark_init /* module: benchmark/benchmark */ (&benchmark);
+    detection_writer_init /* module: inference/detection_writer */ (&detections);
+    frame_batch_init /* module: pipeline/frame_batch */ (&cpu_batch);
+    frame_batch_init /* module: pipeline/frame_batch */ (&cuda_batch);
+    hardware_profile_init /* module: pipeline/hardware_profile */ (&hardware);
+    pipeline_execution_plan_init /* module: pipeline/pipeline_execution_plan */ (&plan);
+
+    int effective_decoder_threads = config->decoder_threads;
+    if ((config->memory_profile == MEMORY_PROFILE_LOW || config->memory_profile == MEMORY_PROFILE_AUTO) &&
+        effective_decoder_threads > 2) {
+        effective_decoder_threads = 2;
+    }
+
+    if (video_set_ffmpeg_log_level /* module: video/video_reader */ (config->ffmpeg_log_level) != 0) {
+        log_error /* module: utils/logger */ ("invalid FFmpeg log level: %s", config->ffmpeg_log_level);
+        goto cleanup;
+    }
+
+    if (video_hw_reader_open /* module: video/video_hw_reader */ (&reader, config->input_path, effective_decoder_threads) != 0) {
+        log_error /* module: utils/logger */ ("failed to open NVDEC reader: %s", video_hw_reader_last_error /* module: video/video_hw_reader */ ());
+        goto cleanup;
+    }
+    reader_opened = 1;
+
+    const VideoInfo *info = video_hw_reader_get_info /* module: video/video_hw_reader */ (&reader);
+    if (!info) {
+        log_error /* module: utils/logger */ ("failed to read hardware input video info");
+        goto cleanup;
+    }
+
+    if (detection_writer_open /* module: inference/detection_writer */ (&detections, config->detections_path, config->labels_path) != 0) {
+        log_error /* module: utils/logger */ ("failed to open detections CSV: %s", config->detections_path);
+        goto cleanup;
+    }
+    detections_opened = 1;
+
+    if (config->enable_benchmark &&
+        benchmark_open_csv /* module: benchmark/benchmark */ (&benchmark, config->benchmark_path) != 0) {
+        log_error /* module: utils/logger */ ("failed to open benchmark CSV: %s", config->benchmark_path);
+        goto cleanup;
+    }
+    benchmark_opened = config->enable_benchmark ? 1 : 0;
+
+    InferenceConfig inference_config;
+    fill_inference_config_from_pipeline /* module: pipeline/pipeline_runner */ (config, &inference_config);
+
+    detection_profile_hardware_before_engine /* module: pipeline/pipeline_runner */ (config, &hardware);
+    if (inference_engine_create /* module: inference/inference_engine */ (&engine, &inference_config) != 0) {
+        log_error /* module: utils/logger */ ("failed to create inference engine: %s", inference_engine_last_error /* module: inference/inference_engine */ ());
+        goto cleanup;
+    }
+    detection_profile_hardware_after_engine /* module: pipeline/pipeline_runner */ (config, &hardware);
+
+    if (detection_build_execution_plan /* module: pipeline/pipeline_runner */ (config,
+                                                                               info,
+                                                                               FRAME_FORMAT_NV12,
+                                                                               0,
+                                                                               1,
+                                                                               &hardware,
+                                                                               engine,
+                                                                               &plan) != 0) {
+        goto cleanup;
+    }
+    if (detection_apply_inference_execution_plan /* module: pipeline/pipeline_runner */ (config, engine, &plan) != 0) {
+        goto cleanup;
+    }
+
+    if (frame_batch_alloc /* module: pipeline/frame_batch */ (&cpu_batch,
+                                                              plan.batch_size,
+                                                              0,
+                                                              (size_t)config->max_detections_per_frame) != 0 ||
+        frame_batch_alloc_cpu_nv12_frames /* module: pipeline/frame_batch */ (&cpu_batch, info->width, info->height) != 0 ||
+        frame_batch_alloc /* module: pipeline/frame_batch */ (&cuda_batch,
+                                                              plan.batch_size,
+                                                              1,
+                                                              (size_t)config->max_detections_per_frame) != 0) {
+        log_error /* module: utils/logger */ ("failed to allocate NVDEC CPU bridge batches: %d", plan.batch_size);
+        goto cleanup;
+    }
+    bridge_download_ms = (double *)calloc((size_t)plan.batch_size, sizeof(*bridge_download_ms));
+    if (!bridge_download_ms) {
+        log_error /* module: utils/logger */ ("failed to allocate NVDEC CPU bridge timing state");
+        goto cleanup;
+    }
+
+    log_info /* module: utils/logger */ ("detection pipeline: decoder=nvdec inference_device=cpu decoder_threads=%d inference_workers=1 encoder_stage=0", effective_decoder_threads);
+    timer_start /* module: benchmark/timer */ (&wall_timer);
+
+    int frame_id = 0;
+    for (;;) {
+        int reached_eof = 0;
+        frame_batch_clear /* module: pipeline/frame_batch */ (&cpu_batch);
+        frame_batch_clear /* module: pipeline/frame_batch */ (&cuda_batch);
+        memset(bridge_download_ms, 0, sizeof(*bridge_download_ms) * (size_t)plan.batch_size);
+
+        for (int slot = 0; slot < cpu_batch.capacity; ++slot) {
+            Timer decode_timer;
+            Timer bridge_timer;
+            int read_result = 0;
+            if (config->max_frames > 0 && frame_id >= config->max_frames) {
+                break;
+            }
+            timer_start /* module: benchmark/timer */ (&decode_timer);
+            read_result = video_hw_reader_read_cuda_nv12 /* module: video/video_hw_reader */ (&reader, &cuda_batch.cuda_frames[slot]);
+            cpu_batch.timings[slot].decode_ms = timer_stop_ms /* module: benchmark/timer */ (&decode_timer);
+            if (read_result == 0) {
+                reached_eof = 1;
+                break;
+            }
+            if (read_result < 0) {
+                log_error /* module: utils/logger */ ("failed to decode CUDA/NV12 frame %d: %s", frame_id, video_hw_reader_last_error /* module: video/video_hw_reader */ ());
+                goto cleanup;
+            }
+            cuda_batch.cuda_frames[slot].index = frame_id;
+            timer_start /* module: benchmark/timer */ (&bridge_timer);
+            if (video_hw_reader_transfer_to_cpu_nv12 /* module: video/video_hw_reader */ (&reader, &cuda_batch.cuda_frames[slot], &cpu_batch.cpu_frames[slot]) != 0) {
+                log_error /* module: utils/logger */ ("failed to transfer NVDEC frame %d to CPU: %s", frame_id, video_hw_reader_last_error /* module: video/video_hw_reader */ ());
+                video_hw_reader_release_frame /* module: video/video_hw_reader */ (&reader, &cuda_batch.cuda_frames[slot]);
+                goto cleanup;
+            }
+            bridge_download_ms[slot] = timer_stop_ms /* module: benchmark/timer */ (&bridge_timer);
+            video_hw_reader_release_frame /* module: video/video_hw_reader */ (&reader, &cuda_batch.cuda_frames[slot]);
+            cpu_batch.cpu_frames[slot].index = frame_id;
+            cpu_batch.timings[slot].frame_index = frame_id;
+            cpu_batch.valid_frames++;
+            cuda_batch.valid_frames++;
+            frame_id++;
+        }
+
+        if (cpu_batch.valid_frames == 0) {
+            break;
+        }
+
+        if (inference_engine_run_nv12_batch /* module: inference/inference_engine */ (engine, &cpu_batch) != 0) {
+            log_error /* module: utils/logger */ ("CPU inference failed on NVDEC batch starting at frame %d: %s",
+                      cpu_batch.timings[0].frame_index,
+                      inference_engine_last_error /* module: inference/inference_engine */ ());
+            goto cleanup;
+        }
+
+        for (int slot = 0; slot < cpu_batch.valid_frames; ++slot) {
+            FrameTiming *timing = &cpu_batch.timings[slot];
+            DetectionResult *result = &cpu_batch.detections[slot];
+            const int current_frame_id = timing->frame_index;
+            const double timestamp_ms = info->fps > 0.0 ? (double)current_frame_id * 1000.0 / info->fps : 0.0;
+            timing->download_ms += bridge_download_ms[slot];
+            for (size_t i = 0; i < result->count; ++i) {
+                result->items[i].timestamp_ms = timestamp_ms;
+            }
+
+            timing->process_ms = timing->upload_ms + timing->preprocess_ms + timing->inference_ms + timing->download_ms + timing->postprocess_ms;
+            timing->total_ms = timing->decode_ms + timing->process_ms;
+            apply_execution_plan_to_timing /* module: pipeline/pipeline_runner */ (&plan, timing);
+            apply_detection_metadata_to_timing /* module: pipeline/pipeline_runner */ (config, info, result, 0, 1, timing);
+
+            if (detection_writer_write_frame /* module: inference/detection_writer */ (&detections, result) != 0) {
+                log_error /* module: utils/logger */ ("failed to write detections for frame %d", current_frame_id);
+                goto cleanup;
+            }
+            if (config->enable_benchmark &&
+                benchmark_add_frame_result /* module: benchmark/benchmark */ (&benchmark, timing) != 0) {
+                log_error /* module: utils/logger */ ("failed to write benchmark timing for frame %d", current_frame_id);
+                goto cleanup;
+            }
+            if (config->progress_interval > 0 && (current_frame_id + 1) % config->progress_interval == 0) {
+                const double wall_ms = timer_stop_ms /* module: benchmark/timer */ (&wall_timer);
+                const double fps = wall_ms > 0.0 ? (double)(current_frame_id + 1) * 1000.0 / wall_ms : 0.0;
+                log_info /* module: utils/logger */ ("progress: completed %d nvdec-cpu detection frames, wall_clock_fps=%.3f", current_frame_id + 1, fps);
+            }
+        }
+
+        if (reached_eof) {
+            break;
+        }
+    }
+
+    if (config->enable_benchmark) {
+        benchmark_set_wall_clock_ms /* module: benchmark/benchmark */ (&benchmark, timer_stop_ms /* module: benchmark/timer */ (&wall_timer));
+        if (benchmark_close_csv /* module: benchmark/benchmark */ (&benchmark) != 0) {
+            log_error /* module: utils/logger */ ("failed to close benchmark CSV: %s", config->benchmark_path);
+            goto cleanup;
+        }
+        benchmark_opened = 0;
+        benchmark_print_detection_summary /* module: benchmark/benchmark */ (&benchmark);
+    }
+
+    result_code = 0;
+
+cleanup:
+    if (benchmark_opened) {
+        benchmark_close_csv /* module: benchmark/benchmark */ (&benchmark);
+    }
+    if (detections_opened) {
+        detection_writer_close /* module: inference/detection_writer */ (&detections);
+    }
+    inference_engine_destroy /* module: inference/inference_engine */ (engine);
+    frame_batch_free /* module: pipeline/frame_batch */ (&cpu_batch);
+    frame_batch_free /* module: pipeline/frame_batch */ (&cuda_batch);
+    benchmark_free /* module: benchmark/benchmark */ (&benchmark);
+    free(bridge_download_ms);
+    if (reader_opened) {
+        video_hw_reader_close /* module: video/video_hw_reader */ (&reader);
+    }
+    return result_code;
+}
+
+static int run_detection_pipeline_nvdec_cuda(const PipelineConfig *config) {
     if (validate_detection_paths /* module: pipeline/pipeline_runner */ (config) != 0) {
         return -1;
     }
@@ -2089,6 +2433,8 @@ cleanup:
 }
 
 static int run_detection_pipeline(const PipelineConfig *config) {
+    DetectionTopology topology;
+
     if (!config) {
         return -1;
     }
@@ -2097,19 +2443,36 @@ static int run_detection_pipeline(const PipelineConfig *config) {
         return run_hardware_profile_only /* module: pipeline/pipeline_runner */ (config);
     }
 
-    if (config->decoder_mode == VIDEO_DECODER_NVDEC) {
-        const int hw_result = run_detection_pipeline_hw /* module: pipeline/pipeline_runner */ (config);
-        if (hw_result == 0 || config->decoder_fallback == DECODER_FALLBACK_NONE) {
-            return hw_result;
-        }
-        if (config->draw_boxes) {
-            log_error /* module: utils/logger */ ("NVDEC detection path failed and annotated output requires the hardware path; rerun without --draw-boxes for CSV-only CPU fallback");
-            return hw_result;
-        }
-        log_warn /* module: utils/logger */ ("NVDEC detection path failed; falling back to CPU decoder");
+    if (build_detection_topology /* module: pipeline/pipeline_runner */ (config, &topology) != 0) {
+        return -1;
+    }
+    log_detection_topology /* module: pipeline/pipeline_runner */ (config, &topology);
+
+    if (topology.frame_source == DETECTION_FRAME_SOURCE_CPU_NV12) {
+        return run_detection_pipeline_cpu_decoded /* module: pipeline/pipeline_runner */ (config);
     }
 
-    return run_detection_pipeline_cpu /* module: pipeline/pipeline_runner */ (config);
+    if (topology.inference_device == DETECTION_INFERENCE_CUDA) {
+        const int nvdec_result = run_detection_pipeline_nvdec_cuda /* module: pipeline/pipeline_runner */ (config);
+        if (nvdec_result == 0 || config->decoder_fallback == DECODER_FALLBACK_NONE) {
+            return nvdec_result;
+        }
+        if (config->draw_boxes) {
+            log_error /* module: utils/logger */ ("NVDEC CUDA detection path failed and annotated output requires the GPU-resident path; rerun without --draw-boxes for CSV-only CPU fallback");
+            return nvdec_result;
+        }
+        log_warn /* module: utils/logger */ ("NVDEC CUDA detection path failed; falling back to CPU decoder while keeping backend-device=cuda");
+        return run_detection_pipeline_cpu_decoded /* module: pipeline/pipeline_runner */ (config);
+    }
+
+    {
+        const int nvdec_cpu_result = run_detection_pipeline_nvdec_cpu /* module: pipeline/pipeline_runner */ (config);
+        if (nvdec_cpu_result == 0 || config->decoder_fallback == DECODER_FALLBACK_NONE) {
+            return nvdec_cpu_result;
+        }
+        log_warn /* module: utils/logger */ ("NVDEC CPU-inference bridge failed; falling back to CPU decoder while keeping backend-device=cpu");
+        return run_detection_pipeline_cpu_decoded /* module: pipeline/pipeline_runner */ (config);
+    }
 }
 
 #ifdef _WIN32

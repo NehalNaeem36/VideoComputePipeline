@@ -23,6 +23,7 @@ typedef struct {
 
 int video_hw_reader_open(VideoHWReader *reader, const char *path, int decoder_threads);
 int video_hw_reader_read_cuda_nv12(VideoHWReader *reader, CudaNV12Frame *out);
+int video_hw_reader_transfer_to_cpu_nv12(VideoHWReader *reader, const CudaNV12Frame *src, Frame *out);
 const VideoInfo *video_hw_reader_get_info(const VideoHWReader *reader);
 void video_hw_reader_release_frame(VideoHWReader *reader, CudaNV12Frame *frame);
 void video_hw_reader_close(VideoHWReader *reader);

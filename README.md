@@ -27,6 +27,13 @@ VideoComputePipeline/
 - Batch-aware detection execution plan with optional video/GPU auto-tuning
 - Tests for modules
 
+Detection topology is controlled independently:
+
+- `--decoder cpu|nvdec` chooses only where frames are decoded.
+- `--backend-device cuda|cpu` chooses only where inference runs.
+- `--encoder` matters only when `--draw-boxes` creates annotated video.
+- CSV-only detection does not require an encoder or output video.
+
 ## Build
 
 From PowerShell:

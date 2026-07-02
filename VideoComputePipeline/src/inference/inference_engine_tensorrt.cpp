@@ -31,6 +31,7 @@
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -1585,6 +1586,343 @@ private:
     ONNXTensorElementDataType input_ort_type_{ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT};
     ONNXTensorElementDataType output_ort_type_{ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT};
 };
+
+class OnnxRuntimeCpuYoloEngine final : public InferenceEngineImpl {
+public:
+    explicit OnnxRuntimeCpuYoloEngine(const InferenceConfig &cfg)
+        : config_(cfg),
+          env_(ORT_LOGGING_LEVEL_WARNING, "VideoComputePipelineCPU") {}
+
+    int init() {
+        if (inference_runtime_validate_model_path(INFERENCE_RUNTIME_ONNXRUNTIME, config_.model_path, validation_, sizeof(validation_)) != 0) {
+            g_last_error = validation_;
+            return -1;
+        }
+        if (resolve_class_configuration_for_config(config_) != 0) {
+            return -1;
+        }
+
+        session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+#ifdef _WIN32
+        const std::wstring model_path = widen(config_.model_path);
+        session_.reset(new Ort::Session(env_, model_path.c_str(), session_options_));
+#else
+        session_.reset(new Ort::Session(env_, config_.model_path, session_options_));
+#endif
+        allocator_.reset(new Ort::AllocatorWithDefaultOptions());
+        return discover_model();
+    }
+
+    int run(const Frame *frame, DetectionResult *result, FrameTiming *timing) override {
+        if (!frame || !result || !timing || frame->format != FRAME_FORMAT_NV12 || !frame->planes[0] || !frame->planes[1]) {
+            g_last_error = "ONNX Runtime CPU backend requires CPU NV12 frames";
+            return -1;
+        }
+        if (input_ort_type_ != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+            g_last_error = "ONNX Runtime CPU backend currently requires an FP32 input tensor model";
+            return -1;
+        }
+
+        const float scale = std::min((float)config_.input_width / (float)frame->width,
+                                     (float)config_.input_height / (float)frame->height);
+        const float resized_w = (float)frame->width * scale;
+        const float resized_h = (float)frame->height * scale;
+        const float pad_x = ((float)config_.input_width - resized_w) * 0.5f;
+        const float pad_y = ((float)config_.input_height - resized_h) * 0.5f;
+
+        auto preprocess_start = std::chrono::high_resolution_clock::now();
+        preprocess_nv12_to_nchw_fp32(frame, scale, pad_x, pad_y);
+        auto preprocess_end = std::chrono::high_resolution_clock::now();
+        timing->upload_ms = 0.0;
+        timing->preprocess_ms = std::chrono::duration<double, std::milli>(preprocess_end - preprocess_start).count();
+
+        std::array<int64_t, 4> input_shape = {1, 3, config_.input_height, config_.input_width};
+        Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        Ort::Value input_tensor = Ort::Value::CreateTensor<float>(memory_info,
+                                                                  input_buffer_.data(),
+                                                                  input_buffer_.size(),
+                                                                  input_shape.data(),
+                                                                  input_shape.size());
+
+        auto inference_start = std::chrono::high_resolution_clock::now();
+        std::vector<Ort::Value> outputs;
+        try {
+            const char *input_names[] = {input_name_.c_str()};
+            const char *output_names[] = {output_name_.c_str()};
+            outputs = session_->Run(Ort::RunOptions{nullptr}, input_names, &input_tensor, 1, output_names, 1);
+        } catch (const Ort::Exception &e) {
+            g_last_error = std::string("ONNX Runtime CPU inference failed: ") + e.what();
+            return -1;
+        }
+        auto inference_end = std::chrono::high_resolution_clock::now();
+        timing->inference_ms = std::chrono::duration<double, std::milli>(inference_end - inference_start).count();
+        timing->download_ms = 0.0;
+
+        auto post_start = std::chrono::high_resolution_clock::now();
+        if (outputs.empty() || !outputs[0].IsTensor()) {
+            g_last_error = "ONNX Runtime CPU output is not a tensor";
+            return -1;
+        }
+        if (copy_output_to_float(outputs[0]) != 0) {
+            return -1;
+        }
+
+        YoloPostprocessConfig post_config{};
+        post_config.frame_index = frame->index;
+        post_config.src_width = frame->width;
+        post_config.src_height = frame->height;
+        post_config.input_width = config_.input_width;
+        post_config.input_height = config_.input_height;
+        post_config.class_count = config_.class_count;
+        post_config.class_filter_id_count = config_.class_filter_id_count;
+        std::copy(config_.class_filter_ids,
+                  config_.class_filter_ids + config_.class_filter_id_count,
+                  post_config.class_filter_ids);
+        post_config.confidence_threshold = config_.confidence_threshold;
+        post_config.iou_threshold = config_.iou_threshold;
+        post_config.scale = scale;
+        post_config.pad_x = pad_x;
+        post_config.pad_y = pad_y;
+        if (yolo_postprocess(output_float_.data(),
+                             output_float_.size(),
+                             output_dims_int_.data(),
+                             (int)output_dims_int_.size(),
+                             &post_config,
+                             result) != 0) {
+            g_last_error = "YOLOv5 CPU postprocess failed";
+            return -1;
+        }
+        auto post_end = std::chrono::high_resolution_clock::now();
+        timing->postprocess_ms = std::chrono::duration<double, std::milli>(post_end - post_start).count();
+        return 0;
+    }
+
+    int run_device(const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing) override {
+        (void)frame;
+        (void)result;
+        (void)timing;
+        g_last_error = "ONNX Runtime CPU backend requires a CPU NV12 bridge before inference";
+        return -1;
+    }
+
+    int get_batch_capability(InferenceBatchCapability *capability) const override {
+        if (!capability) {
+            g_last_error = "invalid batch capability output";
+            return -1;
+        }
+        std::memset(capability, 0, sizeof(*capability));
+        capability->min_batch_size = 1;
+        capability->max_batch_size = 1;
+        capability->supports_dynamic_batch = 0;
+        capability->supports_true_batching = 0;
+        capability->supports_parallel_contexts = 0;
+        capability->max_parallel_contexts = 1;
+        capability->selected_context_count = 1;
+        capability->input_width = config_.input_width;
+        capability->input_height = config_.input_height;
+        capability->input_bytes_per_frame = input_buffer_.size() * sizeof(float);
+        capability->output_bytes_per_frame = output_float_.size() * sizeof(float);
+        std::snprintf(capability->description,
+                      sizeof(capability->description),
+                      "ONNX Runtime CPU single-frame execution");
+        return 0;
+    }
+
+    int set_parallel_contexts(int context_count) override {
+        if (context_count != 1) {
+            g_last_error = "ONNX Runtime CPU backend currently supports one inference context";
+            return -1;
+        }
+        return 0;
+    }
+
+    int run_batch(FrameBatch *batch) override {
+        if (!batch || batch->use_cuda_frames || batch->valid_frames < 0 || batch->valid_frames > batch->capacity) {
+            g_last_error = "invalid CPU FrameBatch for ONNX Runtime CPU inference";
+            return -1;
+        }
+        for (int i = 0; i < batch->valid_frames; ++i) {
+            if (run(&batch->cpu_frames[i], &batch->detections[i], &batch->timings[i]) != 0) {
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+    int run_device_batch(FrameBatch *batch) override {
+        (void)batch;
+        g_last_error = "ONNX Runtime CPU backend requires CPU FrameBatch input";
+        return -1;
+    }
+
+private:
+#ifdef _WIN32
+    static std::wstring widen(const char *value) {
+        std::wstring output;
+        if (!value) {
+            return output;
+        }
+        while (*value) {
+            output.push_back((wchar_t)(unsigned char)*value);
+            ++value;
+        }
+        return output;
+    }
+#endif
+
+    int discover_model() {
+        if (!session_ || !allocator_) {
+            g_last_error = "ONNX Runtime CPU session was not initialized";
+            return -1;
+        }
+        if (session_->GetInputCount() != 1 || session_->GetOutputCount() < 1) {
+            g_last_error = "ONNX Runtime CPU backend expects one input and at least one output";
+            return -1;
+        }
+        auto input_name = session_->GetInputNameAllocated(0, *allocator_);
+        auto output_name = session_->GetOutputNameAllocated(0, *allocator_);
+        input_name_ = input_name.get();
+        output_name_ = output_name.get();
+
+        const auto input_info = session_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
+        std::vector<int64_t> input_shape = input_info.GetShape();
+        if (input_shape.size() != 4 ||
+            input_shape[1] != 3 ||
+            input_shape[2] != config_.input_height ||
+            input_shape[3] != config_.input_width) {
+            g_last_error = "unsupported ONNX CPU model input shape; expected 1x3xinput_sizexinput_size";
+            return -1;
+        }
+        input_ort_type_ = input_info.GetElementType();
+        if (input_ort_type_ != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+            g_last_error = "ONNX Runtime CPU backend currently requires FP32 model input";
+            return -1;
+        }
+        input_buffer_.resize((size_t)3 * (size_t)config_.input_height * (size_t)config_.input_width);
+
+        const auto output_info = session_->GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo();
+        output_ort_type_ = output_info.GetElementType();
+        output_dims_ = output_info.GetShape();
+        if (output_dims_.empty()) {
+            g_last_error = "ONNX Runtime CPU output shape is empty";
+            return -1;
+        }
+        const int attributes = 5 + config_.class_count;
+        if (output_dims_.size() >= 3 && output_dims_[1] < 0 && output_dims_[2] == attributes) {
+            const int grid8 = config_.input_width / 8;
+            const int grid16 = config_.input_width / 16;
+            const int grid32 = config_.input_width / 32;
+            output_dims_[1] = (int64_t)(3 * (grid8 * grid8 + grid16 * grid16 + grid32 * grid32));
+        } else if (output_dims_.size() >= 3 && output_dims_[2] < 0 && output_dims_[1] == attributes) {
+            const int grid8 = config_.input_width / 8;
+            const int grid16 = config_.input_width / 16;
+            const int grid32 = config_.input_width / 32;
+            output_dims_[2] = (int64_t)(3 * (grid8 * grid8 + grid16 * grid16 + grid32 * grid32));
+        }
+        for (int64_t &dim : output_dims_) {
+            if (dim < 0) {
+                dim = 1;
+            }
+        }
+        return 0;
+    }
+
+    void preprocess_nv12_to_nchw_fp32(const Frame *frame, float scale, float pad_x, float pad_y) {
+        const int dst_w = config_.input_width;
+        const int dst_h = config_.input_height;
+        const size_t channel_size = (size_t)dst_w * (size_t)dst_h;
+        float *r_plane = input_buffer_.data();
+        float *g_plane = input_buffer_.data() + channel_size;
+        float *b_plane = input_buffer_.data() + channel_size * 2u;
+
+        for (int y = 0; y < dst_h; ++y) {
+            for (int x = 0; x < dst_w; ++x) {
+                const float src_xf = ((float)x - pad_x) / scale;
+                const float src_yf = ((float)y - pad_y) / scale;
+                const size_t dst_index = (size_t)y * (size_t)dst_w + (size_t)x;
+                if (src_xf < 0.0f || src_yf < 0.0f || src_xf > (float)(frame->width - 1) || src_yf > (float)(frame->height - 1)) {
+                    r_plane[dst_index] = 114.0f / 255.0f;
+                    g_plane[dst_index] = 114.0f / 255.0f;
+                    b_plane[dst_index] = 114.0f / 255.0f;
+                    continue;
+                }
+                const int sx = std::max(0, std::min(frame->width - 1, (int)(src_xf + 0.5f)));
+                const int sy = std::max(0, std::min(frame->height - 1, (int)(src_yf + 0.5f)));
+                const int uv_x = sx & ~1;
+                const int uv_y = sy / 2;
+                const uint8_t yy = frame->planes[0][(size_t)sy * frame->linesize[0] + (size_t)sx];
+                const uint8_t uu = frame->planes[1][(size_t)uv_y * frame->linesize[1] + (size_t)uv_x];
+                const uint8_t vv = frame->planes[1][(size_t)uv_y * frame->linesize[1] + (size_t)uv_x + 1u];
+                const float yf = (float)yy;
+                const float uf = (float)uu - 128.0f;
+                const float vf = (float)vv - 128.0f;
+                const float rf = std::max(0.0f, std::min(255.0f, yf + 1.402f * vf));
+                const float gf = std::max(0.0f, std::min(255.0f, yf - 0.344136f * uf - 0.714136f * vf));
+                const float bf = std::max(0.0f, std::min(255.0f, yf + 1.772f * uf));
+                r_plane[dst_index] = rf / 255.0f;
+                g_plane[dst_index] = gf / 255.0f;
+                b_plane[dst_index] = bf / 255.0f;
+            }
+        }
+    }
+
+    int copy_output_to_float(Ort::Value &output) {
+        const auto info = output.GetTensorTypeAndShapeInfo();
+        std::vector<int64_t> shape = info.GetShape();
+        for (int64_t &dim : shape) {
+            if (dim < 0) {
+                dim = 1;
+            }
+        }
+        const size_t elements = shape_volume(shape);
+        if (elements == 0) {
+            g_last_error = "ONNX Runtime CPU output tensor is empty";
+            return -1;
+        }
+        output_dims_ = shape;
+        output_dims_int_.resize(shape.size());
+        for (size_t i = 0; i < shape.size(); ++i) {
+            if (shape[i] > INT_MAX) {
+                g_last_error = "ONNX Runtime CPU output tensor dimension is too large";
+                return -1;
+            }
+            output_dims_int_[i] = (int)shape[i];
+        }
+        output_float_.resize(elements);
+        const ONNXTensorElementDataType type = info.GetElementType();
+        if (type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+            const float *data = output.GetTensorData<float>();
+            std::copy_n(data, elements, output_float_.data());
+            return 0;
+        }
+        if (type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
+            const uint16_t *data = output.GetTensorData<uint16_t>();
+            for (size_t i = 0; i < elements; ++i) {
+                __half h;
+                std::memcpy(&h, &data[i], sizeof(h));
+                output_float_[i] = __half2float(h);
+            }
+            return 0;
+        }
+        g_last_error = "ONNX Runtime CPU output tensor must be FP32 or FP16";
+        return -1;
+    }
+
+    InferenceConfig config_{};
+    char validation_[256] = {0};
+    Ort::Env env_;
+    Ort::SessionOptions session_options_;
+    std::unique_ptr<Ort::Session> session_;
+    std::unique_ptr<Ort::AllocatorWithDefaultOptions> allocator_;
+    std::string input_name_;
+    std::string output_name_;
+    ONNXTensorElementDataType input_ort_type_{ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT};
+    ONNXTensorElementDataType output_ort_type_{ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT};
+    std::vector<float> input_buffer_;
+    std::vector<float> output_float_;
+    std::vector<int64_t> output_dims_;
+    std::vector<int> output_dims_int_;
+};
 #endif
 
 #ifdef VCP_ENABLE_LIBTORCH
@@ -1713,11 +2051,19 @@ extern "C" int inference_engine_create(InferenceEngine **engine, const Inference
 #endif
     } else if (selected_runtime == INFERENCE_RUNTIME_ONNXRUNTIME) {
 #ifdef VCP_ENABLE_ONNXRUNTIME
-        std::unique_ptr<OnnxRuntimeYoloEngine> onnx_impl(new OnnxRuntimeYoloEngine(*config));
-        if (onnx_impl->init() != 0) {
-            return -1;
+        if (config->backend_device == BACKEND_DEVICE_CPU) {
+            std::unique_ptr<OnnxRuntimeCpuYoloEngine> onnx_cpu_impl(new OnnxRuntimeCpuYoloEngine(*config));
+            if (onnx_cpu_impl->init() != 0) {
+                return -1;
+            }
+            impl = std::move(onnx_cpu_impl);
+        } else {
+            std::unique_ptr<OnnxRuntimeYoloEngine> onnx_impl(new OnnxRuntimeYoloEngine(*config));
+            if (onnx_impl->init() != 0) {
+                return -1;
+            }
+            impl = std::move(onnx_impl);
         }
-        impl = std::move(onnx_impl);
 #else
         g_last_error = "ONNX Runtime backend was not compiled. Rebuild with ENABLE_ONNXRUNTIME=ON.";
         return -1;

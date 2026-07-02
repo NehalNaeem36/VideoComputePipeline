@@ -142,6 +142,31 @@ static const char *decoder_fallback_to_string(DecoderFallbackMode fallback) {
     return fallback == DECODER_FALLBACK_NONE ? "none" : "cpu";
 }
 
+static int detection_encoder_is_nvenc(const char *encoder_name) {
+    return encoder_name && strcmp(encoder_name, "h264_nvenc") == 0;
+}
+
+static const char *detection_output_mode_summary(const PipelineConfig *config) {
+    if (!config || !config->draw_boxes) {
+        return "csv-only";
+    }
+    return detection_encoder_is_nvenc /* module: pipeline/pipeline_config */ (config->encoder_name)
+               ? "cuda-annotated-video"
+               : "cpu-annotated-video";
+}
+
+static int detection_requires_raw_upload(const PipelineConfig *config) {
+    return config &&
+           config->decoder_mode == VIDEO_DECODER_CPU &&
+           config->backend_device == BACKEND_DEVICE_CUDA;
+}
+
+static int detection_requires_raw_download(const PipelineConfig *config) {
+    return config &&
+           config->decoder_mode == VIDEO_DECODER_NVDEC &&
+           config->backend_device == BACKEND_DEVICE_CPU;
+}
+
 static const char *output_format_to_string(OutputFormat format) {
     switch (format) {
         case OUTPUT_FORMAT_MP4:
@@ -1043,6 +1068,7 @@ int pipeline_config_format_summary(const PipelineConfig *config, char *buffer, s
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  decoder_fallback: %s\n", decoder_fallback_to_string /* module: pipeline/pipeline_config */ (config->decoder_fallback)) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  runtime: %s\n", inference_runtime_to_string /* module: inference/backend_registry */ (config->runtime)) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  backend_device: %s\n", backend_device_to_string /* module: inference/backend_registry */ (config->backend_device)) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  inference_device: %s\n", backend_device_to_string /* module: inference/backend_registry */ (config->backend_device)) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  allow_host_backend: %s\n", config->allow_host_backend ? "true" : "false") != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  model_type: %s\n", model_type_to_string /* module: inference/backend_registry */ (config->model_type)) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  precision: %s\n", config->inference_precision) != 0 ||
@@ -1107,6 +1133,9 @@ int pipeline_config_format_summary(const PipelineConfig *config, char *buffer, s
             return -1;
         }
         if (append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "outputs:\n") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  output_mode: %s\n", detection_output_mode_summary /* module: pipeline/pipeline_config */ (config)) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  raw_upload_bridge: %s\n", detection_requires_raw_upload /* module: pipeline/pipeline_config */ (config) ? "true" : "false") != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  raw_download_bridge: %s\n", detection_requires_raw_download /* module: pipeline/pipeline_config */ (config) ? "true" : "false") != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  detections_path: %s\n", config->detections_path) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  draw_boxes: %s\n", config->draw_boxes ? "true" : "false") != 0) {
             return -1;

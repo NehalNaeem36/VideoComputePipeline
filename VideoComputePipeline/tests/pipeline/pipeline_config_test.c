@@ -363,6 +363,7 @@ static int pipeline_config_test_detect_summary(void) {
     TEST_ASSERT(strstr(summary, "decoder: cpu") != NULL);
     TEST_ASSERT(strstr(summary, "runtime: auto") != NULL);
     TEST_ASSERT(strstr(summary, "backend_device: cuda") != NULL);
+    TEST_ASSERT(strstr(summary, "inference_device: cuda") != NULL);
     TEST_ASSERT(strstr(summary, "model_type: auto") != NULL);
     TEST_ASSERT(strstr(summary, "model_path:") != NULL);
     TEST_ASSERT(strstr(summary, "labels_path:") != NULL);
@@ -376,6 +377,9 @@ static int pipeline_config_test_detect_summary(void) {
     TEST_ASSERT(strstr(summary, "pipeline_overlap:") != NULL);
     TEST_ASSERT(strstr(summary, "parallel_inference:") != NULL);
     TEST_ASSERT(strstr(summary, "inference_contexts:") != NULL);
+    TEST_ASSERT(strstr(summary, "output_mode: csv-only") != NULL);
+    TEST_ASSERT(strstr(summary, "raw_upload_bridge: true") != NULL);
+    TEST_ASSERT(strstr(summary, "raw_download_bridge: false") != NULL);
     TEST_ASSERT(strstr(summary, "\n  filter:") == NULL);
     TEST_ASSERT(strstr(summary, "encoder:") == NULL);
     TEST_ASSERT(strstr(summary, "output_path:") == NULL);
@@ -394,9 +398,30 @@ static int pipeline_config_test_detect_summary_with_boxes(void) {
 
     TEST_ASSERT(pipeline_config_format_summary /* module: pipeline/pipeline_config */ (&config, summary, sizeof(summary)) == 0);
     TEST_ASSERT(strstr(summary, "decoder: nvdec") != NULL);
+    TEST_ASSERT(strstr(summary, "output_mode: cpu-annotated-video") != NULL);
+    TEST_ASSERT(strstr(summary, "raw_upload_bridge: false") != NULL);
     TEST_ASSERT(strstr(summary, "draw_boxes: true") != NULL);
     TEST_ASSERT(strstr(summary, "output_path:") != NULL);
     TEST_ASSERT(strstr(summary, "box_thickness:") != NULL);
+    return 0;
+}
+
+static int pipeline_config_test_detect_summary_nvdec_cpu_bridge(void) {
+    PipelineConfig config;
+    char summary[4096];
+
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+    config.task = PIPELINE_TASK_DETECT;
+    config.decoder_mode = VIDEO_DECODER_NVDEC;
+    config.backend_device = BACKEND_DEVICE_CPU;
+
+    TEST_ASSERT(pipeline_config_format_summary /* module: pipeline/pipeline_config */ (&config, summary, sizeof(summary)) == 0);
+    TEST_ASSERT(strstr(summary, "decoder: nvdec") != NULL);
+    TEST_ASSERT(strstr(summary, "backend_device: cpu") != NULL);
+    TEST_ASSERT(strstr(summary, "inference_device: cpu") != NULL);
+    TEST_ASSERT(strstr(summary, "output_mode: csv-only") != NULL);
+    TEST_ASSERT(strstr(summary, "raw_upload_bridge: false") != NULL);
+    TEST_ASSERT(strstr(summary, "raw_download_bridge: true") != NULL);
     return 0;
 }
 
@@ -462,6 +487,9 @@ int main(void) {
         return 1;
     }
     if (pipeline_config_test_detect_summary_with_boxes() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_detect_summary_nvdec_cpu_bridge() != 0) {
         return 1;
     }
     if (pipeline_config_test_filter_summary() != 0) {

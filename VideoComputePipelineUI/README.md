@@ -73,4 +73,6 @@ The pipeline currently emits human-readable progress logs. The UI parses those l
 
 Hardware detection uses a staged NVDEC -> inference -> output pipeline. `Schedule batch` is the number of frames per reusable `FrameBatch`. `In-flight batches` is the number of active reusable batch objects, so decode can fill batch N+2 while inference processes N+1 and output/NVENC writes N. `Backend batch` is separate: it is the number of frames the selected runtime can infer in one model call. Static batch-1 models can still benefit from schedule batches and multiple inference workers.
 
+Decoder, inference device, and encoder are independent controls. `Decoder` chooses CPU software decode or NVDEC frame source. `Inference device` chooses CPU or CUDA model execution. `Encoder` is used only when annotated video output is enabled; CSV-only detection does not need an output video writer.
+
 TensorRT uses `.engine` or `.plan` models. ONNX Runtime uses `.onnx` models. TorchScript appears in the runtime selector only for forward compatibility; it requires a pipeline build with `ENABLE_LIBTORCH=ON`.

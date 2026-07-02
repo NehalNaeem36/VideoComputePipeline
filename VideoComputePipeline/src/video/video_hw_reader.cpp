@@ -16,6 +16,7 @@ extern "C" {
 #include <libavutil/hwcontext_cuda.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/rational.h>
+#include <libswscale/swscale.h>
 }
 
 #include <cstring>
@@ -291,6 +292,89 @@ extern "C" int video_hw_reader_read_cuda_nv12(VideoHWReader *reader, CudaNV12Fra
 
 extern "C" const VideoInfo *video_hw_reader_get_info(const VideoHWReader *reader) {
     return reader ? &reader->info : nullptr;
+}
+
+extern "C" int video_hw_reader_transfer_to_cpu_nv12(VideoHWReader *reader, const CudaNV12Frame *src, Frame *out) {
+    (void)reader;
+    if (!src || !out || !src->av_frame) {
+        g_last_error = "invalid hardware-to-CPU transfer arguments";
+        return -1;
+    }
+
+    AVFrame *hw_frame = (AVFrame *)src->av_frame;
+    AVFrame *cpu_frame = av_frame_alloc();
+    if (!cpu_frame) {
+        g_last_error = "failed to allocate CPU transfer frame";
+        return -1;
+    }
+
+    int result = av_hwframe_transfer_data(cpu_frame, hw_frame, 0);
+    if (result < 0) {
+        av_frame_free(&cpu_frame);
+        set_av_error("failed to transfer CUDA frame to CPU", result);
+        return -1;
+    }
+
+    if (!frame_is_valid(out) ||
+        out->width != src->width ||
+        out->height != src->height ||
+        out->format != FRAME_FORMAT_NV12) {
+        frame_free(out);
+        if (frame_alloc(out, src->width, src->height, FRAME_FORMAT_NV12) != 0) {
+            av_frame_free(&cpu_frame);
+            g_last_error = "failed to allocate CPU NV12 transfer frame";
+            return -1;
+        }
+    }
+    out->index = src->index;
+
+    if (cpu_frame->format == AV_PIX_FMT_NV12) {
+        for (int y = 0; y < src->height; ++y) {
+            std::memcpy(out->planes[0] + (size_t)y * out->linesize[0],
+                        cpu_frame->data[0] + (size_t)y * cpu_frame->linesize[0],
+                        (size_t)src->width);
+        }
+        for (int y = 0; y < src->height / 2; ++y) {
+            std::memcpy(out->planes[1] + (size_t)y * out->linesize[1],
+                        cpu_frame->data[1] + (size_t)y * cpu_frame->linesize[1],
+                        (size_t)src->width);
+        }
+        av_frame_free(&cpu_frame);
+        return 0;
+    }
+
+    SwsContext *sws = sws_getContext(src->width,
+                                     src->height,
+                                     (AVPixelFormat)cpu_frame->format,
+                                     src->width,
+                                     src->height,
+                                     AV_PIX_FMT_NV12,
+                                     SWS_BILINEAR,
+                                     nullptr,
+                                     nullptr,
+                                     nullptr);
+    if (!sws) {
+        av_frame_free(&cpu_frame);
+        g_last_error = "failed to create hardware transfer conversion context";
+        return -1;
+    }
+    uint8_t *dst_data[4] = {out->planes[0], out->planes[1], out->planes[2], out->planes[3]};
+    int dst_linesize[4] = {
+        (int)out->linesize[0],
+        (int)out->linesize[1],
+        (int)out->linesize[2],
+        (int)out->linesize[3]
+    };
+    sws_scale(sws,
+              (const uint8_t *const *)cpu_frame->data,
+              cpu_frame->linesize,
+              0,
+              src->height,
+              dst_data,
+              dst_linesize);
+    sws_freeContext(sws);
+    av_frame_free(&cpu_frame);
+    return 0;
 }
 
 extern "C" void video_hw_reader_release_frame(VideoHWReader *reader, CudaNV12Frame *frame) {

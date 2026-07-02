@@ -66,7 +66,7 @@ static void print_detect_usage(const char *program_name) {
     printf("  --decoder cpu|nvdec          CPU fallback decode or GPU-resident NVDEC path\n");
     printf("  --decoder-fallback cpu|none  Fallback when NVDEC is unavailable\n");
     printf("  --no-decoder-fallback        Fail instead of falling back to CPU decode\n");
-    printf("  --model path                 TensorRT engine path\n");
+    printf("  --model path                 Runtime model path: .engine/.plan, .onnx, or TorchScript\n");
     printf("  --labels path                Class label file\n");
     printf("  --detections path            Detection CSV output path\n");
     printf("  --draw-boxes                 Draw detection boxes and write annotated video\n");
@@ -81,7 +81,7 @@ static void print_detect_usage(const char *program_name) {
     printf("  --class-ids ids              Comma-separated numeric class IDs to keep, for example 0,2\n");
     printf("  --input-size N               Detector input size, default 640\n");
     printf("  --runtime name               auto, tensorrt, onnxruntime, or torchscript\n");
-    printf("  --backend-device name        cuda or cpu, default cuda\n");
+    printf("  --backend-device name        Inference device only: cuda or cpu, default cuda\n");
     printf("  --allow-host-backend         Allow explicit slow host backend fallback\n");
     printf("  --model-info                 Print model/runtime information and exit\n");
     printf("  --model-type name            auto or yolov5\n");

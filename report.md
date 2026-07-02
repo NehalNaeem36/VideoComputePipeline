@@ -210,7 +210,7 @@ The detection pipeline is being refactored so the video path remains shared whil
 
 ```text
 NVDEC or CPU NV12 decode
-  -> CUDA preprocess
+  -> CPU or CUDA inference device bridge when needed
   -> selected runtime backend
   -> YOLOv5 model adapter
   -> CUDA overlay when requested
@@ -229,6 +229,8 @@ Runtime selection flags:
 ```
 
 Auto runtime selection is extension based: `.engine`/`.plan` -> TensorRT, `.onnx` -> ONNX Runtime, and `.pt`/`.ts`/`.torchscript` -> TorchScript. TensorRT remains the default CUDA runtime. ONNX Runtime and TorchScript are optional builds that require the matching ONNX Runtime GPU or LibTorch CUDA packages at configure time.
+
+The detection topology is now chosen from independent controls. `--decoder` selects the frame source, `--backend-device` selects where inference executes, and `--encoder` is used only for annotated video output. This allows CPU decode with CUDA inference, NVDEC with CUDA inference, CPU decode with CPU inference, and NVDEC with an explicit GPU-to-CPU bridge for CPU inference. TensorRT remains CUDA-only.
 
 ## Windows CUDA 12 Stack
 
@@ -384,10 +386,10 @@ The existing CPU-decoded detection path remains the default:
 --task detect --decoder cpu
 ```
 
-The experimental path is selected with:
+The GPU-resident annotated path is selected with:
 
 ```text
---task detect --decoder nvdec --draw-boxes --encoder h264_nvenc
+--task detect --decoder nvdec --backend-device cuda --draw-boxes --encoder h264_nvenc
 ```
 
 The hardware path is gated behind:

@@ -26,6 +26,7 @@ const std::vector<const char *> kTaskNames = {"filter", "detect"};
 const std::vector<const char *> kDecoderNames = {"cpu", "nvdec"};
 const std::vector<const char *> kEncoderNames = {"none", "h264_nvenc", "libx264", "libx264rgb", "mpeg4"};
 const std::vector<const char *> kRuntimeNames = {"tensorrt", "onnxruntime", "torchscript", "auto"};
+const std::vector<const char *> kBackendDeviceNames = {"cpu", "cuda"};
 const std::vector<const char *> kPrecisionNames = {"fp32", "fp16"};
 const std::vector<const char *> kOutputFormatNames = {"auto", "mp4", "mkv"};
 const std::vector<const char *> kFilterNames = {"grayscale", "blur3x3", "blur5x5", "blur9x9", "blur13x13"};
@@ -93,6 +94,7 @@ const std::vector<const char *> &task_names() { return kTaskNames; }
 const std::vector<const char *> &decoder_names() { return kDecoderNames; }
 const std::vector<const char *> &encoder_names() { return kEncoderNames; }
 const std::vector<const char *> &runtime_names() { return kRuntimeNames; }
+const std::vector<const char *> &backend_device_names() { return kBackendDeviceNames; }
 const std::vector<const char *> &precision_names() { return kPrecisionNames; }
 const std::vector<const char *> &output_format_names() { return kOutputFormatNames; }
 const std::vector<const char *> &filter_names() { return kFilterNames; }
@@ -112,6 +114,7 @@ const char *to_cli(Runtime value) {
         default: return "tensorrt";
     }
 }
+const char *to_cli(BackendDevice value) { return value == BackendDevice::Cuda ? "cuda" : "cpu"; }
 const char *to_cli(Precision value) { return value == Precision::Fp16 ? "fp16" : "fp32"; }
 const char *to_cli(OutputFormat value) {
     switch (value) {
@@ -169,6 +172,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
     config.ffmpegLogLevel = "error";
     config.task = Task::Detect;
     config.runtime = Runtime::OnnxRuntime;
+    config.backendDevice = BackendDevice::Cuda;
     config.filter = Filter::Grayscale;
     config.processMode = ProcessMode::Gpu;
     config.confidence = 0.25f;
@@ -200,6 +204,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.decoder = Decoder::Cpu;
             config.encoder = Encoder::None;
             config.runtime = Runtime::OnnxRuntime;
+            config.backendDevice = BackendDevice::Cuda;
             config.modelPath = "models\\yolov5s.onnx";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Auto;
@@ -210,6 +215,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.decoder = Decoder::Nvdec;
             config.encoder = Encoder::H264Nvenc;
             config.runtime = Runtime::OnnxRuntime;
+            config.backendDevice = BackendDevice::Cuda;
             config.modelPath = "models\\yolov5s.onnx";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Mkv;
@@ -223,6 +229,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.decoder = Decoder::Nvdec;
             config.encoder = Encoder::H264Nvenc;
             config.runtime = Runtime::TensorRt;
+            config.backendDevice = BackendDevice::Cuda;
             config.modelPath = "models\\yolov5s_trt11.engine";
             config.precision = Precision::Fp16;
             config.outputFormat = OutputFormat::Mkv;
@@ -243,6 +250,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.decoder = Decoder::Cpu;
             config.encoder = Encoder::None;
             config.runtime = Runtime::OnnxRuntime;
+            config.backendDevice = BackendDevice::Cpu;
             config.modelPath = "models\\yolov5s.onnx";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Auto;
@@ -254,6 +262,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.decoderFallbackCpu = false;
             config.encoder = Encoder::H264Nvenc;
             config.runtime = Runtime::TensorRt;
+            config.backendDevice = BackendDevice::Cuda;
             config.modelPath = "models\\yolov5s_trt11.engine";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Mkv;
@@ -291,6 +300,15 @@ std::vector<std::string> validate_config(const PipelineRunConfig &config) {
         issues.emplace_back("Input video was not found relative to the pipeline working directory.");
     }
     if (config.task == Task::Detect) {
+        if (config.runtime == Runtime::TensorRt && config.backendDevice == BackendDevice::Cpu) {
+            issues.emplace_back("TensorRT is CUDA-only. Select inference device cuda or choose ONNX Runtime for CPU inference.");
+        }
+        if (config.drawBoxes &&
+            !(config.decoder == Decoder::Nvdec &&
+              config.backendDevice == BackendDevice::Cuda &&
+              config.encoder == Encoder::H264Nvenc)) {
+            issues.emplace_back("Annotated detection currently requires decoder nvdec, inference device cuda, and encoder h264_nvenc. Disable Draw boxes for CSV-only detection.");
+        }
         if (!file_exists(resolve_path(config.workingDirectory, config.modelPath))) {
             issues.emplace_back("Model file was not found relative to the pipeline working directory.");
         }
@@ -406,6 +424,7 @@ BuiltCommand build_command(const PipelineRunConfig &config) {
         add_arg(command.args, "--iou-threshold", config.iouThreshold);
         add_arg(command.args, "--input-size", config.inputSize);
         add_arg(command.args, "--runtime", to_cli(config.runtime));
+        add_arg(command.args, "--backend-device", to_cli(config.backendDevice));
         add_arg(command.args, "--precision", to_cli(config.precision));
         if (config.autoTune) {
             command.args.emplace_back("--auto-tune");

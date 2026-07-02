@@ -28,6 +28,14 @@ int video_hw_reader_read_cuda_nv12(VideoHWReader *reader, CudaNV12Frame *out) {
     return -1;
 }
 
+int video_hw_reader_transfer_to_cpu_nv12(VideoHWReader *reader, const CudaNV12Frame *src, Frame *out) {
+    (void)reader;
+    (void)src;
+    (void)out;
+    g_last_error = "NVDEC hardware video backend was not built";
+    return -1;
+}
+
 const VideoInfo *video_hw_reader_get_info(const VideoHWReader *reader) {
     return reader ? &reader->info : NULL;
 }

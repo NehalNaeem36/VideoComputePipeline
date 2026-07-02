@@ -281,7 +281,7 @@ void UiApp::render_run_config_tab() {
         mark_custom();
     }
     ImGui::EndDisabled();
-    render_tooltip("CPU decodes video frames in system RAM. NVDEC uses NVIDIA hardware decoding and can keep frames on GPU.");
+    render_tooltip("Controls only where compressed video is decoded. CPU produces system-memory NV12 frames. NVDEC produces GPU-resident NV12 frames. Inference device is selected separately.");
     ImGui::BeginDisabled(!detectMode || config_.decoder != Decoder::Nvdec);
     if (ImGui::Checkbox("CPU decoder fallback", &config_.decoderFallbackCpu)) mark_custom();
     ImGui::EndDisabled();
@@ -296,6 +296,15 @@ void UiApp::render_run_config_tab() {
     ImGui::EndDisabled();
     render_tooltip("Inference runtime passed as --runtime. ONNX Runtime uses .onnx models. TensorRT uses .engine/.plan models. TorchScript requires a LibTorch-enabled build.");
 
+    int backendDeviceIndex = (int)config_.backendDevice;
+    ImGui::BeginDisabled(!detectMode);
+    if (combo_from_vector("Inference device", backendDeviceIndex, backend_device_names())) {
+        config_.backendDevice = (BackendDevice)backendDeviceIndex;
+        mark_custom();
+    }
+    ImGui::EndDisabled();
+    render_tooltip("Controls only where model inference runs. CUDA uses GPU preprocessing and inference. CPU uses a host inference backend when the selected runtime supports it. TensorRT is CUDA-only.");
+
     int encoderIndex = (int)config_.encoder;
     ImGui::BeginDisabled(profileOnly || (detectMode && !annotatedDetection));
     if (combo_from_vector("Encoder", encoderIndex, encoder_names())) {
@@ -303,7 +312,7 @@ void UiApp::render_run_config_tab() {
         mark_custom();
     }
     ImGui::EndDisabled();
-    render_tooltip("h264_nvenc uses NVIDIA hardware encoding for annotated detection. Select none for CSV-only detection.");
+    render_tooltip("Controls output video only. h264_nvenc is required for the GPU-resident annotated path. Select none or disable Draw boxes for CSV-only detection.");
 
     int precisionIndex = (int)config_.precision;
     ImGui::BeginDisabled(!detectMode);
@@ -670,7 +679,11 @@ void UiApp::render_help_tab() {
     help_section("Annotated detection",
                  "Annotated detection requires Draw boxes, an output path, and normally h264_nvenc. MKV is recommended for long hardware-video runs because it is more tolerant while writing and after interrupted runs.");
     help_section("CPU decode vs NVDEC",
-                 "CPU decoding produces system-memory NV12 frames and uploads them to CUDA. NVDEC keeps decoded frames GPU-resident, avoiding raw-frame upload and enabling GPU overlay plus NVENC output.");
+                 "Decoder selection controls only where compressed video becomes NV12 frames. CPU decoding produces system-memory NV12 frames. NVDEC produces GPU-resident NV12 frames. Inference device is selected separately, so CPU decode can feed CUDA inference through an upload bridge, and NVDEC can feed CPU inference through an explicit download bridge.");
+    help_section("Inference device",
+                 "Inference device controls where the model runs. CUDA uses GPU preprocessing and runtime execution. CPU uses host runtime execution when supported, currently primarily ONNX Runtime. TensorRT is CUDA-only and fails clearly if CPU inference is selected.");
+    help_section("Encoder and output mode",
+                 "Encoder selection controls annotated video output only. CSV-only detection does not need an encoder. h264_nvenc with NVDEC and CUDA inference keeps the annotated path GPU-resident. CPU annotated video is intentionally rejected until a CPU overlay/writer path is implemented.");
     help_section("FFmpeg runtime DLLs",
                  "The MSVC/CUDA build must use the vcpkg FFmpeg DLLs copied beside VideoComputePipeline.exe. The UI validates avcodec, avformat, avutil, swscale, swresample, avdevice, and avfilter DLLs in the executable directory so launches do not depend on PATH or accidentally load MSYS2 FFmpeg.");
     help_section("Inference runtimes",
