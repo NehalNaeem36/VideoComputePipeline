@@ -72,6 +72,48 @@ std::string join_class_ids(const std::vector<int> &ids) {
     return out.str();
 }
 
+std::string sanitize_family_name(std::string value) {
+    std::string output;
+    for (char ch : value) {
+        const unsigned char c = (unsigned char)ch;
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || ch == '_' || ch == '-') {
+            output.push_back(ch);
+        } else if (ch == ' ' || ch == '.') {
+            output.push_back('_');
+        }
+    }
+    return output.empty() ? "output" : output;
+}
+
+std::string join_config_path(const std::string &folder, const std::string &file) {
+    if (folder.empty()) {
+        return file;
+    }
+    char last = folder.back();
+    if (last == '\\' || last == '/') {
+        return folder + file;
+    }
+    return folder + "\\" + file;
+}
+
+const char *artifact_video_extension(const PipelineRunConfig &config) {
+    if (config.outputFormat == OutputFormat::Mkv) {
+        return "mkv";
+    }
+    if (config.outputFormat == OutputFormat::Mp4) {
+        return "mp4";
+    }
+    return config.task == Task::Detect && config.drawBoxes ? "mkv" : "mp4";
+}
+
+void apply_output_family_paths(PipelineRunConfig &config) {
+    const std::string family = sanitize_family_name(config.outputFamilyName);
+    config.outputFamilyName = family;
+    config.outputVideoPath = join_config_path(config.outputFolderPath, family + "_video." + artifact_video_extension(config));
+    config.detectionsCsvPath = join_config_path(config.detectionsFolderPath, family + "_detections.csv");
+    config.benchmarkCsvPath = join_config_path(config.benchmarkFolderPath, family + "_benchmark.csv");
+}
+
 void finalize_command(BuiltCommand &command) {
     std::ostringstream preview;
     std::wstring win32;
@@ -163,12 +205,20 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
 
     config.pipelineExePath = "..\\VideoComputePipeline\\build-win-cuda12\\Release\\VideoComputePipeline.exe";
     config.workingDirectory = "..\\VideoComputePipeline";
+    config.inputFolderPath = "data\\input";
+    config.selectedInputFile = "people_4k_30min_stream_test.mp4";
+    config.outputFolderPath = "data\\output";
+    config.detectionsFolderPath = "benchmarks\\detections";
+    config.benchmarkFolderPath = "benchmarks\\benchmarks";
+    config.outputFamilyName = "people_run";
     config.inputVideoPath = "data\\input\\people_4k_30min_stream_test.mp4";
+    config.modelFolderPath = "models";
+    config.selectedModelFile = "yolov5s.onnx";
     config.modelPath = "models\\yolov5s.onnx";
     config.labelsPath = "models\\coco.names";
-    config.outputVideoPath = "data\\output\\people_annotated_live.mkv";
-    config.detectionsCsvPath = "benchmarks\\people_detections.csv";
-    config.benchmarkCsvPath = "benchmarks\\people_full_inference.csv";
+    config.outputVideoPath = "data\\output\\people_run_video.mkv";
+    config.detectionsCsvPath = "benchmarks\\detections\\people_run_detections.csv";
+    config.benchmarkCsvPath = "benchmarks\\benchmarks\\people_run_benchmark.csv";
     config.ffmpegLogLevel = "error";
     config.task = Task::Detect;
     config.runtime = Runtime::OnnxRuntime;
@@ -187,6 +237,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
     config.selectedClassIds.clear();
     config.autoTune = false;
     config.profileHardwareOnly = false;
+    config.autoNameOutputs = true;
     config.batchSizeMode = AutoIntMode::Manual;
     config.batchSize = 1;
     config.inflightBatchesMode = AutoIntMode::Manual;
@@ -205,7 +256,9 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.encoder = Encoder::None;
             config.runtime = Runtime::OnnxRuntime;
             config.backendDevice = BackendDevice::Cuda;
+            config.selectedModelFile = "yolov5s.onnx";
             config.modelPath = "models\\yolov5s.onnx";
+            config.outputFamilyName = "people_csv";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Auto;
             config.drawBoxes = false;
@@ -216,7 +269,9 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.encoder = Encoder::H264Nvenc;
             config.runtime = Runtime::OnnxRuntime;
             config.backendDevice = BackendDevice::Cuda;
+            config.selectedModelFile = "yolov5s.onnx";
             config.modelPath = "models\\yolov5s.onnx";
+            config.outputFamilyName = "people_annotated";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Mkv;
             config.drawBoxes = true;
@@ -230,7 +285,9 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.encoder = Encoder::H264Nvenc;
             config.runtime = Runtime::TensorRt;
             config.backendDevice = BackendDevice::Cuda;
+            config.selectedModelFile = "yolov5s_trt11.engine";
             config.modelPath = "models\\yolov5s_trt11.engine";
+            config.outputFamilyName = "fast_gpu_annotated";
             config.precision = Precision::Fp16;
             config.outputFormat = OutputFormat::Mkv;
             config.drawBoxes = true;
@@ -251,7 +308,9 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.encoder = Encoder::None;
             config.runtime = Runtime::OnnxRuntime;
             config.backendDevice = BackendDevice::Cpu;
+            config.selectedModelFile = "yolov5s.onnx";
             config.modelPath = "models\\yolov5s.onnx";
+            config.outputFamilyName = "safe_cpu_detection";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Auto;
             config.drawBoxes = false;
@@ -263,7 +322,9 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.encoder = Encoder::H264Nvenc;
             config.runtime = Runtime::TensorRt;
             config.backendDevice = BackendDevice::Cuda;
+            config.selectedModelFile = "yolov5s_trt11.engine";
             config.modelPath = "models\\yolov5s_trt11.engine";
+            config.outputFamilyName = "nvdec_nvenc_stress";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Mkv;
             config.drawBoxes = true;
@@ -283,6 +344,9 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
         default:
             break;
     }
+    if (config.autoNameOutputs) {
+        apply_output_family_paths(config);
+    }
 }
 
 std::vector<std::string> validate_config(const PipelineRunConfig &config) {
@@ -295,6 +359,21 @@ std::vector<std::string> validate_config(const PipelineRunConfig &config) {
     }
     if (config.task == Task::Detect && config.profileHardwareOnly) {
         return issues;
+    }
+    if (!directory_exists(resolve_path(config.workingDirectory, config.inputFolderPath))) {
+        issues.emplace_back("Input folder was not found relative to the pipeline working directory.");
+    }
+    if (!config.outputFolderPath.empty() &&
+        !directory_exists(resolve_path(config.workingDirectory, config.outputFolderPath))) {
+        issues.emplace_back("Output folder was not found relative to the pipeline working directory.");
+    }
+    if (!config.detectionsFolderPath.empty() &&
+        !directory_exists(resolve_path(config.workingDirectory, config.detectionsFolderPath))) {
+        issues.emplace_back("Detections folder was not found relative to the pipeline working directory.");
+    }
+    if (!config.benchmarkFolderPath.empty() &&
+        !directory_exists(resolve_path(config.workingDirectory, config.benchmarkFolderPath))) {
+        issues.emplace_back("Benchmark folder was not found relative to the pipeline working directory.");
     }
     if (!file_exists(resolve_path(config.workingDirectory, config.inputVideoPath))) {
         issues.emplace_back("Input video was not found relative to the pipeline working directory.");
@@ -311,6 +390,9 @@ std::vector<std::string> validate_config(const PipelineRunConfig &config) {
         }
         if (!file_exists(resolve_path(config.workingDirectory, config.modelPath))) {
             issues.emplace_back("Model file was not found relative to the pipeline working directory.");
+        }
+        if (!directory_exists(resolve_path(config.workingDirectory, config.modelFolderPath))) {
+            issues.emplace_back("Model folder was not found relative to the pipeline working directory.");
         }
         if (!file_exists(resolve_path(config.workingDirectory, config.labelsPath))) {
             issues.emplace_back("Labels file was not found relative to the pipeline working directory.");
@@ -392,7 +474,12 @@ std::wstring quote_arg_for_win32(const std::wstring &arg) {
     return result;
 }
 
-BuiltCommand build_command(const PipelineRunConfig &config) {
+BuiltCommand build_command(const PipelineRunConfig &inputConfig) {
+    PipelineRunConfig config = inputConfig;
+    if (config.autoNameOutputs) {
+        apply_output_family_paths(config);
+    }
+
     BuiltCommand command;
     command.args.emplace_back(config.pipelineExePath);
     add_arg(command.args, "--task", to_cli(config.task));

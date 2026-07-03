@@ -16,6 +16,7 @@
 #include <SDL_opengl.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -87,6 +88,83 @@ void help_section(const char *title, const char *body) {
     }
 }
 
+bool is_supported_input_video(const std::filesystem::path &path) {
+    std::string ext = path.extension().u8string();
+    for (char &ch : ext) {
+        ch = (char)std::tolower((unsigned char)ch);
+    }
+    return ext == ".mp4" ||
+           ext == ".mkv" ||
+           ext == ".mov" ||
+           ext == ".avi" ||
+           ext == ".m4v" ||
+           ext == ".webm" ||
+           ext == ".mpg" ||
+           ext == ".mpeg";
+}
+
+bool is_supported_model_file(const std::filesystem::path &path, Runtime runtime) {
+    std::string filename = path.filename().u8string();
+    std::string ext = path.extension().u8string();
+    for (char &ch : filename) {
+        ch = (char)std::tolower((unsigned char)ch);
+    }
+    for (char &ch : ext) {
+        ch = (char)std::tolower((unsigned char)ch);
+    }
+
+    switch (runtime) {
+        case Runtime::TensorRt:
+            return ext == ".engine" || ext == ".plan";
+        case Runtime::OnnxRuntime:
+            return ext == ".onnx";
+        case Runtime::TorchScript:
+            return ext == ".pt" || ext == ".ts" || ext == ".torchscript" || filename.find(".torchscript.pt") != std::string::npos;
+        case Runtime::Auto:
+        default:
+            return ext == ".engine" || ext == ".plan" || ext == ".onnx" ||
+                   ext == ".pt" || ext == ".ts" || ext == ".torchscript" ||
+                   filename.find(".torchscript.pt") != std::string::npos;
+    }
+}
+
+std::string filename_from_path(const std::string &path) {
+    return std::filesystem::u8path(path).filename().u8string();
+}
+
+std::string join_ui_path(const std::string &folder, const std::string &name) {
+    if (folder.empty()) {
+        return name;
+    }
+    return (std::filesystem::u8path(folder) / std::filesystem::u8path(name)).lexically_normal().u8string();
+}
+
+std::string sanitize_family_name(const std::string &value) {
+    std::string output;
+    for (char ch : value) {
+        const unsigned char c = (unsigned char)ch;
+        if (std::isalnum(c) || ch == '-' || ch == '_') {
+            output.push_back(ch);
+        } else if (ch == ' ' || ch == '.') {
+            output.push_back('_');
+        }
+    }
+    if (output.empty()) {
+        output = "output";
+    }
+    return output;
+}
+
+const char *output_video_extension(const PipelineRunConfig &config) {
+    if (config.outputFormat == OutputFormat::Mkv) {
+        return "mkv";
+    }
+    if (config.outputFormat == OutputFormat::Mp4) {
+        return "mp4";
+    }
+    return config.task == Task::Detect && config.drawBoxes ? "mkv" : "mp4";
+}
+
 std::string trim_copy(const std::string &value) {
     size_t begin = 0;
     size_t end = value.size();
@@ -133,6 +211,8 @@ std::vector<std::string> missing_ffmpeg_runtime_dlls(const PipelineRunConfig &co
 int UiApp::run() {
     apply_preset(config_, Preset::PeopleDetectionAnnotatedVideo);
     normalize_default_paths();
+    refresh_input_files_if_needed();
+    sync_output_artifact_paths();
     refresh_command();
 
     SDL_SetMainReady();
@@ -168,6 +248,22 @@ int UiApp::run() {
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
+    ImGuiStyle &style = ImGui::GetStyle();
+    style.WindowRounding = 0.0f;
+    style.FrameRounding = 5.0f;
+    style.GrabRounding = 5.0f;
+    style.TabRounding = 5.0f;
+    style.ScrollbarRounding = 6.0f;
+    style.WindowPadding = ImVec2(14.0f, 12.0f);
+    style.FramePadding = ImVec2(8.0f, 5.0f);
+    style.ItemSpacing = ImVec2(10.0f, 8.0f);
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.055f, 0.060f, 0.070f, 1.0f);
+    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.075f, 0.082f, 0.096f, 1.0f);
+    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.105f, 0.115f, 0.135f, 1.0f);
+    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.145f, 0.160f, 0.190f, 1.0f);
+    style.Colors[ImGuiCol_Button] = ImVec4(0.120f, 0.170f, 0.230f, 1.0f);
+    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.165f, 0.235f, 0.315f, 1.0f);
+    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.095f, 0.135f, 0.190f, 1.0f);
 
     ImGui_ImplSDL2_InitForOpenGL(window, glContext);
     ImGui_ImplOpenGL3_Init("#version 150");
@@ -246,6 +342,11 @@ void UiApp::render_run_config_tab() {
     int presetIndex = (int)config_.preset;
     if (combo_from_vector("Preset", presetIndex, preset_names())) {
         apply_preset(config_, (Preset)presetIndex);
+        loadedInputFolderPath_.clear();
+        loadedModelFolderPath_.clear();
+        refresh_input_files_if_needed();
+        refresh_model_files_if_needed();
+        sync_output_artifact_paths();
         refresh_command();
     }
     render_tooltip("Preset command profiles. Custom preserves your manual edits.");
@@ -261,6 +362,126 @@ void UiApp::render_run_config_tab() {
         ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.24f, 1.0f), "FFmpeg runtime: %zu expected DLL(s) missing beside selected executable", missingFfmpegDlls.size());
     }
     render_tooltip("MSVC/CUDA runs should load vcpkg FFmpeg DLLs from the same folder as VideoComputePipeline.exe. This avoids accidentally loading MSYS2 or another FFmpeg from PATH.");
+
+    ImGui::SeparatorText("Project I/O");
+    if (input_text_string("Input folder", config_.inputFolderPath)) {
+        loadedInputFolderPath_.clear();
+        refresh_input_files_if_needed();
+        sync_input_path_from_selection();
+        mark_custom();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Browse##input-folder")) {
+        std::string selected;
+        if (browse_for_folder("Select input video folder", selected)) {
+            config_.inputFolderPath = selected;
+            loadedInputFolderPath_.clear();
+            refresh_input_files_if_needed();
+            sync_input_path_from_selection();
+            mark_custom();
+        }
+    }
+    render_tooltip("Folder scanned for usable video inputs. The dropdown lists MP4, MKV, MOV, AVI, M4V, WebM, MPG, and MPEG files.");
+
+    refresh_input_files_if_needed();
+    if (inputFiles_.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.24f, 1.0f), "No supported input videos found in the selected folder.");
+    } else {
+        int inputIndex = 0;
+        std::vector<const char *> inputNames;
+        inputNames.reserve(inputFiles_.size());
+        for (int i = 0; i < (int)inputFiles_.size(); ++i) {
+            inputNames.push_back(inputFiles_[(size_t)i].c_str());
+            if (inputFiles_[(size_t)i] == config_.selectedInputFile) {
+                inputIndex = i;
+            }
+        }
+        if (ImGui::Combo("Input video", &inputIndex, inputNames.data(), (int)inputNames.size())) {
+            config_.selectedInputFile = inputFiles_[(size_t)inputIndex];
+            sync_input_path_from_selection();
+            mark_custom();
+        }
+    }
+    render_tooltip("Selected video from the input folder. The command receives the resolved input path.");
+
+    if (input_text_string("Output folder", config_.outputFolderPath)) {
+        if (config_.autoNameOutputs) {
+            sync_output_artifact_paths();
+        }
+        mark_custom();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Browse##output-folder")) {
+        std::string selected;
+        if (browse_for_folder("Select output artifact folder", selected)) {
+            config_.outputFolderPath = selected;
+            if (config_.autoNameOutputs) {
+                sync_output_artifact_paths();
+            }
+            mark_custom();
+        }
+    }
+    render_tooltip("Folder for generated output videos. Detection and benchmark CSVs have their own folders under benchmarks.");
+
+    if (input_text_string("Detections folder", config_.detectionsFolderPath)) {
+        if (config_.autoNameOutputs) {
+            sync_output_artifact_paths();
+        }
+        mark_custom();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Browse##detections-folder")) {
+        std::string selected;
+        if (browse_for_folder("Select detections CSV folder", selected)) {
+            config_.detectionsFolderPath = selected;
+            if (config_.autoNameOutputs) {
+                sync_output_artifact_paths();
+            }
+            mark_custom();
+        }
+    }
+    render_tooltip("Folder for generated detections CSV files. Default is benchmarks\\detections.");
+
+    if (input_text_string("Benchmark folder", config_.benchmarkFolderPath)) {
+        if (config_.autoNameOutputs) {
+            sync_output_artifact_paths();
+        }
+        mark_custom();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Browse##benchmark-folder")) {
+        std::string selected;
+        if (browse_for_folder("Select benchmark CSV folder", selected)) {
+            config_.benchmarkFolderPath = selected;
+            if (config_.autoNameOutputs) {
+                sync_output_artifact_paths();
+            }
+            mark_custom();
+        }
+    }
+    render_tooltip("Folder for generated benchmark CSV files. Default is benchmarks\\benchmarks.");
+
+    if (input_text_string("Output family", config_.outputFamilyName)) {
+        if (config_.autoNameOutputs) {
+            sync_output_artifact_paths();
+        }
+        mark_custom();
+    }
+    render_tooltip("Base name used for generated artifacts. Example: output1 creates output1_video.mkv, output1_detections.csv, and output1_benchmark.csv.");
+    if (ImGui::Checkbox("Auto-name output artifacts", &config_.autoNameOutputs)) {
+        if (config_.autoNameOutputs) {
+            sync_output_artifact_paths();
+        }
+        mark_custom();
+    }
+    render_tooltip("When enabled, output paths are regenerated from Output folder, Output family, and Output format.");
+
+    ImGui::BeginChild("artifact-preview", ImVec2(-1.0f, 92.0f), true);
+    text_pair("Input", config_.inputVideoPath);
+    text_pair("Video", config_.outputVideoPath);
+    text_pair("Detections", config_.detectionsCsvPath);
+    text_pair("Benchmark", config_.benchmarkCsvPath);
+    ImGui::EndChild();
 
     ImGui::SeparatorText("Task");
     int taskIndex = (int)config_.task;
@@ -291,6 +512,9 @@ void UiApp::render_run_config_tab() {
     ImGui::BeginDisabled(!detectMode);
     if (combo_from_vector("Runtime", runtimeIndex, runtime_names())) {
         config_.runtime = (Runtime)runtimeIndex;
+        loadedModelFolderPath_.clear();
+        refresh_model_files_if_needed();
+        sync_model_path_from_selection();
         mark_custom();
     }
     ImGui::EndDisabled();
@@ -327,6 +551,9 @@ void UiApp::render_run_config_tab() {
     ImGui::BeginDisabled(profileOnly || (detectMode && !annotatedDetection));
     if (combo_from_vector("Output format", outputFormatIndex, output_format_names())) {
         config_.outputFormat = (OutputFormat)outputFormatIndex;
+        if (config_.autoNameOutputs) {
+            sync_output_artifact_paths();
+        }
         mark_custom();
     }
     ImGui::EndDisabled();
@@ -345,33 +572,78 @@ void UiApp::render_run_config_tab() {
     }
     ImGui::EndDisabled();
 
-    ImGui::BeginDisabled(profileOnly);
-    if (input_text_string("Input video", config_.inputVideoPath)) mark_custom();
-    render_tooltip("Input video path relative to the working directory unless an absolute path is provided.");
-    ImGui::EndDisabled();
-
     ImGui::SeparatorText("Detection Model");
     ImGui::BeginDisabled(!detectMode);
-    if (input_text_string("Model", config_.modelPath)) mark_custom();
-    render_tooltip("Model file for the selected runtime: .engine/.plan for TensorRT, .onnx for ONNX Runtime, or TorchScript .pt/.ts when LibTorch is enabled. It must match model family, input size, and YOLO output layout.");
+    if (input_text_string("Model folder", config_.modelFolderPath)) {
+        loadedModelFolderPath_.clear();
+        refresh_model_files_if_needed();
+        sync_model_path_from_selection();
+        mark_custom();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Browse##model-folder")) {
+        std::string selected;
+        if (browse_for_folder("Select model folder", selected)) {
+            config_.modelFolderPath = selected;
+            loadedModelFolderPath_.clear();
+            refresh_model_files_if_needed();
+            sync_model_path_from_selection();
+            mark_custom();
+        }
+    }
+    render_tooltip("Folder scanned for model files compatible with the selected runtime.");
+
+    refresh_model_files_if_needed();
+    if (modelFiles_.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.24f, 1.0f), "No compatible model files found for the selected runtime.");
+    } else {
+        int modelIndex = 0;
+        std::vector<const char *> modelNames;
+        modelNames.reserve(modelFiles_.size());
+        for (int i = 0; i < (int)modelFiles_.size(); ++i) {
+            modelNames.push_back(modelFiles_[(size_t)i].c_str());
+            if (modelFiles_[(size_t)i] == config_.selectedModelFile) {
+                modelIndex = i;
+            }
+        }
+        if (ImGui::Combo("Model", &modelIndex, modelNames.data(), (int)modelNames.size())) {
+            config_.selectedModelFile = modelFiles_[(size_t)modelIndex];
+            sync_model_path_from_selection();
+            loadedLabelsPath_.clear();
+            mark_custom();
+        }
+    }
+    render_tooltip("Filtered by runtime: TensorRT shows .engine/.plan, ONNX Runtime shows .onnx, TorchScript shows .pt/.ts/.torchscript.");
+
+    if (input_text_string("Model path", config_.modelPath)) {
+        config_.selectedModelFile = filename_from_path /* module: ui_app */ (config_.modelPath);
+        loadedLabelsPath_.clear();
+        mark_custom();
+    }
+    render_tooltip("Resolved model path passed to the pipeline. You can edit it manually for unusual model locations.");
     if (input_text_string("Labels file", config_.labelsPath)) mark_custom();
     render_tooltip("Class labels file. One label per line; class IDs are the line numbers starting at 0.");
     ImGui::EndDisabled();
-    ImGui::BeginDisabled(profileOnly || (detectMode && !annotatedDetection));
+    ImGui::BeginDisabled(config_.autoNameOutputs || profileOnly || (detectMode && !annotatedDetection));
     if (input_text_string("Output video", config_.outputVideoPath)) mark_custom();
     ImGui::EndDisabled();
-    render_tooltip("Annotated output video path. Detection CSV-only runs do not need this.");
-    ImGui::BeginDisabled(!detectMode);
+    render_tooltip("Generated from Output family when auto-name is enabled. Annotated detection and filter runs use this path.");
+    ImGui::BeginDisabled(config_.autoNameOutputs || !detectMode);
     if (input_text_string("Detections CSV", config_.detectionsCsvPath)) mark_custom();
     ImGui::EndDisabled();
-    render_tooltip("Detection rows are streamed here. CSV-only and annotated detection both write this file.");
-    ImGui::BeginDisabled(profileOnly);
+    render_tooltip("Generated from Output family when auto-name is enabled. CSV-only and annotated detection both write this file.");
+    ImGui::BeginDisabled(config_.autoNameOutputs || profileOnly);
     if (input_text_string("Benchmark CSV", config_.benchmarkCsvPath)) mark_custom();
     ImGui::EndDisabled();
-    render_tooltip("Per-frame benchmark output. Disable benchmark if you only need logs or hardware profiling.");
+    render_tooltip("Generated from Output family when auto-name is enabled. Disable benchmark if you only need logs or hardware profiling.");
 
     ImGui::BeginDisabled(!detectMode);
-    if (ImGui::Checkbox("Draw boxes", &config_.drawBoxes)) mark_custom();
+    if (ImGui::Checkbox("Draw boxes", &config_.drawBoxes)) {
+        if (config_.autoNameOutputs) {
+            sync_output_artifact_paths();
+        }
+        mark_custom();
+    }
     render_tooltip("Draw detection boxes and write annotated video. Leave disabled for CSV-only detection.");
     ImGui::EndDisabled();
     ImGui::BeginDisabled(!annotatedDetection);
@@ -736,6 +1008,13 @@ void UiApp::stop_pipeline() {
 }
 
 void UiApp::refresh_command() {
+    refresh_input_files_if_needed();
+    sync_input_path_from_selection();
+    refresh_model_files_if_needed();
+    sync_model_path_from_selection();
+    if (config_.autoNameOutputs) {
+        sync_output_artifact_paths();
+    }
     command_ = build_command(config_);
 }
 
@@ -769,6 +1048,116 @@ void UiApp::normalize_default_paths() {
         }
         cursor = parent;
     }
+}
+
+void UiApp::refresh_input_files_if_needed() {
+    const std::string absoluteFolder = resolve_path(config_.workingDirectory, config_.inputFolderPath);
+    if (absoluteFolder == loadedInputFolderPath_) {
+        return;
+    }
+
+    loadedInputFolderPath_ = absoluteFolder;
+    inputFiles_.clear();
+
+    std::error_code ec;
+    const std::filesystem::path folder = std::filesystem::u8path(absoluteFolder);
+    if (!std::filesystem::is_directory(folder, ec)) {
+        return;
+    }
+
+    for (const auto &entry : std::filesystem::directory_iterator(folder, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec) || ec) {
+            continue;
+        }
+        if (is_supported_input_video /* module: ui_app */ (entry.path())) {
+            inputFiles_.push_back(entry.path().filename().u8string());
+        }
+    }
+    std::sort(inputFiles_.begin(), inputFiles_.end());
+
+    const std::string currentFile = filename_from_path /* module: ui_app */ (config_.inputVideoPath);
+    if (!currentFile.empty() &&
+        std::find(inputFiles_.begin(), inputFiles_.end(), currentFile) != inputFiles_.end()) {
+        config_.selectedInputFile = currentFile;
+    } else if (!config_.selectedInputFile.empty() &&
+               std::find(inputFiles_.begin(), inputFiles_.end(), config_.selectedInputFile) != inputFiles_.end()) {
+        /* Keep the existing selection. */
+    } else if (!inputFiles_.empty()) {
+        config_.selectedInputFile = inputFiles_.front();
+    } else {
+        config_.selectedInputFile.clear();
+    }
+    sync_input_path_from_selection /* module: ui_app */ ();
+}
+
+void UiApp::sync_input_path_from_selection() {
+    if (config_.selectedInputFile.empty()) {
+        return;
+    }
+    config_.inputVideoPath = join_ui_path /* module: ui_app */ (config_.inputFolderPath, config_.selectedInputFile);
+}
+
+void UiApp::refresh_model_files_if_needed() {
+    const std::string absoluteFolder = resolve_path(config_.workingDirectory, config_.modelFolderPath);
+    if (absoluteFolder == loadedModelFolderPath_ && config_.runtime == loadedModelRuntime_) {
+        return;
+    }
+
+    loadedModelFolderPath_ = absoluteFolder;
+    loadedModelRuntime_ = config_.runtime;
+    modelFiles_.clear();
+
+    std::error_code ec;
+    const std::filesystem::path folder = std::filesystem::u8path(absoluteFolder);
+    if (!std::filesystem::is_directory(folder, ec)) {
+        return;
+    }
+
+    for (const auto &entry : std::filesystem::directory_iterator(folder, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec) || ec) {
+            continue;
+        }
+        if (is_supported_model_file /* module: ui_app */ (entry.path(), config_.runtime)) {
+            modelFiles_.push_back(entry.path().filename().u8string());
+        }
+    }
+    std::sort(modelFiles_.begin(), modelFiles_.end());
+
+    const std::string currentFile = filename_from_path /* module: ui_app */ (config_.modelPath);
+    if (!currentFile.empty() &&
+        std::find(modelFiles_.begin(), modelFiles_.end(), currentFile) != modelFiles_.end()) {
+        config_.selectedModelFile = currentFile;
+    } else if (!config_.selectedModelFile.empty() &&
+               std::find(modelFiles_.begin(), modelFiles_.end(), config_.selectedModelFile) != modelFiles_.end()) {
+        /* Keep the existing compatible selection. */
+    } else if (!modelFiles_.empty()) {
+        config_.selectedModelFile = modelFiles_.front();
+    } else {
+        config_.selectedModelFile.clear();
+    }
+    sync_model_path_from_selection /* module: ui_app */ ();
+}
+
+void UiApp::sync_model_path_from_selection() {
+    if (config_.selectedModelFile.empty()) {
+        return;
+    }
+    config_.modelPath = join_ui_path /* module: ui_app */ (config_.modelFolderPath, config_.selectedModelFile);
+}
+
+void UiApp::sync_output_artifact_paths() {
+    const std::string family = sanitize_family_name /* module: ui_app */ (config_.outputFamilyName);
+    config_.outputFamilyName = family;
+    config_.outputVideoPath = join_ui_path /* module: ui_app */ (config_.outputFolderPath,
+                                                                 family + "_video." + output_video_extension /* module: ui_app */ (config_));
+    config_.detectionsCsvPath = join_ui_path /* module: ui_app */ (config_.detectionsFolderPath, family + "_detections.csv");
+    config_.benchmarkCsvPath = join_ui_path /* module: ui_app */ (config_.benchmarkFolderPath, family + "_benchmark.csv");
 }
 
 void UiApp::refresh_labels_if_needed() {

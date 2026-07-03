@@ -15,6 +15,7 @@ std::string resolve_path(const std::string &baseDirectory, const std::string &pa
 std::string parent_directory(const std::string &path);
 std::string format_bytes(std::uint64_t bytes);
 std::string executable_directory();
+bool browse_for_folder(const char *title, std::string &selectedPath);
 
 }  // namespace vcpui
 

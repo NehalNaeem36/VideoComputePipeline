@@ -24,6 +24,11 @@ private:
     void stop_pipeline();
     void refresh_command();
     void normalize_default_paths();
+    void refresh_input_files_if_needed();
+    void sync_input_path_from_selection();
+    void refresh_model_files_if_needed();
+    void sync_model_path_from_selection();
+    void sync_output_artifact_paths();
     void refresh_labels_if_needed();
     bool class_id_selected(int class_id) const;
     void set_class_id_selected(int class_id, bool selected);
@@ -31,6 +36,11 @@ private:
     PipelineRunConfig config_{};
     BuiltCommand command_{};
     ProcessRunner runner_;
+    std::vector<std::string> inputFiles_;
+    std::string loadedInputFolderPath_;
+    std::vector<std::string> modelFiles_;
+    std::string loadedModelFolderPath_;
+    Runtime loadedModelRuntime_ = Runtime::Auto;
     std::vector<std::string> classLabels_;
     std::string loadedLabelsPath_;
     std::string classSearch_;

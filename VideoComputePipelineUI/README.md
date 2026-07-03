@@ -60,9 +60,30 @@ This keeps launches independent of global `PATH` and avoids accidentally loading
 
 Detection presets load the labels file into a searchable class list. Leaving the class selection empty detects every class. Selecting one or more labels makes the UI emit `--class-ids`, so CSV output and annotated boxes contain only the selected classes.
 
+The Run Config tab scans the selected input folder and lists usable video files in a dropdown. Supported input extensions are MP4, MKV, MOV, AVI, M4V, WebM, MPG, and MPEG.
+
+The model picker works the same way. Select a model folder and the dropdown is filtered by runtime:
+
+```text
+TensorRT:     .engine, .plan
+ONNX Runtime: .onnx
+TorchScript:  .pt, .ts, .torchscript, .torchscript.pt
+Auto:         all supported runtime model files
+```
+
+Output artifacts can be generated from a shared family name. Videos stay in `data\output`, while detections and benchmark CSVs go into separate folders under `benchmarks`. For example, setting Output family to `output1` creates:
+
+```text
+data\output\output1_video.mkv
+benchmarks\detections\output1_detections.csv
+benchmarks\benchmarks\output1_benchmark.csv
+```
+
+The video extension follows the selected output format. MKV remains recommended for long annotated hardware-video runs.
+
 ## Tabs
 
-- Run Config: presets, paths, runtime, model/labels, class selection, decoder/encoder, thresholds, command preview, Run/Stop.
+- Run Config: presets, input/output folder selectors, input-video dropdown, output-family naming, runtime, model/labels, class selection, decoder/encoder, thresholds, command preview, Run/Stop.
 - Monitor: process status, elapsed time, parsed frame count, FPS, staged topology, schedule/backend batch, in-flight batch pool, inference workers, and output size when available.
 - Logs: live stdout/stderr, filtering, highlighting for errors/warnings/TensorRT lines, save/clear.
 - Help: short explanations for pipeline modes and common failures.

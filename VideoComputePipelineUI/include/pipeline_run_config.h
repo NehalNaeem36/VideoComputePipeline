@@ -30,7 +30,15 @@ enum class FeatureMode { Auto = 0, On, Off };
 struct PipelineRunConfig {
     std::string pipelineExePath = "..\\VideoComputePipeline\\build-win-cuda12\\Release\\VideoComputePipeline.exe";
     std::string workingDirectory = "..\\VideoComputePipeline";
+    std::string inputFolderPath = "data\\input";
+    std::string selectedInputFile;
+    std::string outputFolderPath = "data\\output";
+    std::string detectionsFolderPath = "benchmarks\\detections";
+    std::string benchmarkFolderPath = "benchmarks\\benchmarks";
+    std::string outputFamilyName = "people_run";
     std::string inputVideoPath = "data\\input\\people_4k_30min_stream_test.mp4";
+    std::string modelFolderPath = "models";
+    std::string selectedModelFile;
     std::string modelPath = "models\\yolov5s_trt11.engine";
     std::string labelsPath = "models\\coco.names";
     std::string outputVideoPath = "data\\output\\people_annotated_live.mkv";
@@ -61,6 +69,7 @@ struct PipelineRunConfig {
     bool lossless = false;
     bool autoTune = false;
     bool profileHardwareOnly = false;
+    bool autoNameOutputs = true;
 
     int boxThickness = 3;
     int batchSize = 1;

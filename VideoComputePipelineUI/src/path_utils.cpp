@@ -12,6 +12,7 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#include <shlobj.h>
 #include <windows.h>
 #endif
 
@@ -111,6 +112,33 @@ std::string executable_directory() {
     return std::filesystem::path(buffer).parent_path().u8string();
 #else
     return std::filesystem::current_path().u8string();
+#endif
+}
+
+bool browse_for_folder(const char *title, std::string &selectedPath) {
+#ifdef _WIN32
+    BROWSEINFOW browseInfo{};
+    std::wstring titleWide = utf8_to_wide(title ? title : "Select folder");
+    browseInfo.lpszTitle = titleWide.c_str();
+    browseInfo.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_USENEWUI;
+
+    PIDLIST_ABSOLUTE item = SHBrowseForFolderW(&browseInfo);
+    if (!item) {
+        return false;
+    }
+
+    wchar_t path[MAX_PATH];
+    const BOOL ok = SHGetPathFromIDListW(item, path);
+    CoTaskMemFree(item);
+    if (!ok) {
+        return false;
+    }
+    selectedPath = wide_to_utf8(path);
+    return true;
+#else
+    (void)title;
+    (void)selectedPath;
+    return false;
 #endif
 }
 
