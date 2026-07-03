@@ -1631,7 +1631,7 @@ static int run_detection_pipeline_cpu_decoded(const PipelineConfig *config) {
     detections_opened = 1;
 
     if (config->enable_benchmark &&
-        benchmark_open_csv /* module: benchmark/benchmark */ (&benchmark, config->benchmark_path) != 0) {
+        benchmark_open_csv_with_schema /* module: benchmark/benchmark */ (&benchmark, config->benchmark_path, BENCHMARK_SCHEMA_DETECTION) != 0) {
         log_error /* module: utils/logger */ ("failed to open benchmark CSV: %s", config->benchmark_path);
         goto cleanup;
     }
@@ -1841,7 +1841,7 @@ static int run_detection_pipeline_nvdec_cpu(const PipelineConfig *config) {
     detections_opened = 1;
 
     if (config->enable_benchmark &&
-        benchmark_open_csv /* module: benchmark/benchmark */ (&benchmark, config->benchmark_path) != 0) {
+        benchmark_open_csv_with_schema /* module: benchmark/benchmark */ (&benchmark, config->benchmark_path, BENCHMARK_SCHEMA_DETECTION) != 0) {
         log_error /* module: utils/logger */ ("failed to open benchmark CSV: %s", config->benchmark_path);
         goto cleanup;
     }
@@ -2087,7 +2087,7 @@ static int run_detection_pipeline_nvdec_cuda(const PipelineConfig *config) {
     detections_opened = 1;
 
     if (config->enable_benchmark &&
-        benchmark_open_csv /* module: benchmark/benchmark */ (&benchmark, config->benchmark_path) != 0) {
+        benchmark_open_csv_with_schema /* module: benchmark/benchmark */ (&benchmark, config->benchmark_path, BENCHMARK_SCHEMA_DETECTION) != 0) {
         log_error /* module: utils/logger */ ("failed to open benchmark CSV: %s", config->benchmark_path);
         goto cleanup;
     }
@@ -2670,7 +2670,7 @@ static int run_filter_pipeline(const PipelineConfig *config) {
         return -1;
     }
 
-    if (config->enable_benchmark && benchmark_open_csv /* module: benchmark/benchmark */ (&ctx.benchmark, config->benchmark_path) != 0) {
+    if (config->enable_benchmark && benchmark_open_csv_with_schema /* module: benchmark/benchmark */ (&ctx.benchmark, config->benchmark_path, BENCHMARK_SCHEMA_FILTER) != 0) {
         log_error /* module: utils/logger */ ("failed to open benchmark CSV: %s", config->benchmark_path);
         video_writer_close /* module: video/video_writer */ (&ctx.writer);
         video_reader_close /* module: video/video_reader */ (&ctx.reader);

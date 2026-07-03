@@ -50,6 +50,11 @@ typedef struct {
     size_t detections_count;
 } FrameTiming;
 
+typedef enum {
+    BENCHMARK_SCHEMA_FILTER = 0,
+    BENCHMARK_SCHEMA_DETECTION = 1
+} BenchmarkSchema;
+
 typedef struct {
     FrameTiming *items;
     size_t count;
@@ -67,11 +72,13 @@ typedef struct {
     double mux_write_ms;
     double wall_clock_ms;
     void *csv_file;
+    BenchmarkSchema schema;
 } Benchmark;
 
 void benchmark_init(Benchmark *bench);
 void benchmark_set_wall_clock_ms(Benchmark *bench, double wall_clock_ms);
 int benchmark_open_csv(Benchmark *bench, const char *path);
+int benchmark_open_csv_with_schema(Benchmark *bench, const char *path, BenchmarkSchema schema);
 int benchmark_add_frame_result(Benchmark *bench, const FrameTiming *timing);
 int benchmark_write_csv(const Benchmark *bench, const char *path);
 int benchmark_close_csv(Benchmark *bench);

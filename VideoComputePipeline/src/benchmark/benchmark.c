@@ -31,6 +31,7 @@ void benchmark_init(Benchmark *bench) {
     bench->mux_write_ms = 0.0;
     bench->wall_clock_ms = 0.0;
     bench->csv_file = NULL;
+    bench->schema = BENCHMARK_SCHEMA_FILTER;
 }
 
 void benchmark_set_wall_clock_ms(Benchmark *bench, double wall_clock_ms) {
@@ -41,59 +42,89 @@ void benchmark_set_wall_clock_ms(Benchmark *bench, double wall_clock_ms) {
     bench->wall_clock_ms = wall_clock_ms;
 }
 
-static int write_csv_header(FILE *file) {
-    return fprintf(file, "frame_index,decode_ms,process_ms,upload_ms,kernel_ms,download_ms,encode_ms,total_ms,preprocess_ms,inference_ms,postprocess_ms,overlay_ms,mux_write_ms,batch_size,inflight_batches,total_active_frames,frames_per_upload_batch,frames_per_download_batch,execution_mode,inference_context_count,vram_budget_mb,estimated_batch_mb,runtime_backend,model_format,model_adapter,backend_device,input_layout,input_dtype,output_device,precision,video_width,video_height,video_fps,frame_bytes,backend_inference_ms,raw_frame_upload_bytes,raw_frame_download_bytes,metadata_download_bytes,detections_count,schedule_batch_size,backend_batch_size,active_frame_capacity,inference_lane_count,unused_vram_budget_mb\n") < 0 ? -1 : 0;
+static int write_filter_csv_header(FILE *file) {
+    return fprintf(file, "frame_index,decode_ms,upload_ms,kernel_ms,download_ms,process_ms,encode_ms,total_ms\n") < 0 ? -1 : 0;
 }
 
-static int write_csv_row(FILE *file, const FrameTiming *t) {
-    return fprintf(file, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%s,%s,%s,%s,%s,%s,%s,%s,%d,%d,%.6f,%zu,%.6f,%zu,%zu,%zu,%zu,%d,%d,%d,%d,%.6f\n",
+static int write_filter_csv_row(FILE *file, const FrameTiming *t) {
+    return fprintf(file, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                    t->frame_index,
                    t->decode_ms,
-                   t->process_ms,
                    t->upload_ms,
                    t->kernel_ms,
                    t->download_ms,
+                   t->process_ms,
                    t->encode_ms,
-                   t->total_ms,
+                   t->total_ms) < 0 ? -1 : 0;
+}
+
+static int write_detection_csv_header(FILE *file) {
+    return fprintf(file, "frame_index,decode_ms,raw_frame_upload_bytes,upload_ms,preprocess_ms,inference_ms,backend_inference_ms,metadata_download_bytes,download_ms,postprocess_ms,detections_count,overlay_ms,encode_ms,mux_write_ms,total_ms,runtime_backend,backend_device,precision,model_format,model_adapter,input_layout,input_dtype,output_device,video_width,video_height,video_fps,frame_bytes,raw_frame_download_bytes,schedule_batch_size,backend_batch_size,batch_size,inflight_batches,total_active_frames,active_frame_capacity,frames_per_upload_batch,frames_per_download_batch,execution_mode,inference_context_count,inference_lane_count,vram_budget_mb,estimated_batch_mb,unused_vram_budget_mb\n") < 0 ? -1 : 0;
+}
+
+static int write_detection_csv_row(FILE *file, const FrameTiming *t) {
+    return fprintf(file, "%d,%.6f,%zu,%.6f,%.6f,%.6f,%.6f,%zu,%.6f,%.6f,%zu,%.6f,%.6f,%.6f,%.6f,%s,%s,%s,%s,%s,%s,%s,%s,%d,%d,%.6f,%zu,%zu,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f\n",
+                   t->frame_index,
+                   t->decode_ms,
+                   t->raw_frame_upload_bytes,
+                   t->upload_ms,
                    t->preprocess_ms,
                    t->inference_ms,
+                   t->backend_inference_ms,
+                   t->metadata_download_bytes,
+                   t->download_ms,
                    t->postprocess_ms,
+                   t->detections_count,
                    t->overlay_ms,
+                   t->encode_ms,
                    t->mux_write_ms,
-                   t->batch_size,
-                   t->inflight_batches,
-                   t->total_active_frames,
-                   t->frames_per_upload_batch,
-                   t->frames_per_download_batch,
-                   t->execution_mode,
-                   t->inference_context_count,
-                   t->vram_budget_mb,
-                   t->estimated_batch_mb,
+                   t->total_ms,
                    t->runtime_backend,
+                   t->backend_device,
+                   t->precision,
                    t->model_format,
                    t->model_adapter,
-                   t->backend_device,
                    t->input_layout,
                    t->input_dtype,
                    t->output_device,
-                   t->precision,
                    t->video_width,
                    t->video_height,
                    t->video_fps,
                    t->frame_bytes,
-                   t->backend_inference_ms,
-                   t->raw_frame_upload_bytes,
                    t->raw_frame_download_bytes,
-                   t->metadata_download_bytes,
-                   t->detections_count,
                    t->schedule_batch_size,
                    t->backend_batch_size,
+                   t->batch_size,
+                   t->inflight_batches,
+                   t->total_active_frames,
                    t->active_frame_capacity,
+                   t->frames_per_upload_batch,
+                   t->frames_per_download_batch,
+                   t->execution_mode,
+                   t->inference_context_count,
                    t->inference_lane_count,
+                   t->vram_budget_mb,
+                   t->estimated_batch_mb,
                    t->unused_vram_budget_mb) < 0 ? -1 : 0;
 }
 
+static int write_csv_header(FILE *file, BenchmarkSchema schema) {
+    return schema == BENCHMARK_SCHEMA_DETECTION
+               ? write_detection_csv_header /* module: benchmark/benchmark */ (file)
+               : write_filter_csv_header /* module: benchmark/benchmark */ (file);
+}
+
+static int write_csv_row(FILE *file, const FrameTiming *t, BenchmarkSchema schema) {
+    return schema == BENCHMARK_SCHEMA_DETECTION
+               ? write_detection_csv_row /* module: benchmark/benchmark */ (file, t)
+               : write_filter_csv_row /* module: benchmark/benchmark */ (file, t);
+}
+
 int benchmark_open_csv(Benchmark *bench, const char *path) {
+    return benchmark_open_csv_with_schema /* module: benchmark/benchmark */ (bench, path, BENCHMARK_SCHEMA_FILTER);
+}
+
+int benchmark_open_csv_with_schema(Benchmark *bench, const char *path, BenchmarkSchema schema) {
     if (!bench || !path || bench->csv_file) {
         return -1;
     }
@@ -107,12 +138,13 @@ int benchmark_open_csv(Benchmark *bench, const char *path) {
         return -1;
     }
 
-    if (write_csv_header /* module: benchmark/benchmark */ (file) != 0) {
+    if (write_csv_header /* module: benchmark/benchmark */ (file, schema) != 0) {
         fclose(file);
         return -1;
     }
 
     bench->csv_file = file;
+    bench->schema = schema;
     return 0;
 }
 
@@ -137,7 +169,7 @@ int benchmark_add_frame_result(Benchmark *bench, const FrameTiming *timing) {
     }
 
     if (bench->csv_file) {
-        if (write_csv_row /* module: benchmark/benchmark */ ((FILE *)bench->csv_file, timing) != 0) {
+        if (write_csv_row /* module: benchmark/benchmark */ ((FILE *)bench->csv_file, timing, bench->schema) != 0) {
             return -1;
         }
         bench->count++;
@@ -176,12 +208,12 @@ int benchmark_write_csv(const Benchmark *bench, const char *path) {
         return -1;
     }
 
-    if (write_csv_header /* module: benchmark/benchmark */ (file) != 0) {
+    if (write_csv_header /* module: benchmark/benchmark */ (file, bench->schema) != 0) {
         fclose(file);
         return -1;
     }
     for (size_t i = 0; i < bench->count; ++i) {
-        if (write_csv_row /* module: benchmark/benchmark */ (file, &bench->items[i]) != 0) {
+        if (write_csv_row /* module: benchmark/benchmark */ (file, &bench->items[i], bench->schema) != 0) {
             fclose(file);
             return -1;
         }
