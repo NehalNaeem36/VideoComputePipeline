@@ -206,11 +206,18 @@ std::vector<std::string> missing_ffmpeg_runtime_dlls(const PipelineRunConfig &co
     return missing;
 }
 
+bool path_contains_build_dir(const std::string &path, const char *buildDir) {
+    std::string lower = lower_copy(path);
+    std::string needle = lower_copy(buildDir);
+    return lower.find(needle) != std::string::npos;
+}
+
 }  // namespace
 
 int UiApp::run() {
     apply_preset(config_, Preset::PeopleDetectionAnnotatedVideo);
     normalize_default_paths();
+    prefer_runtime_executable_if_available();
     refresh_input_files_if_needed();
     sync_output_artifact_paths();
     refresh_command();
@@ -512,13 +519,14 @@ void UiApp::render_run_config_tab() {
     ImGui::BeginDisabled(!detectMode);
     if (combo_from_vector("Runtime", runtimeIndex, runtime_names())) {
         config_.runtime = (Runtime)runtimeIndex;
+        prefer_runtime_executable_if_available();
         loadedModelFolderPath_.clear();
         refresh_model_files_if_needed();
         sync_model_path_from_selection();
         mark_custom();
     }
     ImGui::EndDisabled();
-    render_tooltip("Inference runtime passed as --runtime. ONNX Runtime uses .onnx models. TensorRT uses .engine/.plan models. TorchScript requires a LibTorch-enabled build.");
+    render_tooltip("Inference runtime passed as --runtime. TensorRT uses .engine/.plan, ONNX Runtime uses .onnx, and TorchScript uses exported TorchScript .pt/.ts/.torchscript models. Selecting TorchScript prefers the build-libtorch-vs executable when it exists.");
 
     int backendDeviceIndex = (int)config_.backendDevice;
     ImGui::BeginDisabled(!detectMode);
@@ -527,7 +535,7 @@ void UiApp::render_run_config_tab() {
         mark_custom();
     }
     ImGui::EndDisabled();
-    render_tooltip("Controls only where model inference runs. CUDA uses GPU preprocessing and inference. CPU uses a host inference backend when the selected runtime supports it. TensorRT is CUDA-only.");
+    render_tooltip("Controls only where model inference runs. CUDA uses GPU preprocessing and inference. CPU uses a host inference backend when the selected runtime supports it. TensorRT is CUDA-only. TorchScript supports CPU or CUDA model execution from CPU-decoded frames.");
 
     int encoderIndex = (int)config_.encoder;
     ImGui::BeginDisabled(profileOnly || (detectMode && !annotatedDetection));
@@ -613,7 +621,7 @@ void UiApp::render_run_config_tab() {
             mark_custom();
         }
     }
-    render_tooltip("Filtered by runtime: TensorRT shows .engine/.plan, ONNX Runtime shows .onnx, TorchScript shows .pt/.ts/.torchscript.");
+    render_tooltip("Filtered by runtime: TensorRT shows .engine/.plan, ONNX Runtime shows .onnx, TorchScript shows .pt/.ts/.torchscript. Raw Ultralytics .pt checkpoints must be exported to TorchScript first.");
 
     if (input_text_string("Model path", config_.modelPath)) {
         config_.selectedModelFile = filename_from_path /* module: ui_app */ (config_.modelPath);
@@ -953,13 +961,13 @@ void UiApp::render_help_tab() {
     help_section("CPU decode vs NVDEC",
                  "Decoder selection controls only where compressed video becomes NV12 frames. CPU decoding produces system-memory NV12 frames. NVDEC produces GPU-resident NV12 frames. Inference device is selected separately, so CPU decode can feed CUDA inference through an upload bridge, and NVDEC can feed CPU inference through an explicit download bridge.");
     help_section("Inference device",
-                 "Inference device controls where the model runs. CUDA uses GPU preprocessing and runtime execution. CPU uses host runtime execution when supported, currently primarily ONNX Runtime. TensorRT is CUDA-only and fails clearly if CPU inference is selected.");
+                 "Inference device controls where the model runs. CUDA uses GPU preprocessing and runtime execution when the selected topology supports it. CPU uses host runtime execution when supported. TensorRT is CUDA-only. ONNX Runtime supports CPU/CUDA when built with the matching provider. TorchScript supports CPU/CUDA execution and can consume NVDEC GPU-resident frames when CUDA is selected.");
     help_section("Encoder and output mode",
                  "Encoder selection controls annotated video output only. CSV-only detection does not need an encoder. h264_nvenc with NVDEC and CUDA inference keeps the annotated path GPU-resident. CPU annotated video is intentionally rejected until a CPU overlay/writer path is implemented.");
     help_section("FFmpeg runtime DLLs",
                  "The MSVC/CUDA build must use the vcpkg FFmpeg DLLs copied beside VideoComputePipeline.exe. The UI validates avcodec, avformat, avutil, swscale, swresample, avdevice, and avfilter DLLs in the executable directory so launches do not depend on PATH or accidentally load MSYS2 FFmpeg.");
     help_section("Inference runtimes",
-                 "TensorRT loads .engine or .plan files and supports multi-context execution. ONNX Runtime loads .onnx files, uses CUDA I/O binding, and can use separate lane sessions for forced parallel single-frame inference. TorchScript is listed for future LibTorch builds and is unavailable unless the pipeline is rebuilt with ENABLE_LIBTORCH=ON.");
+                 "TensorRT loads .engine or .plan files and supports multi-context execution. ONNX Runtime loads .onnx files, uses CUDA I/O binding, and can use separate lane sessions for forced parallel single-frame inference. TorchScript loads exported TorchScript .pt, .ts, or .torchscript files when the pipeline is built with ENABLE_LIBTORCH=ON. Raw Ultralytics .pt checkpoints must be exported first with: yolo export model=models/best.pt format=torchscript imgsz=640.");
     help_section("Execution plan modes",
                  "Mode 0 is single-frame compatibility. Mode 1 enables batched transfers around sequential inference. Mode 2 overlaps pipeline stages while inference remains sequential. Mode 3 overlaps stages and uses parallel inference contexts when the runtime and GPU allow it.");
     help_section("Staged hardware pipeline",
@@ -973,7 +981,7 @@ void UiApp::render_help_tab() {
     help_section("VRAM budgeting",
                  "Auto tune estimates video frame memory, model/backend memory, active batch memory, and reserved GPU memory. VRAM budget ratio limits how much total GPU memory the planner may consume; reserve MB keeps memory free for the OS, driver, desktop, and other GPU work.");
     help_section("Models and labels",
-                 "Detection needs a model file and a labels file. TensorRT uses .engine/.plan, ONNX Runtime uses .onnx, and TorchScript uses serialized TorchScript files. The input size must match the model. The precision selector is a runtime label; the model tensor type still controls FP32 or FP16 preprocessing.");
+                 "Detection needs a model file and a labels file. TensorRT uses .engine/.plan, ONNX Runtime uses .onnx, and TorchScript uses serialized TorchScript files. For TorchScript, use the build-libtorch-vs executable. The input size must match the model. The precision selector is a runtime label; the model tensor type still controls FP32 or FP16 preprocessing.");
     help_section("Confidence, IoU, and input size",
                  "Confidence filters weak detections. IoU controls overlap suppression. Input size is the model resolution; the whole frame is letterboxed into that resolution, not cropped.");
     help_section("Class filtering",
@@ -981,7 +989,7 @@ void UiApp::render_help_tab() {
     help_section("Recommended presets",
                  "Use CSV Only for analytics and easiest validation. Use Safe CPU Detection when CUDA video is unavailable. Use Annotated Video for normal NVDEC/runtime/NVENC output. Use Fast GPU or Stress Test when measuring long-run hardware throughput.");
     help_section("Common errors",
-                 "Check the working directory, build-win-cuda12 Release executable choice, missing vcpkg FFmpeg DLLs beside the EXE, missing TensorRT or ONNX Runtime DLLs, missing model or labels file, model/input-size mismatch, unavailable NVDEC/NVENC, locked output files, and MP4 files that are not playable until finalized.");
+                 "Check the working directory, executable choice, missing vcpkg FFmpeg DLLs beside the EXE, missing TensorRT/ONNX Runtime/LibTorch DLLs, missing model or labels file, raw .pt instead of exported TorchScript, model/input-size mismatch, unavailable NVDEC/NVENC, locked output files, and MP4 files that are not playable until finalized.");
 }
 
 void UiApp::render_tooltip(const char *text) {
@@ -1029,6 +1037,7 @@ void UiApp::normalize_default_paths() {
             config_.workingDirectory = pipelineDir.u8string();
 
             const fs::path candidates[] = {
+                pipelineDir / "build-libtorch-vs" / "Release" / "VideoComputePipeline.exe",
                 pipelineDir / "build-win-cuda12" / "Release" / "VideoComputePipeline.exe",
                 pipelineDir / "build-vs" / "Release" / "VideoComputePipeline.exe",
                 pipelineDir / "build-win" / "bin" / "VideoComputePipeline.exe",
@@ -1047,6 +1056,37 @@ void UiApp::normalize_default_paths() {
             break;
         }
         cursor = parent;
+    }
+}
+
+void UiApp::prefer_runtime_executable_if_available() {
+    namespace fs = std::filesystem;
+
+    const fs::path pipelineDir = fs::u8path(config_.workingDirectory);
+    if (!fs::is_directory(pipelineDir)) {
+        return;
+    }
+
+    fs::path preferred;
+    if (config_.runtime == Runtime::TorchScript) {
+        preferred = pipelineDir / "build-libtorch-vs" / "Release" / "VideoComputePipeline.exe";
+    } else if (config_.runtime == Runtime::TensorRt || config_.runtime == Runtime::OnnxRuntime || config_.runtime == Runtime::Auto) {
+        preferred = pipelineDir / "build-win-cuda12" / "Release" / "VideoComputePipeline.exe";
+    }
+
+    if (preferred.empty() || !fs::is_regular_file(preferred)) {
+        return;
+    }
+
+    const bool currentLooksAutoSelected =
+        path_contains_build_dir(config_.pipelineExePath, "build-libtorch-vs") ||
+        path_contains_build_dir(config_.pipelineExePath, "build-win-cuda12") ||
+        path_contains_build_dir(config_.pipelineExePath, "build-msvc") ||
+        path_contains_build_dir(config_.pipelineExePath, "build-vs") ||
+        path_contains_build_dir(config_.pipelineExePath, "build-win");
+
+    if (currentLooksAutoSelected || !file_exists(config_.pipelineExePath)) {
+        config_.pipelineExePath = preferred.u8string();
     }
 }
 

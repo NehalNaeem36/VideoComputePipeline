@@ -281,6 +281,7 @@ void inference_backend_model_info_print(FILE *out,
     fprintf(target, "  model_path: %s\n", model_path ? model_path : "");
     fprintf(target, "  detected_format: %s\n", inference_model_format_from_path(model_path));
     fprintf(target, "  selected_runtime: %s\n", inference_runtime_to_string(selected));
+    fprintf(target, "  backend: %s\n", selected == INFERENCE_RUNTIME_TORCHSCRIPT ? "libtorch" : inference_runtime_to_string(selected));
     fprintf(target, "  backend_device: %s\n", backend_device_to_string(backend_device));
     fprintf(target, "  model_adapter: %s\n", model_type == MODEL_TYPE_AUTO ? "yolov5 (auto default)" : model_type_to_string(model_type));
     fprintf(target, "  labels_path: %s\n", labels_path ? labels_path : "");
@@ -297,5 +298,8 @@ void inference_backend_model_info_print(FILE *out,
         fprintf(target, "  backend_available: %s\n", info.available ? "yes" : "no");
         fprintf(target, "  gpu_resident_possible: %s\n", info.gpu_io_available && backend_device == BACKEND_DEVICE_CUDA ? "yes" : "no");
         fprintf(target, "  backend_diagnostic: %s\n", info.diagnostic);
+        if (selected == INFERENCE_RUNTIME_TORCHSCRIPT) {
+            fprintf(target, "  note: TorchScript expects exported .torchscript/.ts files, or .pt only when it is a TorchScript archive\n");
+        }
     }
 }

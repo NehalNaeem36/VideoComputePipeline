@@ -42,9 +42,11 @@ static bool class_filter_contains(const YoloPostprocessConfig *config, int class
 static int parse_output_shape(const int *dims,
                               int nb_dims,
                               int attributes,
+                              int alternate_attributes,
                               size_t element_count,
                               int *prediction_count,
-                              int *transposed) {
+                              int *transposed,
+                              int *resolved_attributes) {
     if (!dims || nb_dims <= 0 || !prediction_count || !transposed || attributes <= 0 || element_count == 0) {
         return -1;
     }
@@ -52,12 +54,28 @@ static int parse_output_shape(const int *dims,
     if (dims[nb_dims - 1] == attributes) {
         *prediction_count = (int)(element_count / (size_t)attributes);
         *transposed = 0;
+        *resolved_attributes = attributes;
         return *prediction_count > 0 ? 0 : -1;
     }
 
     if (nb_dims >= 2 && dims[nb_dims - 2] == attributes) {
         *prediction_count = dims[nb_dims - 1];
         *transposed = 1;
+        *resolved_attributes = attributes;
+        return *prediction_count > 0 ? 0 : -1;
+    }
+
+    if (alternate_attributes > 0 && dims[nb_dims - 1] == alternate_attributes) {
+        *prediction_count = (int)(element_count / (size_t)alternate_attributes);
+        *transposed = 0;
+        *resolved_attributes = alternate_attributes;
+        return *prediction_count > 0 ? 0 : -1;
+    }
+
+    if (alternate_attributes > 0 && nb_dims >= 2 && dims[nb_dims - 2] == alternate_attributes) {
+        *prediction_count = dims[nb_dims - 1];
+        *transposed = 1;
+        *resolved_attributes = alternate_attributes;
         return *prediction_count > 0 ? 0 : -1;
     }
 
@@ -82,17 +100,27 @@ int yolo_postprocess(const float *output,
     }
 
     detection_result_clear(result);
-    const int attributes = 5 + config->class_count;
+    const int yolov5_attributes = 5 + config->class_count;
+    const int yolov8_attributes = 4 + config->class_count;
+    int attributes = yolov5_attributes;
     int prediction_count = 0;
     int transposed = 0;
-    if (parse_output_shape(dims, nb_dims, attributes, element_count, &prediction_count, &transposed) != 0) {
+    if (parse_output_shape(dims,
+                           nb_dims,
+                           yolov5_attributes,
+                           yolov8_attributes,
+                           element_count,
+                           &prediction_count,
+                           &transposed,
+                           &attributes) != 0) {
         return -1;
     }
+    const int class_offset = attributes == yolov8_attributes ? 4 : 5;
 
     std::vector<Detection> candidates;
     candidates.reserve((size_t)prediction_count / 8u);
     for (int i = 0; i < prediction_count; ++i) {
-        const float objectness = read_prediction_value(output, i, 4, prediction_count, attributes, transposed);
+        const float objectness = class_offset == 4 ? 1.0f : read_prediction_value(output, i, 4, prediction_count, attributes, transposed);
         if (objectness <= 0.0f) {
             continue;
         }
@@ -105,7 +133,7 @@ int yolo_postprocess(const float *output,
                 if (c < 0 || c >= config->class_count) {
                     continue;
                 }
-                const float score = read_prediction_value(output, i, 5 + c, prediction_count, attributes, transposed);
+                const float score = read_prediction_value(output, i, class_offset + c, prediction_count, attributes, transposed);
                 if (score > best_score) {
                     best_score = score;
                     best_class = c;
@@ -113,7 +141,7 @@ int yolo_postprocess(const float *output,
             }
         } else {
             for (int c = 0; c < config->class_count; ++c) {
-                const float score = read_prediction_value(output, i, 5 + c, prediction_count, attributes, transposed);
+                const float score = read_prediction_value(output, i, class_offset + c, prediction_count, attributes, transposed);
                 if (score > best_score) {
                     best_score = score;
                     best_class = c;

@@ -35,6 +35,14 @@ Use the CUDA 12 pipeline executable for TensorRT, ONNX Runtime, NVDEC, CUDA over
 ..\VideoComputePipeline\build-win-cuda12\Release\VideoComputePipeline.exe
 ```
 
+Use the LibTorch-enabled executable for TorchScript runs:
+
+```text
+..\VideoComputePipeline\build-libtorch-vs\Release\VideoComputePipeline.exe
+```
+
+When you select the TorchScript runtime, the UI prefers `build-libtorch-vs` if that executable exists. TorchScript can use CPU-decoded frames, or NVDEC GPU-resident frames when `Decoder = nvdec` and `Inference device = cuda`.
+
 The pipeline build is expected to copy the vcpkg FFmpeg DLLs beside the executable. The UI checks for:
 
 ```text
@@ -96,4 +104,8 @@ Hardware detection uses a staged NVDEC -> inference -> output pipeline. `Schedul
 
 Decoder, inference device, and encoder are independent controls. `Decoder` chooses CPU software decode or NVDEC frame source. `Inference device` chooses CPU or CUDA model execution. `Encoder` is used only when annotated video output is enabled; CSV-only detection does not need an output video writer.
 
-TensorRT uses `.engine` or `.plan` models. ONNX Runtime uses `.onnx` models. TorchScript appears in the runtime selector only for forward compatibility; it requires a pipeline build with `ENABLE_LIBTORCH=ON`.
+TensorRT uses `.engine` or `.plan` models. ONNX Runtime uses `.onnx` models. TorchScript uses exported TorchScript `.pt`, `.ts`, `.torchscript`, or `.torchscript.pt` files and requires a pipeline build with `ENABLE_LIBTORCH=ON`. Raw Ultralytics `.pt` checkpoints must be exported first:
+
+```text
+yolo export model=models/best.pt format=torchscript imgsz=640
+```

@@ -380,7 +380,7 @@ std::vector<std::string> validate_config(const PipelineRunConfig &config) {
     }
     if (config.task == Task::Detect) {
         if (config.runtime == Runtime::TensorRt && config.backendDevice == BackendDevice::Cpu) {
-            issues.emplace_back("TensorRT is CUDA-only. Select inference device cuda or choose ONNX Runtime for CPU inference.");
+            issues.emplace_back("TensorRT is CUDA-only. Select inference device cuda or choose ONNX Runtime/TorchScript for CPU inference.");
         }
         if (config.drawBoxes &&
             !(config.decoder == Decoder::Nvdec &&

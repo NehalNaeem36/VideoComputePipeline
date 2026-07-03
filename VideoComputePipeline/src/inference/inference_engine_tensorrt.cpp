@@ -8,6 +8,7 @@
 
 #include "cuda_preprocess.h"
 #include "inference/backend_registry.h"
+#include "inference_engine_internal.hpp"
 #include "yolo_postprocess.h"
 
 #ifdef VCP_ENABLE_TENSORRT
@@ -19,11 +20,6 @@
 
 #ifdef VCP_ENABLE_ONNXRUNTIME
 #include <onnxruntime_cxx_api.h>
-#endif
-
-#ifdef VCP_ENABLE_LIBTORCH
-#include <torch/script.h>
-#include <torch/torch.h>
 #endif
 
 #include <algorithm>
@@ -227,17 +223,6 @@ float elapsed_event_ms(cudaEvent_t start, cudaEvent_t end) {
     }
     return ms;
 }
-
-class InferenceEngineImpl {
-public:
-    virtual ~InferenceEngineImpl() = default;
-    virtual int run(const Frame *frame, DetectionResult *result, FrameTiming *timing) = 0;
-    virtual int run_device(const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing) = 0;
-    virtual int get_batch_capability(InferenceBatchCapability *capability) const = 0;
-    virtual int set_parallel_contexts(int context_count) = 0;
-    virtual int run_batch(FrameBatch *batch) = 0;
-    virtual int run_device_batch(FrameBatch *batch) = 0;
-};
 
 struct CudaSlot {
 #ifdef VCP_ENABLE_TENSORRT
@@ -1925,101 +1910,15 @@ private:
 };
 #endif
 
-#ifdef VCP_ENABLE_LIBTORCH
-class TorchScriptYoloEngine final : public CudaYoloRuntimeEngine {
-public:
-    explicit TorchScriptYoloEngine(const InferenceConfig &cfg) : CudaYoloRuntimeEngine(cfg) {}
-
-    int init() {
-        if (inference_runtime_validate_model_path(INFERENCE_RUNTIME_TORCHSCRIPT, config_.model_path, validation_, sizeof(validation_)) != 0) {
-            g_last_error = validation_;
-            return -1;
-        }
-        try {
-            module_ = torch::jit::load(config_.model_path, torch::kCUDA);
-            module_.eval();
-            if (config_.use_fp16) {
-                module_.to(torch::kCUDA, torch::kFloat16);
-                input_dtype_ = TENSOR_DTYPE_FP16;
-            } else {
-                module_.to(torch::kCUDA, torch::kFloat32);
-                input_dtype_ = TENSOR_DTYPE_FP32;
-            }
-        } catch (const c10::Error &e) {
-            g_last_error = std::string("failed to load TorchScript model: ") + e.what_without_backtrace();
-            return -1;
-        }
-
-        const int grid8 = config_.input_width / 8;
-        const int grid16 = config_.input_width / 16;
-        const int grid32 = config_.input_width / 32;
-        const int predictions = 3 * (grid8 * grid8 + grid16 * grid16 + grid32 * grid32);
-        if (set_output_shape({1, predictions, 5 + config_.class_count}, TENSOR_DTYPE_FP32) != 0) {
-            return -1;
-        }
-        return init_common();
-    }
-
-protected:
-    const char *backend_name() const override { return "TorchScript"; }
-
-    int run_backend(CudaSlot &slot, FrameTiming *timing) override {
-        if (cudaStreamSynchronize(slot.stream) != cudaSuccess) {
-            g_last_error = "failed to synchronize CUDA preprocess before TorchScript execution";
-            return -1;
-        }
-
-        const auto dtype = input_dtype_ == TENSOR_DTYPE_FP16 ? torch::kFloat16 : torch::kFloat32;
-        auto options = torch::TensorOptions().device(torch::kCUDA).dtype(dtype);
-        torch::Tensor input = torch::from_blob(slot.d_input,
-                                               {1, 3, config_.input_height, config_.input_width},
-                                               options);
-        auto inference_start = std::chrono::high_resolution_clock::now();
-        torch::NoGradGuard no_grad;
-        torch::Tensor output;
-        try {
-            torch::jit::IValue raw = module_.forward({input});
-            if (raw.isTensor()) {
-                output = raw.toTensor();
-            } else if (raw.isTuple() && !raw.toTuple()->elements().empty() && raw.toTuple()->elements()[0].isTensor()) {
-                output = raw.toTuple()->elements()[0].toTensor();
-            } else if (raw.isList() && raw.toList().size() > 0 && raw.toList().get(0).isTensor()) {
-                output = raw.toList().get(0).toTensor();
-            } else {
-                g_last_error = "TorchScript model output is not a tensor or tensor tuple/list";
-                return -1;
-            }
-            output = output.contiguous();
-            torch::Tensor host = output.to(torch::kCPU).to(torch::kFloat32).contiguous();
-            auto inference_end = std::chrono::high_resolution_clock::now();
-            timing->inference_ms = std::chrono::duration<double, std::milli>(inference_end - inference_start).count();
-            timing->download_ms = 0.0;
-
-            const int64_t elements = host.numel();
-            if (elements <= 0) {
-                g_last_error = "TorchScript output tensor is empty";
-                return -1;
-            }
-            slot.h_output_float.resize((size_t)elements);
-            std::memcpy(slot.h_output_float.data(), host.data_ptr<float>(), (size_t)elements * sizeof(float));
-            slot.output_dims.clear();
-            for (int64_t dim : host.sizes()) {
-                slot.output_dims.push_back((int)dim);
-            }
-        } catch (const c10::Error &e) {
-            g_last_error = std::string("TorchScript inference failed: ") + e.what_without_backtrace();
-            return -1;
-        }
-        return 0;
-    }
-
-private:
-    char validation_[256] = {0};
-    torch::jit::script::Module module_;
-};
-#endif
-
 }  // namespace
+
+void vcp_inference_set_last_error(const std::string &message) {
+    g_last_error = message;
+}
+
+void vcp_inference_set_last_error(const char *message) {
+    g_last_error = message ? message : "unknown inference error";
+}
 
 struct InferenceEngine {
     InferenceEngineImpl *impl;
@@ -2070,11 +1969,10 @@ extern "C" int inference_engine_create(InferenceEngine **engine, const Inference
 #endif
     } else if (selected_runtime == INFERENCE_RUNTIME_TORCHSCRIPT) {
 #ifdef VCP_ENABLE_LIBTORCH
-        std::unique_ptr<TorchScriptYoloEngine> torch_impl(new TorchScriptYoloEngine(*config));
-        if (torch_impl->init() != 0) {
+        impl = vcp_create_libtorch_yolo_engine(*config);
+        if (!impl) {
             return -1;
         }
-        impl = std::move(torch_impl);
 #else
         g_last_error = "TorchScript backend was not compiled. Rebuild with ENABLE_LIBTORCH=ON.";
         return -1;

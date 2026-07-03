@@ -24,6 +24,7 @@ private:
     void stop_pipeline();
     void refresh_command();
     void normalize_default_paths();
+    void prefer_runtime_executable_if_available();
     void refresh_input_files_if_needed();
     void sync_input_path_from_selection();
     void refresh_model_files_if_needed();

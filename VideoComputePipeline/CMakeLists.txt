@@ -249,6 +249,9 @@ if(ENABLE_CUDA_INFERENCE)
             message(FATAL_ERROR "ENABLE_LIBTORCH=ON requires LibTorch. Set -DLIBTORCH_ROOT=C:/path/to/libtorch or add it to CMAKE_PREFIX_PATH.")
         endif()
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+        if(WIN32 AND LIBTORCH_ROOT)
+            file(GLOB LIBTORCH_RUNTIME_DLLS "${LIBTORCH_ROOT}/lib/*.dll")
+        endif()
     endif()
 endif()
 
@@ -294,6 +297,11 @@ if(ENABLE_CUDA_INFERENCE AND (ENABLE_TENSORRT OR ENABLE_ONNXRUNTIME OR ENABLE_LI
         src/inference/yolo_postprocess.cpp
         src/inference/cuda_preprocess.cu
     )
+    if(ENABLE_LIBTORCH)
+        list(APPEND PROJECT_SOURCES
+            src/inference/inference_engine_libtorch.cpp
+        )
+    endif()
 else()
     list(APPEND PROJECT_SOURCES
         src/inference/inference_engine_stub.c
@@ -485,6 +493,9 @@ if(ENABLE_CUDA_INFERENCE AND ENABLE_ONNXRUNTIME)
         "${ONNXRUNTIME_PROVIDERS_CUDA_DLL}"
         "${ONNXRUNTIME_PROVIDERS_SHARED_DLL}"
     )
+endif()
+if(ENABLE_CUDA_INFERENCE AND ENABLE_LIBTORCH AND LIBTORCH_RUNTIME_DLLS)
+    vcp_copy_runtime_dlls(VideoComputePipeline ${LIBTORCH_RUNTIME_DLLS})
 endif()
 
 if(BUILD_TESTING)
