@@ -359,7 +359,7 @@ void UiApp::render_run_config_tab() {
     render_tooltip("Preset command profiles. Custom preserves your manual edits.");
 
     if (input_text_string("Pipeline exe", config_.pipelineExePath)) mark_custom();
-    render_tooltip("Path to VideoComputePipeline.exe. Use build-win-cuda12 for CUDA filters, TensorRT, ONNX Runtime, NVDEC, and NVENC. CPU-only builds cannot run --mode gpu.");
+    render_tooltip("Path to VideoComputePipeline.exe. The UI prefers build-all-backends-vs so TensorRT, ONNX Runtime, TorchScript, CUDA filters, NVDEC, and NVENC are all available from one executable. CPU-only builds cannot run --mode gpu or CUDA inference.");
     if (input_text_string("Working directory", config_.workingDirectory)) mark_custom();
     render_tooltip("Subprocess working directory. Relative input, model, label, output, benchmark, and detection paths are resolved from the VideoComputePipeline folder.");
     const std::vector<std::string> missingFfmpegDlls = missing_ffmpeg_runtime_dlls(config_);
@@ -526,7 +526,7 @@ void UiApp::render_run_config_tab() {
         mark_custom();
     }
     ImGui::EndDisabled();
-    render_tooltip("Inference runtime passed as --runtime. TensorRT uses .engine/.plan, ONNX Runtime uses .onnx, and TorchScript uses exported TorchScript .pt/.ts/.torchscript models. Selecting TorchScript prefers the build-libtorch-vs executable when it exists.");
+    render_tooltip("Inference runtime passed as --runtime. TensorRT uses .engine/.plan, ONNX Runtime uses .onnx, and TorchScript uses exported TorchScript .pt/.ts/.torchscript models. The pipeline executable should be the all-backends build.");
 
     int backendDeviceIndex = (int)config_.backendDevice;
     ImGui::BeginDisabled(!detectMode);
@@ -665,8 +665,16 @@ void UiApp::render_run_config_tab() {
     render_tooltip("Minimum detection confidence. Lower values find more objects; higher values reduce false positives but may miss weak objects.");
     if (ImGui::SliderFloat("IoU threshold", &config_.iouThreshold, 0.0f, 1.0f, "%.2f")) mark_custom();
     render_tooltip("Controls non-maximum suppression. Lower values remove overlapping boxes more aggressively.");
-    if (ImGui::InputInt("Input size", &config_.inputSize)) mark_custom();
-    render_tooltip("YOLO network input resolution. The full frame is letterboxed into this size; it is not a crop. YOLOv5s commonly uses 640.");
+    if (ImGui::InputInt("Square input size", &config_.inputSize)) {
+        config_.inputWidth = config_.inputSize;
+        config_.inputHeight = config_.inputSize;
+        mark_custom();
+    }
+    render_tooltip("Quick square detector input size. Editing this sets both letterbox width and height. YOLOv5s commonly uses 640x640.");
+    if (ImGui::InputInt("Input width", &config_.inputWidth)) mark_custom();
+    render_tooltip("Detector letterbox width. This must match the model's expected input tensor width.");
+    if (ImGui::InputInt("Input height", &config_.inputHeight)) mark_custom();
+    render_tooltip("Detector letterbox height. This must match the model's expected input tensor height.");
 
     refresh_labels_if_needed();
     ImGui::SeparatorText("Class filter");
@@ -787,6 +795,8 @@ void UiApp::render_run_config_tab() {
     config_.inferenceContexts = clamp_int_min(config_.inferenceContexts, 1);
     config_.vramReserveMb = clamp_int_min(config_.vramReserveMb, 0);
     config_.inputSize = clamp_int_min(config_.inputSize, 1);
+    config_.inputWidth = clamp_int_min(config_.inputWidth, 1);
+    config_.inputHeight = clamp_int_min(config_.inputHeight, 1);
     config_.maxFrames = clamp_int_min(config_.maxFrames, 0);
     config_.progressInterval = clamp_int_min(config_.progressInterval, 0);
     config_.confidence = clamp_float(config_.confidence, 0.0f, 1.0f);
@@ -981,15 +991,15 @@ void UiApp::render_help_tab() {
     help_section("VRAM budgeting",
                  "Auto tune estimates video frame memory, model/backend memory, active batch memory, and reserved GPU memory. VRAM budget ratio limits how much total GPU memory the planner may consume; reserve MB keeps memory free for the OS, driver, desktop, and other GPU work.");
     help_section("Models and labels",
-                 "Detection needs a model file and a labels file. TensorRT uses .engine/.plan, ONNX Runtime uses .onnx, and TorchScript uses serialized TorchScript files. For TorchScript, use the build-libtorch-vs executable. The input size must match the model. The precision selector is a runtime label; the model tensor type still controls FP32 or FP16 preprocessing.");
+                 "Detection needs a model file and a labels file. TensorRT uses .engine/.plan, ONNX Runtime uses .onnx, and TorchScript uses serialized TorchScript files. Use the build-all-backends-vs executable when switching between runtimes. The input width/height must match the model. The precision selector is a runtime label; the model tensor type still controls FP32 or FP16 preprocessing.");
     help_section("Confidence, IoU, and input size",
-                 "Confidence filters weak detections. IoU controls overlap suppression. Input size is the model resolution; the whole frame is letterboxed into that resolution, not cropped.");
+                 "Confidence filters weak detections. IoU controls overlap suppression. Input width and height are the model letterbox resolution; the whole frame is scaled into that rectangle with padding, not cropped. Use square size for normal 640x640 YOLO models and rectangular dimensions only for models exported for that shape.");
     help_section("Class filtering",
                  "By default detection keeps every class the model can output. Select one or more labels in the Run Config tab to emit class IDs and restrict both CSV and annotated output.");
     help_section("Recommended presets",
                  "Use CSV Only for analytics and easiest validation. Use Safe CPU Detection when CUDA video is unavailable. Use Annotated Video for normal NVDEC/runtime/NVENC output. Use Fast GPU or Stress Test when measuring long-run hardware throughput.");
     help_section("Common errors",
-                 "Check the working directory, executable choice, missing vcpkg FFmpeg DLLs beside the EXE, missing TensorRT/ONNX Runtime/LibTorch DLLs, missing model or labels file, raw .pt instead of exported TorchScript, model/input-size mismatch, unavailable NVDEC/NVENC, locked output files, and MP4 files that are not playable until finalized.");
+                 "Check the working directory, executable choice, missing vcpkg FFmpeg DLLs beside the EXE, missing TensorRT/ONNX Runtime/LibTorch DLLs, missing model or labels file, raw .pt instead of exported TorchScript, model/input width-height mismatch, unavailable NVDEC/NVENC, locked output files, and MP4 files that are not playable until finalized.");
 }
 
 void UiApp::render_tooltip(const char *text) {
@@ -1037,6 +1047,7 @@ void UiApp::normalize_default_paths() {
             config_.workingDirectory = pipelineDir.u8string();
 
             const fs::path candidates[] = {
+                pipelineDir / "build-all-backends-vs" / "Release" / "VideoComputePipeline.exe",
                 pipelineDir / "build-libtorch-vs" / "Release" / "VideoComputePipeline.exe",
                 pipelineDir / "build-win-cuda12" / "Release" / "VideoComputePipeline.exe",
                 pipelineDir / "build-vs" / "Release" / "VideoComputePipeline.exe",
@@ -1067,18 +1078,14 @@ void UiApp::prefer_runtime_executable_if_available() {
         return;
     }
 
-    fs::path preferred;
-    if (config_.runtime == Runtime::TorchScript) {
-        preferred = pipelineDir / "build-libtorch-vs" / "Release" / "VideoComputePipeline.exe";
-    } else if (config_.runtime == Runtime::TensorRt || config_.runtime == Runtime::OnnxRuntime || config_.runtime == Runtime::Auto) {
-        preferred = pipelineDir / "build-win-cuda12" / "Release" / "VideoComputePipeline.exe";
-    }
+    fs::path preferred = pipelineDir / "build-all-backends-vs" / "Release" / "VideoComputePipeline.exe";
 
     if (preferred.empty() || !fs::is_regular_file(preferred)) {
         return;
     }
 
     const bool currentLooksAutoSelected =
+        path_contains_build_dir(config_.pipelineExePath, "build-all-backends-vs") ||
         path_contains_build_dir(config_.pipelineExePath, "build-libtorch-vs") ||
         path_contains_build_dir(config_.pipelineExePath, "build-win-cuda12") ||
         path_contains_build_dir(config_.pipelineExePath, "build-msvc") ||

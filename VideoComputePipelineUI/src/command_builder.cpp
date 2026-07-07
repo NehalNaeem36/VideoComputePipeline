@@ -203,7 +203,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
         return;
     }
 
-    config.pipelineExePath = "..\\VideoComputePipeline\\build-win-cuda12\\Release\\VideoComputePipeline.exe";
+    config.pipelineExePath = "..\\VideoComputePipeline\\build-all-backends-vs\\Release\\VideoComputePipeline.exe";
     config.workingDirectory = "..\\VideoComputePipeline";
     config.inputFolderPath = "data\\input";
     config.selectedInputFile = "people_4k_30min_stream_test.mp4";
@@ -228,6 +228,8 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
     config.confidence = 0.25f;
     config.iouThreshold = 0.45f;
     config.inputSize = 640;
+    config.inputWidth = 640;
+    config.inputHeight = 640;
     config.progressInterval = 60;
     config.boxThickness = 3;
     config.boxConfidence = 0.0f;
@@ -382,6 +384,9 @@ std::vector<std::string> validate_config(const PipelineRunConfig &config) {
         if (config.runtime == Runtime::TensorRt && config.backendDevice == BackendDevice::Cpu) {
             issues.emplace_back("TensorRT is CUDA-only. Select inference device cuda or choose ONNX Runtime/TorchScript for CPU inference.");
         }
+        if (config.inputWidth <= 0 || config.inputHeight <= 0) {
+            issues.emplace_back("Input width and input height must be greater than 0.");
+        }
         if (config.drawBoxes &&
             !(config.decoder == Decoder::Nvdec &&
               config.backendDevice == BackendDevice::Cuda &&
@@ -509,7 +514,12 @@ BuiltCommand build_command(const PipelineRunConfig &inputConfig) {
         add_arg(command.args, "--detections", config.detectionsCsvPath);
         add_arg(command.args, "--confidence", config.confidence);
         add_arg(command.args, "--iou-threshold", config.iouThreshold);
-        add_arg(command.args, "--input-size", config.inputSize);
+        if (config.inputWidth == config.inputHeight) {
+            add_arg(command.args, "--input-size", config.inputWidth);
+        } else {
+            add_arg(command.args, "--input-width", config.inputWidth);
+            add_arg(command.args, "--input-height", config.inputHeight);
+        }
         add_arg(command.args, "--runtime", to_cli(config.runtime));
         add_arg(command.args, "--backend-device", to_cli(config.backendDevice));
         add_arg(command.args, "--precision", to_cli(config.precision));

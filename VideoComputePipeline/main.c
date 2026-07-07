@@ -79,7 +79,9 @@ static void print_detect_usage(const char *program_name) {
     printf("  --iou-threshold value        Detection NMS IoU threshold, 0.0 to 1.0\n");
     printf("  --classes names              Comma-separated label names to keep, for example person,car\n");
     printf("  --class-ids ids              Comma-separated numeric class IDs to keep, for example 0,2\n");
-    printf("  --input-size N               Detector input size, default 640\n");
+    printf("  --input-size N               Square detector input size, default 640\n");
+    printf("  --input-width N              Detector letterbox width, overrides --input-size width\n");
+    printf("  --input-height N             Detector letterbox height, overrides --input-size height\n");
     printf("  --runtime name               auto, tensorrt, onnxruntime, or torchscript\n");
     printf("  --backend-device name        Inference device only: cuda or cpu, default cuda\n");
     printf("  --allow-host-backend         Allow explicit slow host backend fallback\n");

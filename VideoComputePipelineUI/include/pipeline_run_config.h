@@ -28,7 +28,7 @@ enum class AutoIntMode { Manual = 0, Auto };
 enum class FeatureMode { Auto = 0, On, Off };
 
 struct PipelineRunConfig {
-    std::string pipelineExePath = "..\\VideoComputePipeline\\build-win-cuda12\\Release\\VideoComputePipeline.exe";
+    std::string pipelineExePath = "..\\VideoComputePipeline\\build-all-backends-vs\\Release\\VideoComputePipeline.exe";
     std::string workingDirectory = "..\\VideoComputePipeline";
     std::string inputFolderPath = "data\\input";
     std::string selectedInputFile;
@@ -82,6 +82,8 @@ struct PipelineRunConfig {
     float targetFps = 0.0f;
     float vramBudgetRatio = 0.375f;
     int inputSize = 640;
+    int inputWidth = 640;
+    int inputHeight = 640;
     int maxFrames = 0;
     int progressInterval = 60;
 };

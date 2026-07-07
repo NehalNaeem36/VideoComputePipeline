@@ -83,6 +83,8 @@ typedef struct {
     float confidence_threshold;
     float iou_threshold;
     int inference_input_size;
+    int inference_input_width;
+    int inference_input_height;
     int detection_class_count;
     int class_filter_id_count;
     int class_filter_ids[VCP_MAX_CLASS_FILTERS];

@@ -678,8 +678,8 @@ static void fill_inference_config_from_pipeline(const PipelineConfig *config, In
     inference_config->backend_device = config->backend_device;
     inference_config->model_type = config->model_type;
     inference_config->allow_host_backend = config->allow_host_backend;
-    inference_config->input_width = config->inference_input_size;
-    inference_config->input_height = config->inference_input_size;
+    inference_config->input_width = config->inference_input_width;
+    inference_config->input_height = config->inference_input_height;
     inference_config->class_count = config->detection_class_count;
     inference_config->class_filter_id_count = config->class_filter_id_count;
     memcpy(inference_config->class_filter_ids, config->class_filter_ids, sizeof(inference_config->class_filter_ids));

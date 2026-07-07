@@ -1541,7 +1541,7 @@ private:
             input_shape[1] != 3 ||
             input_shape[2] != config_.input_height ||
             input_shape[3] != config_.input_width) {
-            g_last_error = "unsupported ONNX model input shape; expected 1x3xinput_sizexinput_size";
+            g_last_error = "unsupported ONNX model input shape; expected 1x3xinput_heightxinput_width";
             return -1;
         }
         max_batch_size_ = input_shape[0] > 0 ? (int)input_shape[0] : 8;
@@ -1775,7 +1775,7 @@ private:
             input_shape[1] != 3 ||
             input_shape[2] != config_.input_height ||
             input_shape[3] != config_.input_width) {
-            g_last_error = "unsupported ONNX CPU model input shape; expected 1x3xinput_sizexinput_size";
+            g_last_error = "unsupported ONNX CPU model input shape; expected 1x3xinput_heightxinput_width";
             return -1;
         }
         input_ort_type_ = input_info.GetElementType();

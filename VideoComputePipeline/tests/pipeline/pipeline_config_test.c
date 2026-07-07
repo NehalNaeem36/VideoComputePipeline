@@ -37,6 +37,8 @@ static int pipeline_config_test_defaults(void) {
     TEST_ASSERT(config.confidence_threshold == DEFAULT_DETECTION_CONFIDENCE);
     TEST_ASSERT(config.iou_threshold == DEFAULT_DETECTION_IOU_THRESHOLD);
     TEST_ASSERT(config.inference_input_size == DEFAULT_INFERENCE_INPUT_SIZE);
+    TEST_ASSERT(config.inference_input_width == DEFAULT_INFERENCE_INPUT_SIZE);
+    TEST_ASSERT(config.inference_input_height == DEFAULT_INFERENCE_INPUT_SIZE);
     TEST_ASSERT(config.detection_class_count == DEFAULT_DETECTION_CLASS_COUNT);
     TEST_ASSERT(config.class_filter_id_count == 0);
     TEST_ASSERT(config.class_filter_name_count == 0);
@@ -150,6 +152,8 @@ static int pipeline_config_test_parse_args(void) {
     TEST_ASSERT(config.confidence_threshold > 0.34f && config.confidence_threshold < 0.36f);
     TEST_ASSERT(config.iou_threshold > 0.49f && config.iou_threshold < 0.51f);
     TEST_ASSERT(config.inference_input_size == 512);
+    TEST_ASSERT(config.inference_input_width == 512);
+    TEST_ASSERT(config.inference_input_height == 512);
     TEST_ASSERT(config.class_filter_id_count == 3);
     TEST_ASSERT(config.class_filter_ids[0] == 0);
     TEST_ASSERT(config.class_filter_ids[1] == 2);
@@ -240,6 +244,24 @@ static int pipeline_config_test_missing_value_error_message(void) {
 
     TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) != 0);
     TEST_ASSERT(strstr(pipeline_config_last_error /* module: pipeline/pipeline_config */ (), "missing value for --input-size") != NULL);
+    return 0;
+}
+
+static int pipeline_config_test_rectangular_input_size(void) {
+    char *argv[] = {
+        "VideoComputePipeline",
+        "--input-width", "1280",
+        "--input-height", "736"
+    };
+    const int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+
+    PipelineConfig config;
+    pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
+
+    TEST_ASSERT(pipeline_config_parse_args /* module: pipeline/pipeline_config */ (&config, argc, argv) == 0);
+    TEST_ASSERT(config.inference_input_width == 1280);
+    TEST_ASSERT(config.inference_input_height == 736);
+    TEST_ASSERT(config.inference_input_size == 0);
     return 0;
 }
 
@@ -463,6 +485,9 @@ int main(void) {
         return 1;
     }
     if (pipeline_config_test_missing_value_error_message() != 0) {
+        return 1;
+    }
+    if (pipeline_config_test_rectangular_input_size() != 0) {
         return 1;
     }
     if (pipeline_config_test_bad_class_ids() != 0) {

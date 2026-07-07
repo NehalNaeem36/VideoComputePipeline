@@ -25,23 +25,17 @@ build-win\Release\VideoComputePipelineUI.exe
 Run the UI from `E:\wAI\first_task\VideoComputePipelineUI` so the default relative paths resolve:
 
 ```text
-..\VideoComputePipeline\build-win-cuda12\Release\VideoComputePipeline.exe
+..\VideoComputePipeline\build-all-backends-vs\Release\VideoComputePipeline.exe
 ..\VideoComputePipeline
 ```
 
-Use the CUDA 12 pipeline executable for TensorRT, ONNX Runtime, NVDEC, CUDA overlay, and NVENC:
+Use the all-backends pipeline executable for TensorRT, ONNX Runtime, TorchScript, NVDEC, CUDA overlay, and NVENC:
 
 ```text
-..\VideoComputePipeline\build-win-cuda12\Release\VideoComputePipeline.exe
+..\VideoComputePipeline\build-all-backends-vs\Release\VideoComputePipeline.exe
 ```
 
-Use the LibTorch-enabled executable for TorchScript runs:
-
-```text
-..\VideoComputePipeline\build-libtorch-vs\Release\VideoComputePipeline.exe
-```
-
-When you select the TorchScript runtime, the UI prefers `build-libtorch-vs` if that executable exists. TorchScript can use CPU-decoded frames, or NVDEC GPU-resident frames when `Decoder = nvdec` and `Inference device = cuda`.
+When you select a runtime, the UI keeps using `build-all-backends-vs` if that executable exists. TorchScript can use CPU-decoded frames, or NVDEC GPU-resident frames when `Decoder = nvdec` and `Inference device = cuda`.
 
 The pipeline build is expected to copy the vcpkg FFmpeg DLLs beside the executable. The UI checks for:
 
@@ -109,3 +103,5 @@ TensorRT uses `.engine` or `.plan` models. ONNX Runtime uses `.onnx` models. Tor
 ```text
 yolo export model=models/best.pt format=torchscript imgsz=640
 ```
+
+The detector input controls are the model letterbox dimensions, not a crop. The square input-size control sets both width and height. Use separate input width and height only for models exported with a rectangular input shape.

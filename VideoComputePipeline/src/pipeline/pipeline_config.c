@@ -507,6 +507,8 @@ void pipeline_config_default(PipelineConfig *config) {
     config->confidence_threshold = DEFAULT_DETECTION_CONFIDENCE;
     config->iou_threshold = DEFAULT_DETECTION_IOU_THRESHOLD;
     config->inference_input_size = DEFAULT_INFERENCE_INPUT_SIZE;
+    config->inference_input_width = DEFAULT_INFERENCE_INPUT_SIZE;
+    config->inference_input_height = DEFAULT_INFERENCE_INPUT_SIZE;
     config->detection_class_count = DEFAULT_DETECTION_CLASS_COUNT;
     config->class_filter_id_count = 0;
     memset(config->class_filter_ids, 0, sizeof(config->class_filter_ids));
@@ -644,6 +646,34 @@ int pipeline_config_parse_args(PipelineConfig *config, int argc, char **argv) {
                 set_parse_error /* module: pipeline/pipeline_config */ ("--input-size must be greater than 0");
                 return -1;
             }
+            config->inference_input_width = config->inference_input_size;
+            config->inference_input_height = config->inference_input_size;
+        } else if (strcmp(arg, "--input-width") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_int_value /* module: pipeline/pipeline_config */ (argv[++i], &config->inference_input_width) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--input-width must be a positive integer");
+                return -1;
+            }
+            if (config->inference_input_width <= 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--input-width must be greater than 0");
+                return -1;
+            }
+            config->inference_input_size = config->inference_input_width == config->inference_input_height ? config->inference_input_width : 0;
+        } else if (strcmp(arg, "--input-height") == 0) {
+            if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
+                return -1;
+            }
+            if (parse_int_value /* module: pipeline/pipeline_config */ (argv[++i], &config->inference_input_height) != 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--input-height must be a positive integer");
+                return -1;
+            }
+            if (config->inference_input_height <= 0) {
+                set_parse_error /* module: pipeline/pipeline_config */ ("--input-height must be greater than 0");
+                return -1;
+            }
+            config->inference_input_size = config->inference_input_width == config->inference_input_height ? config->inference_input_width : 0;
         } else if (strcmp(arg, "--class-ids") == 0) {
             if (require_value /* module: pipeline/pipeline_config */ (argc, argv, i, arg) != 0) {
                 return -1;
@@ -1074,7 +1104,7 @@ int pipeline_config_format_summary(const PipelineConfig *config, char *buffer, s
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  precision: %s\n", config->inference_precision) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  model_path: %s\n", config->model_path) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  labels_path: %s\n", config->labels_path) != 0 ||
-            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  input_size: %d\n", config->inference_input_size) != 0 ||
+            append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  input_size: %dx%d\n", config->inference_input_width, config->inference_input_height) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  confidence: %.3f\n", config->confidence_threshold) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  iou_threshold: %.3f\n", config->iou_threshold) != 0 ||
             append_summary /* module: pipeline/pipeline_config */ (buffer, buffer_size, &offset, "  class_filter: ") != 0) {
