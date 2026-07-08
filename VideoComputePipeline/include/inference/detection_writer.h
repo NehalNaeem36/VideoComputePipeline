@@ -11,6 +11,7 @@ extern "C" {
 
 typedef struct {
     void *file;
+    char *buffer;
     char **labels;
     size_t label_count;
 } DetectionWriter;

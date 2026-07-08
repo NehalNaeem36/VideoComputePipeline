@@ -5,6 +5,8 @@
  */
 #include "path_utils.h"
 
+#include <array>
+#include <cstdio>
 #include <filesystem>
 #include <sstream>
 
@@ -136,9 +138,36 @@ bool browse_for_folder(const char *title, std::string &selectedPath) {
     selectedPath = wide_to_utf8(path);
     return true;
 #else
-    (void)title;
-    (void)selectedPath;
-    return false;
+    std::string command = "zenity --file-selection --directory";
+    if (title && title[0] != '\0') {
+        command += " --title=\"";
+        for (const char *ch = title; *ch; ++ch) {
+            if (*ch == '"') {
+                command += "\\\"";
+            } else {
+                command += *ch;
+            }
+        }
+        command += "\"";
+    }
+    FILE *pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        return false;
+    }
+    std::array<char, 4096> buffer{};
+    std::string result;
+    while (fgets(buffer.data(), (int)buffer.size(), pipe)) {
+        result += buffer.data();
+    }
+    const int code = pclose(pipe);
+    while (!result.empty() && (result.back() == '\n' || result.back() == '\r')) {
+        result.pop_back();
+    }
+    if (code != 0 || result.empty()) {
+        return false;
+    }
+    selectedPath = result;
+    return true;
 #endif
 }
 

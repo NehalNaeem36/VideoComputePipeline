@@ -3,6 +3,8 @@ build/
 build-*/
 out/
 dist/
+docker-output/
+vcp_out/
 
 # Object and library files
 *.o
@@ -58,6 +60,8 @@ Testing/
 coverage/
 *.log
 errorLOG.txt
+core
+core.*
 
 # Data and benchmarks
 data/input/*
@@ -67,11 +71,14 @@ data/output/*
 benchmarks/*.csv
 benchmarks/**/*.csv
 benchmarks/*.md
+benchmarks/docker_*.json
 models/*
 !models/.gitkeep
 *.engine
 *.onnx
 *.pt
+*.torchscript
+*.ts
 tools/
 tools/yolov5/
 
@@ -85,3 +92,6 @@ __pycache__/
 *.tmp
 *.temp
 *.bak
+*.tar
+*.tar.gz
+*.tgz

@@ -1,0 +1,72 @@
+FROM nvidia/cuda:12.9.1-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    git \
+    ninja-build \
+    pkg-config \
+    tar \
+    wget \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libswresample-dev \
+    libavdevice-dev \
+    libavfilter-dev \
+    cudnn9-cuda-12 \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG ONNXRUNTIME_VERSION=1.22.0
+RUN wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-gpu-${ONNXRUNTIME_VERSION}.tgz" \
+        -O /tmp/onnxruntime-gpu.tgz \
+    && mkdir -p /opt/onnxruntime-gpu \
+    && tar -xzf /tmp/onnxruntime-gpu.tgz -C /opt/onnxruntime-gpu --strip-components=1 \
+    && rm -f /tmp/onnxruntime-gpu.tgz
+
+WORKDIR /workspace
+COPY VideoComputePipeline ./VideoComputePipeline
+
+WORKDIR /workspace/VideoComputePipeline
+
+# This image is intentionally conservative: it always builds CUDA filters.
+# TensorRT, ONNX Runtime, and LibTorch are optional and should be provided with
+# their normal CMake roots when you want a fully accelerated inference image.
+ARG ENABLE_CUDA_INFERENCE=OFF
+ARG ENABLE_HW_VIDEO=OFF
+ARG ENABLE_ONNXRUNTIME=OFF
+ARG ENABLE_LIBTORCH=OFF
+ARG ENABLE_TENSORRT=ON
+ARG TENSORRT_ROOT=
+ARG CUDNN_ROOT=/usr
+ARG ONNXRUNTIME_ROOT=/opt/onnxruntime-gpu
+ARG LIBTORCH_ROOT=
+ARG CMAKE_CUDA_ARCHITECTURES=86
+
+RUN cmake -S . -B /tmp/vcp-build-cuda -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES} \
+    -DENABLE_CUDA_FILTERS=ON \
+    -DENABLE_CUDA_INFERENCE=${ENABLE_CUDA_INFERENCE} \
+    -DENABLE_HW_VIDEO=${ENABLE_HW_VIDEO} \
+    -DENABLE_TENSORRT=${ENABLE_TENSORRT} \
+    -DENABLE_ONNXRUNTIME=${ENABLE_ONNXRUNTIME} \
+    -DENABLE_LIBTORCH=${ENABLE_LIBTORCH} \
+    -DTENSORRT_ROOT=${TENSORRT_ROOT} \
+    -DCUDNN_ROOT=${CUDNN_ROOT} \
+    -DONNXRUNTIME_ROOT=${ONNXRUNTIME_ROOT} \
+    -DLIBTORCH_ROOT=${LIBTORCH_ROOT} \
+    && cmake --build /tmp/vcp-build-cuda -j \
+    && ctest --test-dir /tmp/vcp-build-cuda --output-on-failure
+
+RUN mkdir -p /opt/videocompute/bin \
+    && cp /tmp/vcp-build-cuda/bin/VideoComputePipeline /opt/videocompute/bin/
+
+ENTRYPOINT ["/opt/videocompute/bin/VideoComputePipeline"]
+CMD ["--help"]

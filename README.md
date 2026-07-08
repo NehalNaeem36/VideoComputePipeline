@@ -154,6 +154,325 @@ Do not mix CUDA 13 and CUDA 12 paths in the same build directory. Do not use Min
 
 Existing TensorRT `.engine` files built with the old CUDA/TensorRT stack should be treated as stale and rebuilt after moving to TensorRT 11.1 / CUDA 12.
 
+## Linux Docker Port
+
+The project can also be built and run as a Linux container. This is separate
+from the Windows `.exe`: Docker builds a Linux binary and runs it with Linux
+CUDA, FFmpeg, cuDNN, and ONNX Runtime libraries.
+
+Current validated Docker paths:
+
+```text
+CUDA filter path:
+  FFmpeg software decode -> CUDA filter kernels -> FFmpeg encode
+
+ONNX detection CSV path:
+  NVDEC decode -> ONNX Runtime CUDA inference -> detections CSV
+
+ONNX annotated path:
+  NVDEC decode -> ONNX Runtime CUDA inference -> CUDA overlay -> NVENC MKV
+```
+
+The Docker files live in:
+
+```text
+VideoComputePipeline/docker/
+```
+
+### Docker Storage
+
+CUDA Docker images are large. On Windows, Docker Desktop stores image layers in
+its WSL disk image. Move Docker Desktop's disk image location off `C:` if space
+is tight:
+
+```text
+Docker Desktop -> Settings -> Resources -> Advanced -> Disk image location
+```
+
+For example:
+
+```text
+E:\DockerDesktop
+```
+
+Check Docker disk usage:
+
+```powershell
+docker system df
+```
+
+Clean unused images/build cache:
+
+```powershell
+docker system prune -a --volumes
+```
+
+### Build Images
+
+CPU-only Linux build:
+
+```powershell
+cd E:\wAI\first_task
+docker build -t videocompute:cpu -f VideoComputePipeline\docker\Dockerfile.cpu .
+docker run --rm videocompute:cpu --help
+```
+
+CUDA image with ONNX Runtime and hardware-video support:
+
+```powershell
+cd E:\wAI\first_task
+
+docker build -t videocompute:cuda `
+  -f VideoComputePipeline\docker\Dockerfile.cuda `
+  --build-arg ENABLE_CUDA_INFERENCE=ON `
+  --build-arg ENABLE_ONNXRUNTIME=ON `
+  --build-arg ENABLE_TENSORRT=OFF `
+  --build-arg ENABLE_HW_VIDEO=ON `
+  --build-arg ENABLE_LIBTORCH=OFF `
+  .
+```
+
+The current CUDA Docker image installs:
+
+```text
+CUDA base image: nvidia/cuda:12.9.1-devel-ubuntu24.04
+cuDNN: cudnn9-cuda-12 from apt
+ONNX Runtime GPU: 1.22.0 extracted to /opt/onnxruntime-gpu
+FFmpeg development libraries from Ubuntu apt
+```
+
+TensorRT is intentionally disabled in the command above. Linux TensorRT support
+requires Linux TensorRT packages inside the image and Linux-built `.engine`
+files. Windows TensorRT engines are not portable to Linux.
+
+### Enter The CUDA Container
+
+For NVDEC/NVENC, the container must receive NVIDIA video driver capabilities.
+`--gpus all` alone is not always enough.
+
+Use:
+
+```powershell
+cd E:\wAI\first_task
+
+docker run --rm -it --gpus all `
+  --entrypoint bash `
+  -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video `
+  -e NVIDIA_VISIBLE_DEVICES=all `
+  -v ${PWD}\VideoComputePipeline\data:/workspace/VideoComputePipeline/data `
+  -v ${PWD}\VideoComputePipeline\models:/workspace/VideoComputePipeline/models `
+  -v ${PWD}\VideoComputePipeline\benchmarks:/workspace/VideoComputePipeline/benchmarks `
+  videocompute:cuda
+```
+
+Inside the container, verify backends and NVIDIA video support:
+
+```bash
+cd /workspace/VideoComputePipeline
+
+LD_LIBRARY_PATH=/opt/onnxruntime-gpu/lib:${LD_LIBRARY_PATH} \
+/opt/videocompute/bin/VideoComputePipeline --list-backends
+
+ldconfig -p | grep nvcuvid
+nvidia-smi
+```
+
+If `ldconfig -p | grep nvcuvid` returns nothing, NVDEC cannot run in that
+container session. Restart the container with:
+
+```powershell
+-e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+```
+
+### Docker CUDA Filter Run
+
+From inside the container:
+
+```bash
+cd /workspace/VideoComputePipeline
+mkdir -p data/output benchmarks
+
+/opt/videocompute/bin/VideoComputePipeline \
+  --task filter \
+  --mode gpu \
+  --filter grayscale \
+  --input data/input/people_short.mp4 \
+  --output data/output/docker_cuda_grayscale.mp4 \
+  --benchmark benchmarks/docker_cuda_grayscale.csv \
+  --max-frames 120 \
+  --ffmpeg-log-level error
+```
+
+The output is visible on Windows at:
+
+```text
+E:\wAI\first_task\VideoComputePipeline\data\output\docker_cuda_grayscale.mp4
+```
+
+### Docker ONNX CUDA Detection
+
+CSV-only detection, using NVDEC and ONNX Runtime CUDA:
+
+```bash
+cd /workspace/VideoComputePipeline
+mkdir -p /tmp/vcp_out
+
+LD_LIBRARY_PATH=/opt/onnxruntime-gpu/lib:${LD_LIBRARY_PATH} \
+/opt/videocompute/bin/VideoComputePipeline \
+  --task detect \
+  --decoder nvdec \
+  --decoder-fallback none \
+  --runtime onnxruntime \
+  --backend-device cuda \
+  --input data/input/D01_20260623234212.mp4 \
+  --model models/yolov5s.onnx \
+  --labels models/coco.names \
+  --detections /tmp/vcp_out/detections.csv \
+  --benchmark /tmp/vcp_out/benchmark.csv \
+  --confidence 0.40 \
+  --iou-threshold 0.45 \
+  --input-size 640 \
+  --class-ids 0 \
+  --max-frames 1000 \
+  --ffmpeg-log-level error
+```
+
+Use `/tmp/vcp_out` for performance tests because it is container-local storage.
+Writing every CSV row directly to a Windows bind mount can be much slower. To
+keep files after the run, copy them to a mounted folder before exiting:
+
+```bash
+cp /tmp/vcp_out/detections.csv data/output/detections.csv
+cp /tmp/vcp_out/benchmark.csv benchmarks/docker_onnx_benchmark.csv
+```
+
+### Docker Annotated Video
+
+Annotated output uses the GPU-resident path:
+
+```text
+NVDEC -> ONNX Runtime CUDA -> CUDA overlay -> NVENC
+```
+
+Run:
+
+```bash
+cd /workspace/VideoComputePipeline
+mkdir -p /tmp/vcp_out data/output
+
+LD_LIBRARY_PATH=/opt/onnxruntime-gpu/lib:${LD_LIBRARY_PATH} \
+/opt/videocompute/bin/VideoComputePipeline \
+  --task detect \
+  --decoder nvdec \
+  --decoder-fallback none \
+  --runtime onnxruntime \
+  --backend-device cuda \
+  --input data/input/D01_20260623234212.mp4 \
+  --model models/best.onnx \
+  --labels models/cement.names \
+  --detections /tmp/vcp_out/detections.csv \
+  --benchmark /tmp/vcp_out/benchmark_annotated.csv \
+  --confidence 0.40 \
+  --iou-threshold 0.45 \
+  --input-size 640 \
+  --class-ids 0 \
+  --max-frames 1000 \
+  --draw-boxes \
+  --output data/output/annotated.mkv \
+  --output-format mkv \
+  --encoder h264_nvenc \
+  --ffmpeg-log-level error \
+  --progress-interval 50
+```
+
+The video appears on Windows at:
+
+```text
+E:\wAI\first_task\VideoComputePipeline\data\output\annotated.mkv
+```
+
+For model/label matching:
+
+```text
+models/yolov5s.onnx -> models/coco.names
+models/best.onnx    -> models/cement.names or models/cement_bag.names
+```
+
+Mismatched model and label files can cause YOLO postprocess failures because the
+postprocessor uses the label count to interpret the output tensor.
+
+### Docker Timing Notes
+
+`wall_clock_fps` measures real throughput from the running pipeline.
+
+`latency_equivalent_fps` is derived from summed per-frame stage timings:
+
+```text
+1000 / avg_total_ms
+```
+
+For pipelined hardware detection, wall-clock throughput can be higher than the
+latency-equivalent FPS because decode, inference, output, and recycle work can
+overlap. If wall-clock is much lower than stage timings suggest, first check
+whether detections/benchmark CSVs are being written to Windows bind-mounted
+folders instead of `/tmp`.
+
+### Linux UI And Docker
+
+There are two ways to use the UI on Linux.
+
+Recommended:
+
+```text
+Run VideoComputePipelineUI on the Linux host.
+Have the UI launch docker run commands for the containerized pipeline.
+```
+
+This avoids OpenGL/SDL display forwarding inside Docker and keeps the UI native
+to the desktop.
+
+Possible but more fragile:
+
+```text
+Run VideoComputePipelineUI inside Docker and forward the Linux display.
+```
+
+On an X11 Linux desktop:
+
+```bash
+xhost +local:docker
+
+docker run --rm -it --gpus all \
+  --entrypoint bash \
+  -e DISPLAY=$DISPLAY \
+  -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video,graphics \
+  -v /tmp/.X11-unix:/tmp/.X11-unix \
+  -v "$PWD/VideoComputePipelineUI:/workspace/VideoComputePipelineUI" \
+  -v "$PWD/VideoComputePipeline:/workspace/VideoComputePipeline" \
+  videocompute:cuda
+```
+
+Inside the container:
+
+```bash
+apt-get update
+apt-get install -y --no-install-recommends libsdl2-dev libgl1-mesa-dev pkg-config cmake ninja-build
+rm -rf /var/lib/apt/lists/*
+
+cmake -S /workspace/VideoComputePipelineUI -B /tmp/vcp-ui-build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build /tmp/vcp-ui-build -j
+/tmp/vcp-ui-build/Release/VideoComputePipelineUI
+```
+
+When finished:
+
+```bash
+xhost -local:docker
+```
+
+Wayland desktops often expose XWayland through `$DISPLAY`; if not, use the host
+UI approach instead of forcing GUI-in-container.
+
 ## Run Examples
 
 Short GPU smoke test:

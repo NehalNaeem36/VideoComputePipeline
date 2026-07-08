@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -1048,6 +1049,9 @@ void UiApp::normalize_default_paths() {
 
             const fs::path candidates[] = {
                 pipelineDir / "build-all-backends-vs" / "Release" / "VideoComputePipeline.exe",
+                pipelineDir / "build-all-backends-linux" / "VideoComputePipeline",
+                pipelineDir / "build-all-backends" / "VideoComputePipeline",
+                pipelineDir / "build-testing" / "VideoComputePipeline",
                 pipelineDir / "build-libtorch-vs" / "Release" / "VideoComputePipeline.exe",
                 pipelineDir / "build-win-cuda12" / "Release" / "VideoComputePipeline.exe",
                 pipelineDir / "build-vs" / "Release" / "VideoComputePipeline.exe",
@@ -1079,6 +1083,12 @@ void UiApp::prefer_runtime_executable_if_available() {
     }
 
     fs::path preferred = pipelineDir / "build-all-backends-vs" / "Release" / "VideoComputePipeline.exe";
+    if (!fs::is_regular_file(preferred)) {
+        const fs::path linuxPreferred = pipelineDir / "build-all-backends-linux" / "VideoComputePipeline";
+        if (fs::is_regular_file(linuxPreferred)) {
+            preferred = linuxPreferred;
+        }
+    }
 
     if (preferred.empty() || !fs::is_regular_file(preferred)) {
         return;
@@ -1086,6 +1096,8 @@ void UiApp::prefer_runtime_executable_if_available() {
 
     const bool currentLooksAutoSelected =
         path_contains_build_dir(config_.pipelineExePath, "build-all-backends-vs") ||
+        path_contains_build_dir(config_.pipelineExePath, "build-all-backends-linux") ||
+        path_contains_build_dir(config_.pipelineExePath, "build-all-backends") ||
         path_contains_build_dir(config_.pipelineExePath, "build-libtorch-vs") ||
         path_contains_build_dir(config_.pipelineExePath, "build-win-cuda12") ||
         path_contains_build_dir(config_.pipelineExePath, "build-msvc") ||

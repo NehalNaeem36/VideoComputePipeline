@@ -107,6 +107,50 @@ endif()
 
 if(ENABLE_CUDA_INFERENCE)
     if(ENABLE_TENSORRT)
+        if(WIN32)
+            set(TENSORRT_LIBRARY_HINTS
+                "${TENSORRT_ROOT}/lib"
+                "${TENSORRT_ROOT}/lib/x64"
+                "$ENV{TENSORRT_ROOT}/lib"
+                "$ENV{TENSORRT_ROOT}/lib/x64"
+                "$ENV{TensorRT_ROOT}/lib"
+                "$ENV{TensorRT_ROOT}/lib/x64")
+            set(TENSORRT_RUNTIME_HINTS
+                "${TENSORRT_ROOT}/bin"
+                "$ENV{TENSORRT_ROOT}/bin"
+                "$ENV{TensorRT_ROOT}/bin")
+            set(TENSORRT_NVINFER_NAMES nvinfer_11 nvinfer)
+            set(TENSORRT_NVINFER_PLUGIN_NAMES nvinfer_plugin_11 nvinfer_plugin)
+            set(TENSORRT_NVONNXPARSER_NAMES nvonnxparser_11 nvonnxparser)
+            set(TENSORRT_NVINFER_RUNTIME_NAMES nvinfer_11.dll)
+            set(TENSORRT_NVINFER_PLUGIN_RUNTIME_NAMES nvinfer_plugin_11.dll)
+            set(TENSORRT_NVONNXPARSER_RUNTIME_NAMES nvonnxparser_11.dll)
+            set(TENSORRT_LAYOUT_HELP
+                "Set -DTENSORRT_ROOT=D:/TensorRT/TensorRT-11.1.0.106.\n"
+                "Required Windows layout: include/NvInfer.h, include/NvOnnxParser.h, lib/nvinfer_11.lib, lib/nvinfer_plugin_11.lib, lib/nvonnxparser_11.lib, and bin/*.dll.")
+        else()
+            set(TENSORRT_LIBRARY_HINTS
+                "${TENSORRT_ROOT}/lib"
+                "${TENSORRT_ROOT}/lib64"
+                "${TENSORRT_ROOT}/lib/x86_64-linux-gnu"
+                "$ENV{TENSORRT_ROOT}/lib"
+                "$ENV{TENSORRT_ROOT}/lib64"
+                "$ENV{TENSORRT_ROOT}/lib/x86_64-linux-gnu"
+                "$ENV{TensorRT_ROOT}/lib"
+                "$ENV{TensorRT_ROOT}/lib64"
+                "$ENV{TensorRT_ROOT}/lib/x86_64-linux-gnu"
+                "/usr/lib/x86_64-linux-gnu")
+            set(TENSORRT_RUNTIME_HINTS ${TENSORRT_LIBRARY_HINTS})
+            set(TENSORRT_NVINFER_NAMES nvinfer nvinfer_11 libnvinfer)
+            set(TENSORRT_NVINFER_PLUGIN_NAMES nvinfer_plugin nvinfer_plugin_11 libnvinfer_plugin)
+            set(TENSORRT_NVONNXPARSER_NAMES nvonnxparser nvonnxparser_11 libnvonnxparser)
+            set(TENSORRT_NVINFER_RUNTIME_NAMES libnvinfer.so)
+            set(TENSORRT_NVINFER_PLUGIN_RUNTIME_NAMES libnvinfer_plugin.so)
+            set(TENSORRT_NVONNXPARSER_RUNTIME_NAMES libnvonnxparser.so)
+            set(TENSORRT_LAYOUT_HELP
+                "Set -DTENSORRT_ROOT=/opt/tensorrt or install TensorRT libraries in the system path.\n"
+                "Required Linux layout: include/NvInfer.h, include/NvOnnxParser.h, and lib/libnvinfer*.so/libnvonnxparser*.so.")
+        endif()
         find_path(TENSORRT_INCLUDE_DIR NvInfer.h
             HINTS
                 "${TENSORRT_ROOT}/include"
@@ -122,121 +166,208 @@ if(ENABLE_CUDA_INFERENCE)
             NO_DEFAULT_PATH
         )
         find_library(TENSORRT_NVINFER_LIBRARY
-            NAMES nvinfer_11 nvinfer
-            HINTS
-                "${TENSORRT_ROOT}/lib"
-                "${TENSORRT_ROOT}/lib/x64"
-                "$ENV{TENSORRT_ROOT}/lib"
-                "$ENV{TENSORRT_ROOT}/lib/x64"
-                "$ENV{TensorRT_ROOT}/lib"
-                "$ENV{TensorRT_ROOT}/lib/x64"
+            NAMES ${TENSORRT_NVINFER_NAMES}
+            HINTS ${TENSORRT_LIBRARY_HINTS}
             NO_DEFAULT_PATH
         )
         find_library(TENSORRT_NVINFER_PLUGIN_LIBRARY
-            NAMES nvinfer_plugin_11 nvinfer_plugin
-            HINTS
-                "${TENSORRT_ROOT}/lib"
-                "${TENSORRT_ROOT}/lib/x64"
-                "$ENV{TENSORRT_ROOT}/lib"
-                "$ENV{TENSORRT_ROOT}/lib/x64"
-                "$ENV{TensorRT_ROOT}/lib"
-                "$ENV{TensorRT_ROOT}/lib/x64"
+            NAMES ${TENSORRT_NVINFER_PLUGIN_NAMES}
+            HINTS ${TENSORRT_LIBRARY_HINTS}
             NO_DEFAULT_PATH
         )
         find_library(TENSORRT_NVONNXPARSER_LIBRARY
-            NAMES nvonnxparser_11 nvonnxparser
-            HINTS
-                "${TENSORRT_ROOT}/lib"
-                "${TENSORRT_ROOT}/lib/x64"
-                "$ENV{TENSORRT_ROOT}/lib"
-                "$ENV{TENSORRT_ROOT}/lib/x64"
-                "$ENV{TensorRT_ROOT}/lib"
-                "$ENV{TensorRT_ROOT}/lib/x64"
+            NAMES ${TENSORRT_NVONNXPARSER_NAMES}
+            HINTS ${TENSORRT_LIBRARY_HINTS}
             NO_DEFAULT_PATH
         )
-        find_file(TENSORRT_NVINFER_DLL
-            NAMES nvinfer_11.dll
-            HINTS "${TENSORRT_ROOT}/bin" "$ENV{TENSORRT_ROOT}/bin" "$ENV{TensorRT_ROOT}/bin"
+        find_file(TENSORRT_NVINFER_RUNTIME_LIBRARY
+            NAMES ${TENSORRT_NVINFER_RUNTIME_NAMES}
+            HINTS ${TENSORRT_RUNTIME_HINTS}
             NO_DEFAULT_PATH
         )
-        find_file(TENSORRT_NVINFER_PLUGIN_DLL
-            NAMES nvinfer_plugin_11.dll
-            HINTS "${TENSORRT_ROOT}/bin" "$ENV{TENSORRT_ROOT}/bin" "$ENV{TensorRT_ROOT}/bin"
+        find_file(TENSORRT_NVINFER_PLUGIN_RUNTIME_LIBRARY
+            NAMES ${TENSORRT_NVINFER_PLUGIN_RUNTIME_NAMES}
+            HINTS ${TENSORRT_RUNTIME_HINTS}
             NO_DEFAULT_PATH
         )
-        find_file(TENSORRT_NVONNXPARSER_DLL
-            NAMES nvonnxparser_11.dll
-            HINTS "${TENSORRT_ROOT}/bin" "$ENV{TENSORRT_ROOT}/bin" "$ENV{TensorRT_ROOT}/bin"
+        find_file(TENSORRT_NVONNXPARSER_RUNTIME_LIBRARY
+            NAMES ${TENSORRT_NVONNXPARSER_RUNTIME_NAMES}
+            HINTS ${TENSORRT_RUNTIME_HINTS}
             NO_DEFAULT_PATH
         )
         if(NOT TENSORRT_INCLUDE_DIR OR NOT TENSORRT_ONNX_PARSER_INCLUDE_DIR OR
            NOT TENSORRT_NVINFER_LIBRARY OR NOT TENSORRT_NVINFER_PLUGIN_LIBRARY OR NOT TENSORRT_NVONNXPARSER_LIBRARY OR
-           NOT TENSORRT_NVINFER_DLL OR NOT TENSORRT_NVINFER_PLUGIN_DLL OR NOT TENSORRT_NVONNXPARSER_DLL)
+           NOT TENSORRT_NVINFER_RUNTIME_LIBRARY OR NOT TENSORRT_NVINFER_PLUGIN_RUNTIME_LIBRARY OR NOT TENSORRT_NVONNXPARSER_RUNTIME_LIBRARY)
             message(FATAL_ERROR
-                "ENABLE_TENSORRT=ON requires TensorRT 11.1 CUDA 12 files. Set -DTENSORRT_ROOT=D:/TensorRT/TensorRT-11.1.0.106.\n"
-                "Required: include/NvInfer.h, include/NvOnnxParser.h, lib/nvinfer_11.lib, lib/nvinfer_plugin_11.lib, lib/nvonnxparser_11.lib, and matching bin/*.dll files.")
+                "ENABLE_TENSORRT=ON requires TensorRT CUDA files.\n"
+                "${TENSORRT_LAYOUT_HELP}")
         endif()
     endif()
 
-    find_path(CUDNN_INCLUDE_DIR cudnn.h
-        HINTS "${CUDNN_ROOT}/include" "$ENV{CUDNN_ROOT}/include"
-        NO_DEFAULT_PATH
-    )
-    find_library(CUDNN_LIBRARY
-        NAMES cudnn
-        HINTS "${CUDNN_ROOT}/lib/x64" "$ENV{CUDNN_ROOT}/lib/x64"
-        NO_DEFAULT_PATH
-    )
-    find_file(CUDNN_RUNTIME_DLL
-        NAMES cudnn64_9.dll
-        HINTS "${CUDNN_ROOT}/bin/x64" "$ENV{CUDNN_ROOT}/bin/x64"
-        NO_DEFAULT_PATH
-    )
-    if(NOT CUDNN_INCLUDE_DIR OR NOT CUDNN_LIBRARY OR NOT CUDNN_RUNTIME_DLL)
+    if(WIN32)
+        find_path(CUDNN_INCLUDE_DIR cudnn.h
+            HINTS "${CUDNN_ROOT}/include" "$ENV{CUDNN_ROOT}/include"
+            NO_DEFAULT_PATH
+        )
+        find_library(CUDNN_LIBRARY
+            NAMES cudnn
+            HINTS "${CUDNN_ROOT}/lib/x64" "$ENV{CUDNN_ROOT}/lib/x64"
+            NO_DEFAULT_PATH
+        )
+        find_file(CUDNN_RUNTIME_LIBRARY
+            NAMES cudnn64_9.dll
+            HINTS "${CUDNN_ROOT}/bin/x64" "$ENV{CUDNN_ROOT}/bin/x64"
+            NO_DEFAULT_PATH
+        )
+        set(CUDNN_LAYOUT_HELP
+            "Expected Windows layout:\n"
+            "  CUDNN_ROOT/include/cudnn.h\n"
+            "  CUDNN_ROOT/lib/x64/cudnn.lib\n"
+            "  CUDNN_ROOT/bin/x64/cudnn64_9.dll\n"
+            "Expected Linux apt/root layout:\n"
+            "  /usr/include/x86_64-linux-gnu/cudnn.h or CUDNN_ROOT/include[/x86_64-linux-gnu]/cudnn.h\n"
+            "  /usr/lib/x86_64-linux-gnu/libcudnn.so or CUDNN_ROOT/lib*/libcudnn.so")
+    else()
+        find_path(CUDNN_INCLUDE_DIR cudnn.h
+            HINTS
+                "${CUDNN_ROOT}/include"
+                "${CUDNN_ROOT}/include/x86_64-linux-gnu"
+                "$ENV{CUDNN_ROOT}/include"
+                "$ENV{CUDNN_ROOT}/include/x86_64-linux-gnu"
+                "/usr/include"
+                "/usr/include/x86_64-linux-gnu"
+                "/usr/local/cuda/include"
+        )
+        find_library(CUDNN_LIBRARY
+            NAMES cudnn libcudnn
+            HINTS
+                "${CUDNN_ROOT}/lib"
+                "${CUDNN_ROOT}/lib64"
+                "${CUDNN_ROOT}/lib/x86_64-linux-gnu"
+                "$ENV{CUDNN_ROOT}/lib"
+                "$ENV{CUDNN_ROOT}/lib64"
+                "$ENV{CUDNN_ROOT}/lib/x86_64-linux-gnu"
+                "/usr/lib"
+                "/usr/lib/x86_64-linux-gnu"
+                "/usr/local/cuda/lib64"
+        )
+        set(CUDNN_RUNTIME_LIBRARY "${CUDNN_LIBRARY}")
+        set(CUDNN_LAYOUT_HELP
+            "Expected Windows layout:\n"
+            "  CUDNN_ROOT/include/cudnn.h\n"
+            "  CUDNN_ROOT/lib/x64/cudnn.lib\n"
+            "  CUDNN_ROOT/bin/x64/cudnn64_9.dll\n"
+            "Expected Linux apt/root layout:\n"
+            "  /usr/include/x86_64-linux-gnu/cudnn.h or CUDNN_ROOT/include[/x86_64-linux-gnu]/cudnn.h\n"
+            "  /usr/lib/x86_64-linux-gnu/libcudnn.so or CUDNN_ROOT/lib*/libcudnn.so")
+    endif()
+    if(NOT CUDNN_INCLUDE_DIR OR NOT CUDNN_LIBRARY OR NOT CUDNN_RUNTIME_LIBRARY)
         message(FATAL_ERROR
-            "ENABLE_CUDA_INFERENCE=ON requires cuDNN 9 for CUDA 12. Set -DCUDNN_ROOT=D:/cuDNN/cudnn-windows-x86_64-9.23.2.1_cuda12-archive.\n"
-            "Required layout: include, lib/x64, and bin/x64/cudnn64_9.dll.")
+            "ENABLE_CUDA_INFERENCE=ON requires cuDNN 9 for CUDA 12.\n"
+            "${CUDNN_LAYOUT_HELP}")
+    endif()
+    find_file(CUDNN_VERSION_HEADER
+        NAMES cudnn_version.h cudnn.h
+        HINTS "${CUDNN_INCLUDE_DIR}"
+        NO_DEFAULT_PATH
+    )
+    if(NOT CUDNN_VERSION_HEADER)
+        message(FATAL_ERROR
+            "ENABLE_CUDA_INFERENCE=ON found cuDNN headers at ${CUDNN_INCLUDE_DIR}, but could not find cudnn_version.h or cudnn.h for version validation.\n"
+            "${CUDNN_LAYOUT_HELP}")
+    endif()
+    file(READ "${CUDNN_VERSION_HEADER}" CUDNN_VERSION_HEADER_CONTENTS)
+    string(REGEX MATCH "#[ \t]*define[ \t]+CUDNN_MAJOR[ \t]+([0-9]+)" CUDNN_MAJOR_MATCH "${CUDNN_VERSION_HEADER_CONTENTS}")
+    if(NOT CUDNN_MAJOR_MATCH)
+        message(FATAL_ERROR
+            "ENABLE_CUDA_INFERENCE=ON found ${CUDNN_VERSION_HEADER}, but could not read CUDNN_MAJOR for cuDNN version validation.")
+    endif()
+    set(CUDNN_MAJOR_VERSION "${CMAKE_MATCH_1}")
+    if(NOT CUDNN_MAJOR_VERSION STREQUAL "9")
+        message(FATAL_ERROR
+            "ENABLE_CUDA_INFERENCE=ON requires cuDNN major version 9, but ${CUDNN_VERSION_HEADER} reports CUDNN_MAJOR=${CUDNN_MAJOR_VERSION}.\n"
+            "${CUDNN_LAYOUT_HELP}")
     endif()
 
     if(ENABLE_ONNXRUNTIME)
-        find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
-            HINTS
+        if(WIN32)
+            set(ONNXRUNTIME_INCLUDE_HINTS
                 "${ONNXRUNTIME_ROOT}/buildTransitive/native/include"
                 "$ENV{ONNXRUNTIME_ROOT}/include"
                 "$ENV{ONNXRUNTIME_ROOT}/buildTransitive/native/include"
                 "$ENV{OnnxRuntime_ROOT}/include"
-                "$ENV{OnnxRuntime_ROOT}/buildTransitive/native/include"
+                "$ENV{OnnxRuntime_ROOT}/buildTransitive/native/include")
+            set(ONNXRUNTIME_LIBRARY_HINTS
+                "${ONNXRUNTIME_ROOT}/runtimes/win-x64/native"
+                "$ENV{ONNXRUNTIME_ROOT}/runtimes/win-x64/native"
+                "$ENV{OnnxRuntime_ROOT}/runtimes/win-x64/native")
+            set(ONNXRUNTIME_LIBRARY_NAMES onnxruntime)
+            set(ONNXRUNTIME_RUNTIME_NAMES onnxruntime.dll)
+            set(ONNXRUNTIME_CUDA_PROVIDER_NAMES onnxruntime_providers_cuda.dll)
+            set(ONNXRUNTIME_SHARED_PROVIDER_NAMES onnxruntime_providers_shared.dll)
+            set(ONNXRUNTIME_LAYOUT_HELP
+                "Expected Windows layout:\n"
+                "  ONNXRUNTIME_ROOT/buildTransitive/native/include/onnxruntime_cxx_api.h\n"
+                "  ONNXRUNTIME_ROOT/runtimes/win-x64/native/onnxruntime.lib\n"
+                "  ONNXRUNTIME_ROOT/runtimes/win-x64/native/onnxruntime*.dll\n"
+                "Expected Linux layout:\n"
+                "  /opt/onnxruntime-gpu/include/onnxruntime_cxx_api.h or ONNXRUNTIME_ROOT/include/onnxruntime_cxx_api.h\n"
+                "  /opt/onnxruntime-gpu/lib/libonnxruntime.so or ONNXRUNTIME_ROOT/lib/libonnxruntime.so\n"
+                "  /opt/onnxruntime-gpu/lib/libonnxruntime_providers_cuda.so\n"
+                "  /opt/onnxruntime-gpu/lib/libonnxruntime_providers_shared.so")
+        else()
+            set(ONNXRUNTIME_INCLUDE_HINTS
+                "${ONNXRUNTIME_ROOT}/include"
+                "$ENV{ONNXRUNTIME_ROOT}/include"
+                "/opt/onnxruntime-gpu/include")
+            set(ONNXRUNTIME_LIBRARY_HINTS
+                "${ONNXRUNTIME_ROOT}/lib"
+                "$ENV{ONNXRUNTIME_ROOT}/lib"
+                "/opt/onnxruntime-gpu/lib")
+            set(ONNXRUNTIME_LIBRARY_NAMES onnxruntime libonnxruntime)
+            set(ONNXRUNTIME_RUNTIME_NAMES libonnxruntime.so)
+            set(ONNXRUNTIME_CUDA_PROVIDER_NAMES libonnxruntime_providers_cuda.so)
+            set(ONNXRUNTIME_SHARED_PROVIDER_NAMES libonnxruntime_providers_shared.so)
+            set(ONNXRUNTIME_LAYOUT_HELP
+                "Expected Windows layout:\n"
+                "  ONNXRUNTIME_ROOT/buildTransitive/native/include/onnxruntime_cxx_api.h\n"
+                "  ONNXRUNTIME_ROOT/runtimes/win-x64/native/onnxruntime.lib\n"
+                "  ONNXRUNTIME_ROOT/runtimes/win-x64/native/onnxruntime*.dll\n"
+                "Expected Linux layout:\n"
+                "  /opt/onnxruntime-gpu/include/onnxruntime_cxx_api.h or ONNXRUNTIME_ROOT/include/onnxruntime_cxx_api.h\n"
+                "  /opt/onnxruntime-gpu/lib/libonnxruntime.so or ONNXRUNTIME_ROOT/lib/libonnxruntime.so\n"
+                "  /opt/onnxruntime-gpu/lib/libonnxruntime_providers_cuda.so\n"
+                "  /opt/onnxruntime-gpu/lib/libonnxruntime_providers_shared.so")
+        endif()
+        find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
+            HINTS ${ONNXRUNTIME_INCLUDE_HINTS}
             NO_DEFAULT_PATH
         )
         find_library(ONNXRUNTIME_LIBRARY
-            NAMES onnxruntime
-            HINTS
-                "${ONNXRUNTIME_ROOT}/runtimes/win-x64/native"
-                "$ENV{ONNXRUNTIME_ROOT}/runtimes/win-x64/native"
-                "$ENV{OnnxRuntime_ROOT}/runtimes/win-x64/native"
+            NAMES ${ONNXRUNTIME_LIBRARY_NAMES}
+            HINTS ${ONNXRUNTIME_LIBRARY_HINTS}
             NO_DEFAULT_PATH
         )
-        find_file(ONNXRUNTIME_DLL
-            NAMES onnxruntime.dll
-            HINTS "${ONNXRUNTIME_ROOT}/runtimes/win-x64/native" "$ENV{ONNXRUNTIME_ROOT}/runtimes/win-x64/native" "$ENV{OnnxRuntime_ROOT}/runtimes/win-x64/native"
+        find_file(ONNXRUNTIME_RUNTIME_LIBRARY
+            NAMES ${ONNXRUNTIME_RUNTIME_NAMES}
+            HINTS ${ONNXRUNTIME_LIBRARY_HINTS}
             NO_DEFAULT_PATH
         )
-        find_file(ONNXRUNTIME_PROVIDERS_CUDA_DLL
-            NAMES onnxruntime_providers_cuda.dll
-            HINTS "${ONNXRUNTIME_ROOT}/runtimes/win-x64/native" "$ENV{ONNXRUNTIME_ROOT}/runtimes/win-x64/native" "$ENV{OnnxRuntime_ROOT}/runtimes/win-x64/native"
+        find_file(ONNXRUNTIME_PROVIDERS_CUDA_LIBRARY
+            NAMES ${ONNXRUNTIME_CUDA_PROVIDER_NAMES}
+            HINTS ${ONNXRUNTIME_LIBRARY_HINTS}
             NO_DEFAULT_PATH
         )
-        find_file(ONNXRUNTIME_PROVIDERS_SHARED_DLL
-            NAMES onnxruntime_providers_shared.dll
-            HINTS "${ONNXRUNTIME_ROOT}/runtimes/win-x64/native" "$ENV{ONNXRUNTIME_ROOT}/runtimes/win-x64/native" "$ENV{OnnxRuntime_ROOT}/runtimes/win-x64/native"
+        find_file(ONNXRUNTIME_PROVIDERS_SHARED_LIBRARY
+            NAMES ${ONNXRUNTIME_SHARED_PROVIDER_NAMES}
+            HINTS ${ONNXRUNTIME_LIBRARY_HINTS}
             NO_DEFAULT_PATH
         )
         if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY OR
-           NOT ONNXRUNTIME_DLL OR NOT ONNXRUNTIME_PROVIDERS_CUDA_DLL OR NOT ONNXRUNTIME_PROVIDERS_SHARED_DLL)
+           NOT ONNXRUNTIME_RUNTIME_LIBRARY OR NOT ONNXRUNTIME_PROVIDERS_CUDA_LIBRARY OR NOT ONNXRUNTIME_PROVIDERS_SHARED_LIBRARY)
             message(FATAL_ERROR
-                "ENABLE_ONNXRUNTIME=ON requires the ONNX Runtime GPU 1.26 Windows NuGet layout.\n"
-                "Set -DONNXRUNTIME_ROOT=E:/wAI/third_party/onnxruntime/Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0.\n"
-                "Required: buildTransitive/native/include/onnxruntime_cxx_api.h and runtimes/win-x64/native/onnxruntime*.dll/lib.")
+                "ENABLE_ONNXRUNTIME=ON requires ONNX Runtime GPU development files.\n"
+                "${ONNXRUNTIME_LAYOUT_HELP}")
         endif()
     endif()
 
@@ -480,18 +611,18 @@ endif()
 if(MSVC AND FFMPEG_RUNTIME_DLLS)
     vcp_copy_runtime_dlls(VideoComputePipeline ${FFMPEG_RUNTIME_DLLS})
 endif()
-if(ENABLE_CUDA_INFERENCE AND ENABLE_TENSORRT)
+if(WIN32 AND ENABLE_CUDA_INFERENCE AND ENABLE_TENSORRT)
     vcp_copy_runtime_dlls(VideoComputePipeline
-        "${TENSORRT_NVINFER_DLL}"
-        "${TENSORRT_NVINFER_PLUGIN_DLL}"
-        "${TENSORRT_NVONNXPARSER_DLL}"
+        "${TENSORRT_NVINFER_RUNTIME_LIBRARY}"
+        "${TENSORRT_NVINFER_PLUGIN_RUNTIME_LIBRARY}"
+        "${TENSORRT_NVONNXPARSER_RUNTIME_LIBRARY}"
     )
 endif()
-if(ENABLE_CUDA_INFERENCE AND ENABLE_ONNXRUNTIME)
+if(WIN32 AND ENABLE_CUDA_INFERENCE AND ENABLE_ONNXRUNTIME)
     vcp_copy_runtime_dlls(VideoComputePipeline
-        "${ONNXRUNTIME_DLL}"
-        "${ONNXRUNTIME_PROVIDERS_CUDA_DLL}"
-        "${ONNXRUNTIME_PROVIDERS_SHARED_DLL}"
+        "${ONNXRUNTIME_RUNTIME_LIBRARY}"
+        "${ONNXRUNTIME_PROVIDERS_CUDA_LIBRARY}"
+        "${ONNXRUNTIME_PROVIDERS_SHARED_LIBRARY}"
     )
 endif()
 if(ENABLE_CUDA_INFERENCE AND ENABLE_LIBTORCH AND LIBTORCH_RUNTIME_DLLS)
@@ -514,18 +645,18 @@ if(BUILD_TESTING)
         if(MSVC AND FFMPEG_RUNTIME_DLLS)
             vcp_copy_runtime_dlls(${TEST_NAME} ${FFMPEG_RUNTIME_DLLS})
         endif()
-        if(ENABLE_CUDA_INFERENCE AND ENABLE_TENSORRT)
+        if(WIN32 AND ENABLE_CUDA_INFERENCE AND ENABLE_TENSORRT)
             vcp_copy_runtime_dlls(${TEST_NAME}
-                "${TENSORRT_NVINFER_DLL}"
-                "${TENSORRT_NVINFER_PLUGIN_DLL}"
-                "${TENSORRT_NVONNXPARSER_DLL}"
+                "${TENSORRT_NVINFER_RUNTIME_LIBRARY}"
+                "${TENSORRT_NVINFER_PLUGIN_RUNTIME_LIBRARY}"
+                "${TENSORRT_NVONNXPARSER_RUNTIME_LIBRARY}"
             )
         endif()
-        if(ENABLE_CUDA_INFERENCE AND ENABLE_ONNXRUNTIME)
+        if(WIN32 AND ENABLE_CUDA_INFERENCE AND ENABLE_ONNXRUNTIME)
             vcp_copy_runtime_dlls(${TEST_NAME}
-                "${ONNXRUNTIME_DLL}"
-                "${ONNXRUNTIME_PROVIDERS_CUDA_DLL}"
-                "${ONNXRUNTIME_PROVIDERS_SHARED_DLL}"
+                "${ONNXRUNTIME_RUNTIME_LIBRARY}"
+                "${ONNXRUNTIME_PROVIDERS_CUDA_LIBRARY}"
+                "${ONNXRUNTIME_PROVIDERS_SHARED_LIBRARY}"
             )
         endif()
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
@@ -551,7 +682,7 @@ endif()
 if(ENABLE_CUDA_INFERENCE)
     message(STATUS "cuDNN include: ${CUDNN_INCLUDE_DIR}")
     message(STATUS "cuDNN library: ${CUDNN_LIBRARY}")
-    message(STATUS "cuDNN runtime: ${CUDNN_RUNTIME_DLL}")
+    message(STATUS "cuDNN runtime: ${CUDNN_RUNTIME_LIBRARY}")
     if(ENABLE_TENSORRT)
         message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIR}")
         message(STATUS "TensorRT nvinfer: ${TENSORRT_NVINFER_LIBRARY}")
@@ -561,8 +692,8 @@ if(ENABLE_CUDA_INFERENCE)
     if(ENABLE_ONNXRUNTIME)
         message(STATUS "ONNX Runtime include: ${ONNXRUNTIME_INCLUDE_DIR}")
         message(STATUS "ONNX Runtime library: ${ONNXRUNTIME_LIBRARY}")
-        message(STATUS "ONNX Runtime DLL: ${ONNXRUNTIME_DLL}")
-        message(STATUS "ONNX Runtime CUDA provider: ${ONNXRUNTIME_PROVIDERS_CUDA_DLL}")
+        message(STATUS "ONNX Runtime runtime: ${ONNXRUNTIME_RUNTIME_LIBRARY}")
+        message(STATUS "ONNX Runtime CUDA provider: ${ONNXRUNTIME_PROVIDERS_CUDA_LIBRARY}")
     endif()
     if(ENABLE_LIBTORCH)
         message(STATUS "LibTorch libraries: ${TORCH_LIBRARIES}")

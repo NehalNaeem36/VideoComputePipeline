@@ -34,6 +34,7 @@
 #include <fstream>
 #include <memory>
 #include <numeric>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -124,6 +125,19 @@ size_t tensor_element_size(TensorDataType type) {
         case TENSOR_DTYPE_INT8: return sizeof(int8_t);
         default: return 0;
     }
+}
+
+std::string shape_to_string(const std::vector<int64_t> &shape) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (i > 0) {
+            out << ",";
+        }
+        out << shape[i];
+    }
+    out << "]";
+    return out.str();
 }
 
 std::string trim_copy(const std::string &value) {
@@ -1172,22 +1186,47 @@ protected:
         if (shape[0] < 0) {
             shape[0] = 1;
         }
-        const int attributes = 5 + config_.class_count;
-        for (int64_t &dim : shape) {
-            if (dim < 0) {
-                dim = -1;
+        if (shape.size() == 3) {
+            const int configured_attributes = 5 + config_.class_count;
+            const int64_t dim1 = shape[1];
+            const int64_t dim2 = shape[2];
+            int64_t attributes = configured_attributes;
+            int64_t predictions = 0;
+
+            if (dim2 > 0 && dim2 <= 4096) {
+                attributes = dim2;
+                predictions = dim1;
+            } else if (dim1 > 0 && dim1 <= 4096) {
+                attributes = dim1;
+                predictions = dim2;
+            }
+
+            if (predictions <= 0) {
+                const int grid8_w = config_.input_width / 8;
+                const int grid8_h = config_.input_height / 8;
+                const int grid16_w = config_.input_width / 16;
+                const int grid16_h = config_.input_height / 16;
+                const int grid32_w = config_.input_width / 32;
+                const int grid32_h = config_.input_height / 32;
+                predictions = (int64_t)(3 * ((grid8_w * grid8_h) +
+                                             (grid16_w * grid16_h) +
+                                             (grid32_w * grid32_h)));
+            }
+
+            if (shape[1] <= 0 && shape[2] == attributes) {
+                shape[1] = predictions;
+            } else if (shape[2] <= 0 && shape[1] == attributes) {
+                shape[2] = predictions;
+            } else if (shape[1] <= 0 && shape[2] <= 0) {
+                shape[1] = predictions;
+                shape[2] = attributes;
             }
         }
-        if (shape.size() >= 3 && shape[1] < 0 && shape[2] == attributes) {
-            const int grid8 = config_.input_width / 8;
-            const int grid16 = config_.input_width / 16;
-            const int grid32 = config_.input_width / 32;
-            shape[1] = (int64_t)(3 * (grid8 * grid8 + grid16 * grid16 + grid32 * grid32));
-        } else if (shape.size() >= 3 && shape[2] < 0 && shape[1] == attributes) {
-            const int grid8 = config_.input_width / 8;
-            const int grid16 = config_.input_width / 16;
-            const int grid32 = config_.input_width / 32;
-            shape[2] = (int64_t)(3 * (grid8 * grid8 + grid16 * grid16 + grid32 * grid32));
+        for (int64_t dim : shape) {
+            if (dim <= 0) {
+                g_last_error = "unsupported dynamic model output shape; could not resolve YOLO prediction dimensions";
+                return -1;
+            }
         }
 
         output_elements_ = shape_volume(shape);
@@ -1376,33 +1415,74 @@ public:
             return -1;
         }
 
-        session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
         if (config_.backend_device == BACKEND_DEVICE_CUDA) {
             try {
-                Ort::CUDAProviderOptions cuda_options;
-                cuda_options.Update({{"device_id", "0"}});
-                const OrtCUDAProviderOptionsV2 *provider_options = cuda_options;
-                session_options_.AppendExecutionProvider_CUDA_V2(*provider_options);
+                const OrtApi *ort_api = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+                OrtCUDAProviderOptionsV2 *cuda_options = nullptr;
+                OrtStatus *status = ort_api->CreateCUDAProviderOptions(&cuda_options);
+                if (status) {
+                    std::string message = ort_api->GetErrorMessage(status);
+                    ort_api->ReleaseStatus(status);
+                    g_last_error = "failed to create ONNX Runtime CUDA provider options: " + message;
+                    return -1;
+                }
+
+                const char *keys[] = {"device_id"};
+                const char *values[] = {"0"};
+                status = ort_api->UpdateCUDAProviderOptions(cuda_options, keys, values, 1);
+                if (status) {
+                    std::string message = ort_api->GetErrorMessage(status);
+                    ort_api->ReleaseStatus(status);
+                    ort_api->ReleaseCUDAProviderOptions(cuda_options);
+                    g_last_error = "failed to update ONNX Runtime CUDA provider options: " + message;
+                    return -1;
+                }
+
+                status = ort_api->SessionOptionsAppendExecutionProvider_CUDA_V2(session_options_, cuda_options);
+                ort_api->ReleaseCUDAProviderOptions(cuda_options);
+                if (status) {
+                    std::string message = ort_api->GetErrorMessage(status);
+                    ort_api->ReleaseStatus(status);
+                    g_last_error = "failed to enable ONNX Runtime CUDA execution provider: " + message;
+                    return -1;
+                }
             } catch (const Ort::Exception &e) {
                 g_last_error = std::string("failed to enable ONNX Runtime CUDA execution provider: ") + e.what();
                 return -1;
             }
         }
 
+        try {
 #ifdef _WIN32
-        const std::wstring model_path = widen(config_.model_path);
-        sessions_.emplace_back(new Ort::Session(env_, model_path.c_str(), session_options_));
+            const std::wstring model_path = widen(config_.model_path);
+            sessions_.emplace_back(new Ort::Session(env_, model_path.c_str(), session_options_));
 #else
-        sessions_.emplace_back(new Ort::Session(env_, config_.model_path, session_options_));
+            sessions_.emplace_back(new Ort::Session(env_, config_.model_path, session_options_));
 #endif
-        allocator_.reset(new Ort::AllocatorWithDefaultOptions());
-        if (discover_model() != 0) {
+        } catch (const Ort::Exception &e) {
+            g_last_error = std::string("failed to create ONNX Runtime session for model '") + config_.model_path + "': " + e.what();
+            return -1;
+        } catch (const std::exception &e) {
+            g_last_error = std::string("failed to create ONNX Runtime session for model '") + config_.model_path + "': " + e.what();
             return -1;
         }
-        if (init_common() != 0) {
+        try {
+            allocator_.reset(new Ort::AllocatorWithDefaultOptions());
+            if (discover_model() != 0) {
+                return -1;
+            }
+            if (init_common() != 0) {
+                return -1;
+            }
+            return ensure_session_count(slots_.size());
+        } catch (const Ort::Exception &e) {
+            g_last_error = std::string("failed to inspect ONNX Runtime model '") + config_.model_path + "': " + e.what();
+            return -1;
+        } catch (const std::exception &e) {
+            g_last_error = std::string("failed to inspect ONNX Runtime model '") + config_.model_path + "': " + e.what();
             return -1;
         }
-        return ensure_session_count(slots_.size());
     }
 
 protected:
@@ -1505,6 +1585,9 @@ private:
         } catch (const Ort::Exception &e) {
             g_last_error = std::string("failed to create ONNX Runtime inference lane session: ") + e.what();
             return -1;
+        } catch (const std::exception &e) {
+            g_last_error = std::string("failed to create ONNX Runtime inference lane session: ") + e.what();
+            return -1;
         }
         return 0;
     }
@@ -1535,13 +1618,14 @@ private:
         input_name_ = input_name.get();
         output_name_ = output_name.get();
 
-        const auto input_info = session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
+        auto input_type_info = session.GetInputTypeInfo(0);
+        const auto input_info = input_type_info.GetTensorTypeAndShapeInfo();
         std::vector<int64_t> input_shape = input_info.GetShape();
         if (input_shape.size() != 4 ||
             input_shape[1] != 3 ||
             input_shape[2] != config_.input_height ||
             input_shape[3] != config_.input_width) {
-            g_last_error = "unsupported ONNX model input shape; expected 1x3xinput_heightxinput_width";
+            g_last_error = "unsupported ONNX model input shape " + shape_to_string(input_shape) + "; expected 1x3xinput_heightxinput_width";
             return -1;
         }
         max_batch_size_ = input_shape[0] > 0 ? (int)input_shape[0] : 8;
@@ -1553,9 +1637,12 @@ private:
             return -1;
         }
 
-        const auto output_info = session.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo();
+        auto output_type_info = session.GetOutputTypeInfo(0);
+        const auto output_info = output_type_info.GetTensorTypeAndShapeInfo();
         output_ort_type_ = output_info.GetElementType();
-        if (set_output_shape(output_info.GetShape(), from_ort_type(output_ort_type_)) != 0) {
+        const std::vector<int64_t> output_shape = output_info.GetShape();
+        if (set_output_shape(output_shape, from_ort_type(output_ort_type_)) != 0) {
+            g_last_error += " reported_shape=" + shape_to_string(output_shape);
             return -1;
         }
         return 0;
@@ -1587,15 +1674,31 @@ public:
             return -1;
         }
 
-        session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+        try {
 #ifdef _WIN32
-        const std::wstring model_path = widen(config_.model_path);
-        session_.reset(new Ort::Session(env_, model_path.c_str(), session_options_));
+            const std::wstring model_path = widen(config_.model_path);
+            session_.reset(new Ort::Session(env_, model_path.c_str(), session_options_));
 #else
-        session_.reset(new Ort::Session(env_, config_.model_path, session_options_));
+            session_.reset(new Ort::Session(env_, config_.model_path, session_options_));
 #endif
-        allocator_.reset(new Ort::AllocatorWithDefaultOptions());
-        return discover_model();
+        } catch (const Ort::Exception &e) {
+            g_last_error = std::string("failed to create ONNX Runtime CPU session for model '") + config_.model_path + "': " + e.what();
+            return -1;
+        } catch (const std::exception &e) {
+            g_last_error = std::string("failed to create ONNX Runtime CPU session for model '") + config_.model_path + "': " + e.what();
+            return -1;
+        }
+        try {
+            allocator_.reset(new Ort::AllocatorWithDefaultOptions());
+            return discover_model();
+        } catch (const Ort::Exception &e) {
+            g_last_error = std::string("failed to inspect ONNX Runtime CPU model '") + config_.model_path + "': " + e.what();
+            return -1;
+        } catch (const std::exception &e) {
+            g_last_error = std::string("failed to inspect ONNX Runtime CPU model '") + config_.model_path + "': " + e.what();
+            return -1;
+        }
     }
 
     int run(const Frame *frame, DetectionResult *result, FrameTiming *timing) override {
@@ -1638,6 +1741,9 @@ public:
         } catch (const Ort::Exception &e) {
             g_last_error = std::string("ONNX Runtime CPU inference failed: ") + e.what();
             return -1;
+        } catch (const std::exception &e) {
+            g_last_error = std::string("ONNX Runtime CPU inference failed: ") + e.what();
+            return -1;
         }
         auto inference_end = std::chrono::high_resolution_clock::now();
         timing->inference_ms = std::chrono::duration<double, std::milli>(inference_end - inference_start).count();
@@ -1648,7 +1754,12 @@ public:
             g_last_error = "ONNX Runtime CPU output is not a tensor";
             return -1;
         }
-        if (copy_output_to_float(outputs[0]) != 0) {
+        try {
+            if (copy_output_to_float(outputs[0]) != 0) {
+                return -1;
+            }
+        } catch (const std::exception &e) {
+            g_last_error = std::string("ONNX Runtime CPU output conversion failed: ") + e.what();
             return -1;
         }
 
@@ -1769,13 +1880,14 @@ private:
         input_name_ = input_name.get();
         output_name_ = output_name.get();
 
-        const auto input_info = session_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
+        auto input_type_info = session_->GetInputTypeInfo(0);
+        const auto input_info = input_type_info.GetTensorTypeAndShapeInfo();
         std::vector<int64_t> input_shape = input_info.GetShape();
         if (input_shape.size() != 4 ||
             input_shape[1] != 3 ||
             input_shape[2] != config_.input_height ||
             input_shape[3] != config_.input_width) {
-            g_last_error = "unsupported ONNX CPU model input shape; expected 1x3xinput_heightxinput_width";
+            g_last_error = "unsupported ONNX CPU model input shape " + shape_to_string(input_shape) + "; expected 1x3xinput_heightxinput_width";
             return -1;
         }
         input_ort_type_ = input_info.GetElementType();
@@ -1785,28 +1897,54 @@ private:
         }
         input_buffer_.resize((size_t)3 * (size_t)config_.input_height * (size_t)config_.input_width);
 
-        const auto output_info = session_->GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo();
+        auto output_type_info = session_->GetOutputTypeInfo(0);
+        const auto output_info = output_type_info.GetTensorTypeAndShapeInfo();
         output_ort_type_ = output_info.GetElementType();
         output_dims_ = output_info.GetShape();
         if (output_dims_.empty()) {
             g_last_error = "ONNX Runtime CPU output shape is empty";
             return -1;
         }
-        const int attributes = 5 + config_.class_count;
-        if (output_dims_.size() >= 3 && output_dims_[1] < 0 && output_dims_[2] == attributes) {
-            const int grid8 = config_.input_width / 8;
-            const int grid16 = config_.input_width / 16;
-            const int grid32 = config_.input_width / 32;
-            output_dims_[1] = (int64_t)(3 * (grid8 * grid8 + grid16 * grid16 + grid32 * grid32));
-        } else if (output_dims_.size() >= 3 && output_dims_[2] < 0 && output_dims_[1] == attributes) {
-            const int grid8 = config_.input_width / 8;
-            const int grid16 = config_.input_width / 16;
-            const int grid32 = config_.input_width / 32;
-            output_dims_[2] = (int64_t)(3 * (grid8 * grid8 + grid16 * grid16 + grid32 * grid32));
+        if (output_dims_.size() == 3) {
+            const int configured_attributes = 5 + config_.class_count;
+            const int64_t dim1 = output_dims_[1];
+            const int64_t dim2 = output_dims_[2];
+            int64_t attributes = configured_attributes;
+            int64_t predictions = 0;
+
+            if (dim2 > 0 && dim2 <= 4096) {
+                attributes = dim2;
+                predictions = dim1;
+            } else if (dim1 > 0 && dim1 <= 4096) {
+                attributes = dim1;
+                predictions = dim2;
+            }
+
+            if (predictions <= 0) {
+                const int grid8_w = config_.input_width / 8;
+                const int grid8_h = config_.input_height / 8;
+                const int grid16_w = config_.input_width / 16;
+                const int grid16_h = config_.input_height / 16;
+                const int grid32_w = config_.input_width / 32;
+                const int grid32_h = config_.input_height / 32;
+                predictions = (int64_t)(3 * ((grid8_w * grid8_h) +
+                                             (grid16_w * grid16_h) +
+                                             (grid32_w * grid32_h)));
+            }
+
+            if (output_dims_[1] <= 0 && output_dims_[2] == attributes) {
+                output_dims_[1] = predictions;
+            } else if (output_dims_[2] <= 0 && output_dims_[1] == attributes) {
+                output_dims_[2] = predictions;
+            } else if (output_dims_[1] <= 0 && output_dims_[2] <= 0) {
+                output_dims_[1] = predictions;
+                output_dims_[2] = attributes;
+            }
         }
-        for (int64_t &dim : output_dims_) {
-            if (dim < 0) {
-                dim = 1;
+        for (int64_t dim : output_dims_) {
+            if (dim <= 0) {
+                g_last_error = "unsupported ONNX Runtime CPU dynamic output shape " + shape_to_string(output_info.GetShape());
+                return -1;
             }
         }
         return 0;
@@ -1862,6 +2000,10 @@ private:
         const size_t elements = shape_volume(shape);
         if (elements == 0) {
             g_last_error = "ONNX Runtime CPU output tensor is empty";
+            return -1;
+        }
+        if (elements > 100000000u) {
+            g_last_error = "ONNX Runtime CPU output tensor is too large: shape=" + shape_to_string(shape);
             return -1;
         }
         output_dims_ = shape;

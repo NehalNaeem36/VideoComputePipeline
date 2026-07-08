@@ -1,0 +1,23 @@
+services:
+  vcp-cpu:
+    build:
+      context: ../..
+      dockerfile: VideoComputePipeline/docker/Dockerfile.cpu
+    image: videocompute:cpu
+    volumes:
+      - ../data:/workspace/VideoComputePipeline/data
+      - ../benchmarks:/workspace/VideoComputePipeline/benchmarks
+      - ../models:/workspace/VideoComputePipeline/models:ro
+
+  vcp-cuda:
+    build:
+      context: ../..
+      dockerfile: VideoComputePipeline/docker/Dockerfile.cuda
+      args:
+        CMAKE_CUDA_ARCHITECTURES: "86"
+    image: videocompute:cuda
+    gpus: all
+    volumes:
+      - ../data:/workspace/VideoComputePipeline/data
+      - ../benchmarks:/workspace/VideoComputePipeline/benchmarks
+      - ../models:/workspace/VideoComputePipeline/models:ro

@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define BENCHMARK_CSV_BUFFER_SIZE (4u * 1024u * 1024u)
+
 void benchmark_init(Benchmark *bench) {
     if (!bench) {
         return;
@@ -31,6 +33,7 @@ void benchmark_init(Benchmark *bench) {
     bench->mux_write_ms = 0.0;
     bench->wall_clock_ms = 0.0;
     bench->csv_file = NULL;
+    bench->csv_buffer = NULL;
     bench->schema = BENCHMARK_SCHEMA_FILTER;
 }
 
@@ -138,8 +141,15 @@ int benchmark_open_csv_with_schema(Benchmark *bench, const char *path, Benchmark
         return -1;
     }
 
+    bench->csv_buffer = (char *)malloc(BENCHMARK_CSV_BUFFER_SIZE);
+    if (bench->csv_buffer) {
+        setvbuf(file, bench->csv_buffer, _IOFBF, BENCHMARK_CSV_BUFFER_SIZE);
+    }
+
     if (write_csv_header /* module: benchmark/benchmark */ (file, schema) != 0) {
         fclose(file);
+        free(bench->csv_buffer);
+        bench->csv_buffer = NULL;
         return -1;
     }
 
@@ -173,9 +183,6 @@ int benchmark_add_frame_result(Benchmark *bench, const FrameTiming *timing) {
             return -1;
         }
         bench->count++;
-        if (bench->count % 300u == 0u) {
-            fflush((FILE *)bench->csv_file);
-        }
     } else if (append_in_memory /* module: benchmark/benchmark */ (bench, timing) != 0) {
         return -1;
     }
@@ -230,7 +237,10 @@ int benchmark_close_csv(Benchmark *bench) {
 
     FILE *file = (FILE *)bench->csv_file;
     bench->csv_file = NULL;
-    return fclose(file) == 0 ? 0 : -1;
+    const int result = fclose(file) == 0 ? 0 : -1;
+    free(bench->csv_buffer);
+    bench->csv_buffer = NULL;
+    return result;
 }
 
 void benchmark_print_summary(const Benchmark *bench) {

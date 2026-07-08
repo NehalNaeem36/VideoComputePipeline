@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define DETECTION_WRITER_BUFFER_SIZE (4u * 1024u * 1024u)
+
 static char *copy_string(const char *src) {
     if (!src) {
         return NULL;
@@ -90,6 +92,7 @@ void detection_writer_init(DetectionWriter *writer) {
     }
 
     writer->file = NULL;
+    writer->buffer = NULL;
     writer->labels = NULL;
     writer->label_count = 0;
 }
@@ -107,6 +110,11 @@ int detection_writer_open(DetectionWriter *writer, const char *path, const char 
     FILE *file = fopen(path, "w");
     if (!file) {
         return -1;
+    }
+
+    writer->buffer = (char *)malloc(DETECTION_WRITER_BUFFER_SIZE);
+    if (writer->buffer) {
+        setvbuf(file, writer->buffer, _IOFBF, DETECTION_WRITER_BUFFER_SIZE);
     }
 
     writer->file = file;
@@ -164,6 +172,8 @@ int detection_writer_close(DetectionWriter *writer) {
         writer->file = NULL;
         result = fclose(file) == 0 ? 0 : -1;
     }
+    free(writer->buffer);
+    writer->buffer = NULL;
     free_labels /* module: inference/detection_writer */ (writer);
     return result;
 }

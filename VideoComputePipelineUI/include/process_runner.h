@@ -15,6 +15,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <sys/types.h>
 #endif
 
 namespace vcpui {
@@ -68,6 +70,10 @@ private:
     HANDLE stderrRead_ = nullptr;
     HANDLE stdoutWrite_ = nullptr;
     HANDLE stderrWrite_ = nullptr;
+#else
+    pid_t childPid_ = -1;
+    int stdoutRead_ = -1;
+    int stderrRead_ = -1;
 #endif
 
     std::thread stdoutThread_;

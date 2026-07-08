@@ -72,6 +72,7 @@ typedef struct {
     double mux_write_ms;
     double wall_clock_ms;
     void *csv_file;
+    char *csv_buffer;
     BenchmarkSchema schema;
 } Benchmark;
 

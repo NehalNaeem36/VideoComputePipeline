@@ -1,0 +1,36 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    git \
+    ninja-build \
+    pkg-config \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+COPY VideoComputePipeline ./VideoComputePipeline
+
+WORKDIR /workspace/VideoComputePipeline
+RUN cmake -S . -B /tmp/vcp-build-cpu -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DENABLE_CUDA_FILTERS=OFF \
+    -DENABLE_CUDA_INFERENCE=OFF \
+    -DENABLE_HW_VIDEO=OFF \
+    -DENABLE_ONNXRUNTIME=OFF \
+    -DENABLE_LIBTORCH=OFF \
+    && cmake --build /tmp/vcp-build-cpu -j \
+    && ctest --test-dir /tmp/vcp-build-cpu --output-on-failure
+
+RUN mkdir -p /opt/videocompute/bin \
+    && cp /tmp/vcp-build-cpu/bin/VideoComputePipeline /opt/videocompute/bin/
+
+ENTRYPOINT ["/opt/videocompute/bin/VideoComputePipeline"]
+CMD ["--help"]

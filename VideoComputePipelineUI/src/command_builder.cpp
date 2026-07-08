@@ -93,7 +93,7 @@ std::string join_config_path(const std::string &folder, const std::string &file)
     if (last == '\\' || last == '/') {
         return folder + file;
     }
-    return folder + "\\" + file;
+    return folder + "/" + file;
 }
 
 const char *artifact_video_extension(const PipelineRunConfig &config) {
@@ -203,22 +203,22 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
         return;
     }
 
-    config.pipelineExePath = "..\\VideoComputePipeline\\build-all-backends-vs\\Release\\VideoComputePipeline.exe";
-    config.workingDirectory = "..\\VideoComputePipeline";
-    config.inputFolderPath = "data\\input";
+    config.pipelineExePath = "../VideoComputePipeline/build-all-backends-vs/Release/VideoComputePipeline.exe";
+    config.workingDirectory = "../VideoComputePipeline";
+    config.inputFolderPath = "data/input";
     config.selectedInputFile = "people_4k_30min_stream_test.mp4";
-    config.outputFolderPath = "data\\output";
-    config.detectionsFolderPath = "benchmarks\\detections";
-    config.benchmarkFolderPath = "benchmarks\\benchmarks";
+    config.outputFolderPath = "data/output";
+    config.detectionsFolderPath = "benchmarks/detections";
+    config.benchmarkFolderPath = "benchmarks/benchmarks";
     config.outputFamilyName = "people_run";
-    config.inputVideoPath = "data\\input\\people_4k_30min_stream_test.mp4";
+    config.inputVideoPath = "data/input/people_4k_30min_stream_test.mp4";
     config.modelFolderPath = "models";
     config.selectedModelFile = "yolov5s.onnx";
-    config.modelPath = "models\\yolov5s.onnx";
-    config.labelsPath = "models\\coco.names";
-    config.outputVideoPath = "data\\output\\people_run_video.mkv";
-    config.detectionsCsvPath = "benchmarks\\detections\\people_run_detections.csv";
-    config.benchmarkCsvPath = "benchmarks\\benchmarks\\people_run_benchmark.csv";
+    config.modelPath = "models/yolov5s.onnx";
+    config.labelsPath = "models/coco.names";
+    config.outputVideoPath = "data/output/people_run_video.mkv";
+    config.detectionsCsvPath = "benchmarks/detections/people_run_detections.csv";
+    config.benchmarkCsvPath = "benchmarks/benchmarks/people_run_benchmark.csv";
     config.ffmpegLogLevel = "error";
     config.task = Task::Detect;
     config.runtime = Runtime::OnnxRuntime;
@@ -259,7 +259,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.runtime = Runtime::OnnxRuntime;
             config.backendDevice = BackendDevice::Cuda;
             config.selectedModelFile = "yolov5s.onnx";
-            config.modelPath = "models\\yolov5s.onnx";
+            config.modelPath = "models/yolov5s.onnx";
             config.outputFamilyName = "people_csv";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Auto;
@@ -272,7 +272,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.runtime = Runtime::OnnxRuntime;
             config.backendDevice = BackendDevice::Cuda;
             config.selectedModelFile = "yolov5s.onnx";
-            config.modelPath = "models\\yolov5s.onnx";
+            config.modelPath = "models/yolov5s.onnx";
             config.outputFamilyName = "people_annotated";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Mkv;
@@ -288,7 +288,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.runtime = Runtime::TensorRt;
             config.backendDevice = BackendDevice::Cuda;
             config.selectedModelFile = "yolov5s_trt11.engine";
-            config.modelPath = "models\\yolov5s_trt11.engine";
+            config.modelPath = "models/yolov5s_trt11.engine";
             config.outputFamilyName = "fast_gpu_annotated";
             config.precision = Precision::Fp16;
             config.outputFormat = OutputFormat::Mkv;
@@ -311,7 +311,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.runtime = Runtime::OnnxRuntime;
             config.backendDevice = BackendDevice::Cpu;
             config.selectedModelFile = "yolov5s.onnx";
-            config.modelPath = "models\\yolov5s.onnx";
+            config.modelPath = "models/yolov5s.onnx";
             config.outputFamilyName = "safe_cpu_detection";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Auto;
@@ -325,7 +325,7 @@ void apply_preset(PipelineRunConfig &config, Preset preset) {
             config.runtime = Runtime::TensorRt;
             config.backendDevice = BackendDevice::Cuda;
             config.selectedModelFile = "yolov5s_trt11.engine";
-            config.modelPath = "models\\yolov5s_trt11.engine";
+            config.modelPath = "models/yolov5s_trt11.engine";
             config.outputFamilyName = "nvdec_nvenc_stress";
             config.precision = Precision::Fp32;
             config.outputFormat = OutputFormat::Mkv;
