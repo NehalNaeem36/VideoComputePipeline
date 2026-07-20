@@ -1,4 +1,5 @@
 #include "benchmark/benchmark.h"
+#include "utils/c_runtime.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -6,8 +7,8 @@
 #define TEST_ASSERT(expr) do { if (!(expr)) { fprintf(stderr, "fail: %s:%d: %s\n", __FILE__, __LINE__, #expr); return 1; } } while (0)
 
 static int read_first_line(const char *path, char *buffer, size_t size) {
-    FILE *file = fopen(path, "r");
-    if (!file) {
+    FILE *file = NULL;
+    if (vcp_fopen /* module: utils/c_runtime */ (&file, path, "r") != 0) {
         return -1;
     }
     const int ok = fgets(buffer, (int)size, file) != NULL;
@@ -38,9 +39,15 @@ int main(void) {
     TEST_ASSERT(benchmark_open_csv_with_schema /* module: benchmark/benchmark */ (&bench,
                                                                                  "benchmarks/benchmark_detection_stream_test.csv",
                                                                                  BENCHMARK_SCHEMA_DETECTION) == 0);
-    strcpy(timing.runtime_backend, "tensorrt");
-    strcpy(timing.backend_device, "cuda");
-    strcpy(timing.precision, "fp16");
+    vcp_copy_string /* module: utils/c_runtime */ (timing.runtime_backend,
+                                                   sizeof(timing.runtime_backend),
+                                                   "tensorrt");
+    vcp_copy_string /* module: utils/c_runtime */ (timing.backend_device,
+                                                   sizeof(timing.backend_device),
+                                                   "cuda");
+    vcp_copy_string /* module: utils/c_runtime */ (timing.precision,
+                                                   sizeof(timing.precision),
+                                                   "fp16");
     timing.detections_count = 2;
     timing.raw_frame_upload_bytes = 0;
     timing.metadata_download_bytes = 4096;
@@ -50,6 +57,10 @@ int main(void) {
     TEST_ASSERT(strstr(header, "raw_frame_upload_bytes") != NULL);
     TEST_ASSERT(strstr(header, "detections_count") != NULL);
     TEST_ASSERT(strstr(header, "runtime_backend") != NULL);
+    TEST_ASSERT(strstr(header, "inference_queue_wait_ms") != NULL);
+    TEST_ASSERT(strstr(header, "encode_queue_wait_ms") != NULL);
+    TEST_ASSERT(strstr(header, "end_to_end_latency_ms") != NULL);
+    TEST_ASSERT(strstr(header, "stage_sum_ms") != NULL);
     TEST_ASSERT(strstr(header, "kernel_ms") == NULL);
 
     benchmark_print_summary /* module: benchmark/benchmark */ (&bench);

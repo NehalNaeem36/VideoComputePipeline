@@ -4,27 +4,58 @@
  * not participate in frame processing.
  */
 #include "benchmark/matrix_report.h"
+#include "utils/c_runtime.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+static char *next_csv_token(char **cursor) {
+    char *start = NULL;
+
+    if (!cursor || !*cursor) {
+        return NULL;
+    }
+
+    start = *cursor;
+    if (*start == '\0') {
+        *cursor = NULL;
+        return NULL;
+    }
+
+    char *p = start;
+    while (*p && *p != ',' && *p != '\r' && *p != '\n') {
+        ++p;
+    }
+
+    if (*p) {
+        *p = '\0';
+        *cursor = p + 1;
+    } else {
+        *cursor = NULL;
+    }
+
+    return start;
+}
+
 static int find_csv_column_index(char *header, const char *name) {
     int index = 0;
-    char *token = strtok(header, ",\r\n");
+    char *cursor = header;
+    char *token = next_csv_token /* module: benchmark/matrix_report */ (&cursor);
     while (token) {
         if (strcmp(token, name) == 0) {
             return index;
         }
         ++index;
-        token = strtok(NULL, ",\r\n");
+        token = next_csv_token /* module: benchmark/matrix_report */ (&cursor);
     }
     return -1;
 }
 
 static int parse_csv_double_column(char *line, int column_index, double *out_value) {
     int index = 0;
-    char *token = strtok(line, ",\r\n");
+    char *cursor = line;
+    char *token = next_csv_token /* module: benchmark/matrix_report */ (&cursor);
     while (token) {
         if (index == column_index) {
             char *end = NULL;
@@ -36,7 +67,7 @@ static int parse_csv_double_column(char *line, int column_index, double *out_val
             return 0;
         }
         ++index;
-        token = strtok(NULL, ",\r\n");
+        token = next_csv_token /* module: benchmark/matrix_report */ (&cursor);
     }
     return -1;
 }
@@ -46,8 +77,8 @@ int matrix_report_read_csv_summary(const char *path, MatrixReportStats *stats) {
         return -1;
     }
 
-    FILE *file = fopen(path, "r");
-    if (!file) {
+    FILE *file = NULL;
+    if (vcp_fopen /* module: utils/c_runtime */ (&file, path, "r") != 0) {
         return -1;
     }
 
@@ -60,8 +91,7 @@ int matrix_report_read_csv_summary(const char *path, MatrixReportStats *stats) {
     }
 
     char header[2048];
-    strncpy(header, line, sizeof(header) - 1u);
-    header[sizeof(header) - 1u] = '\0';
+    vcp_copy_string_truncated /* module: utils/c_runtime */ (header, sizeof(header), line);
     const int total_ms_column = find_csv_column_index /* module: benchmark/matrix_report */ (header, "total_ms");
     if (total_ms_column < 0) {
         fclose(file);
@@ -71,8 +101,7 @@ int matrix_report_read_csv_summary(const char *path, MatrixReportStats *stats) {
     while (fgets(line, sizeof(line), file)) {
         double total_ms = 0.0;
         char row[2048];
-        strncpy(row, line, sizeof(row) - 1u);
-        row[sizeof(row) - 1u] = '\0';
+        vcp_copy_string_truncated /* module: utils/c_runtime */ (row, sizeof(row), line);
 
         if (parse_csv_double_column /* module: benchmark/matrix_report */ (row, total_ms_column, &total_ms) == 0) {
             stats->total_frames++;

@@ -52,6 +52,10 @@ typedef struct {
 int inference_engine_create(InferenceEngine **engine, const InferenceConfig *config);
 int inference_engine_get_batch_capability(InferenceEngine *engine, InferenceBatchCapability *capability);
 int inference_engine_set_parallel_contexts(InferenceEngine *engine, int context_count);
+int inference_engine_get_async_lane_count(InferenceEngine *engine);
+int inference_engine_submit_cuda_nv12_async(InferenceEngine *engine, int lane, const CudaNV12Frame *frame, FrameTiming *timing);
+int inference_engine_is_lane_ready(InferenceEngine *engine, int lane, int *ready);
+int inference_engine_finish_lane(InferenceEngine *engine, int lane, DetectionResult *result, FrameTiming *timing);
 int inference_engine_run_nv12(InferenceEngine *engine, const Frame *frame, DetectionResult *result, FrameTiming *timing);
 int inference_engine_run_cuda_nv12(InferenceEngine *engine, const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing);
 int inference_engine_run_nv12_batch(InferenceEngine *engine, FrameBatch *batch);

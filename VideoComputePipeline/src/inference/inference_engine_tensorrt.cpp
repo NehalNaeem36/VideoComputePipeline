@@ -255,6 +255,13 @@ struct CudaSlot {
     std::vector<uint8_t> h_output_raw;
     std::vector<float> h_output_float;
     std::vector<int> output_dims;
+    bool async_active = false;
+    int async_frame_index = -1;
+    int async_frame_width = 0;
+    int async_frame_height = 0;
+    float async_scale = 1.0f;
+    float async_pad_x = 0.0f;
+    float async_pad_y = 0.0f;
 };
 
 #ifdef VCP_ENABLE_TENSORRT
@@ -468,18 +475,48 @@ public:
     }
 
     int run_device(const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing) override {
-        if (!frame || !result || !timing || !cuda_nv12_frame_is_valid(frame)) {
-            g_last_error = "invalid CUDA NV12 frame for inference";
+        const int lane = frame && !slots_.empty() ? frame->index % (int)slots_.size() : 0;
+        if (submit_device_async(lane, frame, timing) != 0) {
+            return -1;
+        }
+        return finish_lane(lane, result, timing);
+    }
+
+    int get_async_lane_count() const override {
+        return (int)slots_.size();
+    }
+
+    int submit_device_async(int lane, const CudaNV12Frame *frame, FrameTiming *timing) override {
+        (void)timing;
+        if (!frame || !cuda_nv12_frame_is_valid(frame)) {
+            g_last_error = "invalid CUDA NV12 frame for async inference";
+            return -1;
+        }
+        if (lane < 0 || lane >= (int)slots_.size()) {
+            g_last_error = "invalid TensorRT async inference lane";
             return -1;
         }
 
-        CudaSlot &slot = slots_[(size_t)frame->index % slots_.size()];
+        CudaSlot &slot = slots_[(size_t)lane];
+        if (slot.async_active) {
+            g_last_error = "TensorRT async inference lane is already active";
+            return -1;
+        }
+
         const float scale = std::min((float)config_.input_width / (float)frame->width,
                                      (float)config_.input_height / (float)frame->height);
         const float resized_w = (float)frame->width * scale;
         const float resized_h = (float)frame->height * scale;
         const float pad_x = ((float)config_.input_width - resized_w) * 0.5f;
         const float pad_y = ((float)config_.input_height - resized_h) * 0.5f;
+
+        slot.async_active = true;
+        slot.async_frame_index = frame->index;
+        slot.async_frame_width = frame->width;
+        slot.async_frame_height = frame->height;
+        slot.async_scale = scale;
+        slot.async_pad_x = pad_x;
+        slot.async_pad_y = pad_y;
 
         cudaEventRecord(slot.start, slot.stream);
         cudaEventRecord(slot.upload_done, slot.stream);
@@ -514,6 +551,7 @@ public:
                                                                       slot.stream);
         }
         if (preprocess_result != cudaSuccess) {
+            slot.async_active = false;
             g_last_error = "failed to launch CUDA device NV12 preprocess kernel";
             return -1;
         }
@@ -523,6 +561,7 @@ public:
             !slot.context->setTensorAddress(input_name_.c_str(), slot.d_input) ||
             !slot.context->setTensorAddress(output_name_.c_str(), slot.d_output) ||
             !slot.context->enqueueV3(slot.stream)) {
+            slot.async_active = false;
             g_last_error = "TensorRT enqueueV3 failed";
             return -1;
         }
@@ -533,12 +572,58 @@ public:
                             output_bytes_,
                             cudaMemcpyDeviceToHost,
                             slot.stream) != cudaSuccess) {
+            slot.async_active = false;
             g_last_error = "failed to copy TensorRT output to host";
             return -1;
         }
         cudaEventRecord(slot.output_done, slot.stream);
-        if (cudaStreamSynchronize(slot.stream) != cudaSuccess) {
-            g_last_error = "CUDA inference stream synchronization failed";
+        return 0;
+    }
+
+    int is_lane_ready(int lane, int *ready) override {
+        if (!ready) {
+            g_last_error = "invalid TensorRT async readiness output";
+            return -1;
+        }
+        *ready = 0;
+        if (lane < 0 || lane >= (int)slots_.size()) {
+            g_last_error = "invalid TensorRT async inference lane";
+            return -1;
+        }
+        CudaSlot &slot = slots_[(size_t)lane];
+        if (!slot.async_active) {
+            *ready = 1;
+            return 0;
+        }
+        const cudaError_t query = cudaEventQuery(slot.output_done);
+        if (query == cudaSuccess) {
+            *ready = 1;
+            return 0;
+        }
+        if (query == cudaErrorNotReady) {
+            return 0;
+        }
+        g_last_error = cudaGetErrorString(query);
+        return -1;
+    }
+
+    int finish_lane(int lane, DetectionResult *result, FrameTiming *timing) override {
+        if (!result || !timing) {
+            g_last_error = "invalid TensorRT async finish arguments";
+            return -1;
+        }
+        if (lane < 0 || lane >= (int)slots_.size()) {
+            g_last_error = "invalid TensorRT async inference lane";
+            return -1;
+        }
+        CudaSlot &slot = slots_[(size_t)lane];
+        if (!slot.async_active) {
+            g_last_error = "TensorRT async inference lane has no active frame";
+            return -1;
+        }
+        if (cudaEventSynchronize(slot.output_done) != cudaSuccess) {
+            slot.async_active = false;
+            g_last_error = "CUDA inference output synchronization failed";
             return -1;
         }
 
@@ -550,9 +635,9 @@ public:
         auto post_start = std::chrono::high_resolution_clock::now();
         convert_output_to_float(slot);
         YoloPostprocessConfig post_config{};
-        post_config.frame_index = frame->index;
-        post_config.src_width = frame->width;
-        post_config.src_height = frame->height;
+        post_config.frame_index = slot.async_frame_index;
+        post_config.src_width = slot.async_frame_width;
+        post_config.src_height = slot.async_frame_height;
         post_config.input_width = config_.input_width;
         post_config.input_height = config_.input_height;
         post_config.class_count = config_.class_count;
@@ -562,19 +647,21 @@ public:
                   post_config.class_filter_ids);
         post_config.confidence_threshold = config_.confidence_threshold;
         post_config.iou_threshold = config_.iou_threshold;
-        post_config.scale = scale;
-        post_config.pad_x = pad_x;
-        post_config.pad_y = pad_y;
+        post_config.scale = slot.async_scale;
+        post_config.pad_x = slot.async_pad_x;
+        post_config.pad_y = slot.async_pad_y;
         int dims[8] = {0};
         for (int i = 0; i < output_dims_.nbDims && i < 8; ++i) {
             dims[i] = output_dims_.d[i];
         }
         if (yolo_postprocess(slot.h_output_float.data(), slot.h_output_float.size(), dims, output_dims_.nbDims, &post_config, result) != 0) {
+            slot.async_active = false;
             g_last_error = "YOLOv5 postprocess failed";
             return -1;
         }
         auto post_end = std::chrono::high_resolution_clock::now();
         timing->postprocess_ms = std::chrono::duration<double, std::milli>(post_end - post_start).count();
+        slot.async_active = false;
         return 0;
     }
 
@@ -2151,6 +2238,38 @@ extern "C" int inference_engine_set_parallel_contexts(InferenceEngine *engine, i
         return -1;
     }
     return engine->impl->set_parallel_contexts(context_count);
+}
+
+extern "C" int inference_engine_get_async_lane_count(InferenceEngine *engine) {
+    if (!engine || !engine->impl) {
+        g_last_error = "inference engine is not initialized";
+        return 0;
+    }
+    return engine->impl->get_async_lane_count();
+}
+
+extern "C" int inference_engine_submit_cuda_nv12_async(InferenceEngine *engine, int lane, const CudaNV12Frame *frame, FrameTiming *timing) {
+    if (!engine || !engine->impl) {
+        g_last_error = "inference engine is not initialized";
+        return -1;
+    }
+    return engine->impl->submit_device_async(lane, frame, timing);
+}
+
+extern "C" int inference_engine_is_lane_ready(InferenceEngine *engine, int lane, int *ready) {
+    if (!engine || !engine->impl) {
+        g_last_error = "inference engine is not initialized";
+        return -1;
+    }
+    return engine->impl->is_lane_ready(lane, ready);
+}
+
+extern "C" int inference_engine_finish_lane(InferenceEngine *engine, int lane, DetectionResult *result, FrameTiming *timing) {
+    if (!engine || !engine->impl) {
+        g_last_error = "inference engine is not initialized";
+        return -1;
+    }
+    return engine->impl->finish_lane(lane, result, timing);
 }
 
 extern "C" int inference_engine_run_cuda_nv12(InferenceEngine *engine, const CudaNV12Frame *frame, DetectionResult *result, FrameTiming *timing) {

@@ -4,6 +4,7 @@
  * batch, optionally resolving class names from the labels file.
  */
 #include "inference/detection_writer.h"
+#include "utils/c_runtime.h"
 #include "utils/file_utils.h"
 
 #include <stdio.h>
@@ -56,8 +57,8 @@ static int load_labels(DetectionWriter *writer, const char *labels_path) {
         return 0;
     }
 
-    FILE *file = fopen(labels_path, "r");
-    if (!file) {
+    FILE *file = NULL;
+    if (vcp_fopen /* module: utils/c_runtime */ (&file, labels_path, "r") != 0) {
         return 0;
     }
 
@@ -107,8 +108,8 @@ int detection_writer_open(DetectionWriter *writer, const char *path, const char 
         return -1;
     }
 
-    FILE *file = fopen(path, "w");
-    if (!file) {
+    FILE *file = NULL;
+    if (vcp_fopen /* module: utils/c_runtime */ (&file, path, "w") != 0) {
         return -1;
     }
 

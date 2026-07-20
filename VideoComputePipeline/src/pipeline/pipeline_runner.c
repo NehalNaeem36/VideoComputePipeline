@@ -19,6 +19,7 @@
 #include "pipeline/hardware_profile.h"
 #include "pipeline/pipeline_execution_plan.h"
 #include "pipeline/video_profile.h"
+#include "utils/c_runtime.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "video/video_reader.h"
@@ -32,6 +33,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <poll.h>
 #include <pthread.h>
 #endif
 
@@ -39,6 +41,7 @@ static int run_filter_pipeline(const PipelineConfig *config);
 static int run_detection_pipeline(const PipelineConfig *config);
 static int run_detection_pipeline_cpu_decoded(const PipelineConfig *config);
 static int run_detection_pipeline_nvdec_cuda(const PipelineConfig *config);
+static int run_detection_pipeline_nvdec_cuda_blocking(const PipelineConfig *config);
 static int run_detection_pipeline_nvdec_cpu(const PipelineConfig *config);
 static void apply_execution_plan_to_timing(const PipelineExecutionPlan *plan, FrameTiming *timing);
 static void apply_detection_metadata_to_timing(const PipelineConfig *config,
@@ -672,8 +675,12 @@ static int write_available_ordered(PipelineContext *ctx, PendingNode **pending, 
 
 static void fill_inference_config_from_pipeline(const PipelineConfig *config, InferenceConfig *inference_config) {
     memset(inference_config, 0, sizeof(*inference_config));
-    strncpy(inference_config->model_path, config->model_path, sizeof(inference_config->model_path) - 1u);
-    strncpy(inference_config->labels_path, config->labels_path, sizeof(inference_config->labels_path) - 1u);
+    vcp_copy_string /* module: utils/c_runtime */ (inference_config->model_path,
+                                                   sizeof(inference_config->model_path),
+                                                   config->model_path);
+    vcp_copy_string /* module: utils/c_runtime */ (inference_config->labels_path,
+                                                   sizeof(inference_config->labels_path),
+                                                   config->labels_path);
     inference_config->runtime = config->runtime;
     inference_config->backend_device = config->backend_device;
     inference_config->model_type = config->model_type;
@@ -1491,6 +1498,944 @@ static void *detection_inference_worker_main(void *arg)
 #endif
 }
 
+typedef struct DetectionAsyncSlot {
+    CudaNV12Frame frame;
+    DetectionResult detections;
+    FrameTiming timing;
+    int frame_id;
+    int lane;
+    double decode_done_wall_ms;
+    double inference_queued_wall_ms;
+    double inference_done_wall_ms;
+} DetectionAsyncSlot;
+
+typedef struct {
+    DetectionAsyncSlot **items;
+    size_t capacity;
+    size_t head;
+    size_t tail;
+    size_t count;
+    int closed;
+#ifdef _WIN32
+    CRITICAL_SECTION lock;
+    CONDITION_VARIABLE not_empty;
+    CONDITION_VARIABLE not_full;
+#else
+    pthread_mutex_t lock;
+    pthread_cond_t not_empty;
+    pthread_cond_t not_full;
+#endif
+} DetectionAsyncSlotQueue;
+
+typedef struct DetectionAsyncMetadataRecord {
+    DetectionResult detections;
+    FrameTiming timing;
+    int write_detections;
+    int write_benchmark;
+} DetectionAsyncMetadataRecord;
+
+typedef struct {
+    DetectionAsyncMetadataRecord **items;
+    size_t capacity;
+    size_t head;
+    size_t tail;
+    size_t count;
+    int closed;
+#ifdef _WIN32
+    CRITICAL_SECTION lock;
+    CONDITION_VARIABLE not_empty;
+    CONDITION_VARIABLE not_full;
+#else
+    pthread_mutex_t lock;
+    pthread_cond_t not_empty;
+    pthread_cond_t not_full;
+#endif
+} DetectionAsyncMetadataQueue;
+
+typedef struct PendingAsyncSlotNode {
+    DetectionAsyncSlot *slot;
+    int frame_id;
+    struct PendingAsyncSlotNode *next;
+} PendingAsyncSlotNode;
+
+typedef struct {
+    const PipelineConfig *config;
+    VideoHWReader *reader;
+    const VideoInfo *info;
+    DetectionWriter *detections;
+    VideoHWWriter *writer;
+    Benchmark *benchmark;
+    InferenceEngine *engine;
+    PipelineExecutionPlan *plan;
+    DetectionAsyncSlotQueue free_slots;
+    DetectionAsyncSlotQueue decoded_slots;
+    DetectionAsyncSlotQueue completed_slots;
+    DetectionAsyncSlotQueue encode_slots;
+    DetectionAsyncMetadataQueue free_metadata;
+    DetectionAsyncMetadataQueue metadata_records;
+    int writer_opened;
+    int benchmark_opened;
+    int failed;
+    int next_output_frame_id;
+    int lane_count;
+    int metadata_thread_done;
+    Timer *wall_timer;
+#ifdef _WIN32
+    CRITICAL_SECTION state_lock;
+#else
+    pthread_mutex_t state_lock;
+#endif
+} DetectionAsyncContext;
+
+static void detection_sleep_millis(int millis) {
+#ifdef _WIN32
+    Sleep((DWORD)millis);
+#else
+    poll(NULL, 0, millis);
+#endif
+}
+
+static int detection_async_slot_queue_init(DetectionAsyncSlotQueue *queue, size_t capacity) {
+    if (!queue || capacity == 0u) {
+        return -1;
+    }
+    memset(queue, 0, sizeof(*queue));
+    queue->items = (DetectionAsyncSlot **)calloc(capacity, sizeof(*queue->items));
+    if (!queue->items) {
+        return -1;
+    }
+    queue->capacity = capacity;
+#ifdef _WIN32
+    InitializeCriticalSection(&queue->lock);
+    InitializeConditionVariable(&queue->not_empty);
+    InitializeConditionVariable(&queue->not_full);
+#else
+    pthread_mutex_init(&queue->lock, NULL);
+    pthread_cond_init(&queue->not_empty, NULL);
+    pthread_cond_init(&queue->not_full, NULL);
+#endif
+    return 0;
+}
+
+static void detection_async_slot_queue_close(DetectionAsyncSlotQueue *queue) {
+    if (!queue || !queue->items) {
+        return;
+    }
+#ifdef _WIN32
+    EnterCriticalSection(&queue->lock);
+    queue->closed = 1;
+    WakeAllConditionVariable(&queue->not_empty);
+    WakeAllConditionVariable(&queue->not_full);
+    LeaveCriticalSection(&queue->lock);
+#else
+    pthread_mutex_lock(&queue->lock);
+    queue->closed = 1;
+    pthread_cond_broadcast(&queue->not_empty);
+    pthread_cond_broadcast(&queue->not_full);
+    pthread_mutex_unlock(&queue->lock);
+#endif
+}
+
+static void detection_async_slot_queue_destroy(DetectionAsyncSlotQueue *queue) {
+    if (!queue || !queue->items) {
+        return;
+    }
+    detection_async_slot_queue_close(queue);
+    free(queue->items);
+    queue->items = NULL;
+    queue->capacity = 0u;
+    queue->count = 0u;
+#ifdef _WIN32
+    DeleteCriticalSection(&queue->lock);
+#else
+    pthread_cond_destroy(&queue->not_empty);
+    pthread_cond_destroy(&queue->not_full);
+    pthread_mutex_destroy(&queue->lock);
+#endif
+}
+
+static int detection_async_slot_queue_push(DetectionAsyncSlotQueue *queue, DetectionAsyncSlot *slot) {
+    if (!queue || !slot) {
+        return -1;
+    }
+#ifdef _WIN32
+    EnterCriticalSection(&queue->lock);
+    while (!queue->closed && queue->count == queue->capacity) {
+        SleepConditionVariableCS(&queue->not_full, &queue->lock, INFINITE);
+    }
+    if (queue->closed) {
+        LeaveCriticalSection(&queue->lock);
+        return 0;
+    }
+    queue->items[queue->tail] = slot;
+    queue->tail = (queue->tail + 1u) % queue->capacity;
+    queue->count++;
+    WakeConditionVariable(&queue->not_empty);
+    LeaveCriticalSection(&queue->lock);
+#else
+    pthread_mutex_lock(&queue->lock);
+    while (!queue->closed && queue->count == queue->capacity) {
+        pthread_cond_wait(&queue->not_full, &queue->lock);
+    }
+    if (queue->closed) {
+        pthread_mutex_unlock(&queue->lock);
+        return 0;
+    }
+    queue->items[queue->tail] = slot;
+    queue->tail = (queue->tail + 1u) % queue->capacity;
+    queue->count++;
+    pthread_cond_signal(&queue->not_empty);
+    pthread_mutex_unlock(&queue->lock);
+#endif
+    return 1;
+}
+
+static int detection_async_slot_queue_pop(DetectionAsyncSlotQueue *queue, DetectionAsyncSlot **slot) {
+    if (!queue || !slot) {
+        return -1;
+    }
+    *slot = NULL;
+#ifdef _WIN32
+    EnterCriticalSection(&queue->lock);
+    while (!queue->closed && queue->count == 0u) {
+        SleepConditionVariableCS(&queue->not_empty, &queue->lock, INFINITE);
+    }
+    if (queue->count == 0u && queue->closed) {
+        LeaveCriticalSection(&queue->lock);
+        return 0;
+    }
+    *slot = queue->items[queue->head];
+    queue->items[queue->head] = NULL;
+    queue->head = (queue->head + 1u) % queue->capacity;
+    queue->count--;
+    WakeConditionVariable(&queue->not_full);
+    LeaveCriticalSection(&queue->lock);
+#else
+    pthread_mutex_lock(&queue->lock);
+    while (!queue->closed && queue->count == 0u) {
+        pthread_cond_wait(&queue->not_empty, &queue->lock);
+    }
+    if (queue->count == 0u && queue->closed) {
+        pthread_mutex_unlock(&queue->lock);
+        return 0;
+    }
+    *slot = queue->items[queue->head];
+    queue->items[queue->head] = NULL;
+    queue->head = (queue->head + 1u) % queue->capacity;
+    queue->count--;
+    pthread_cond_signal(&queue->not_full);
+    pthread_mutex_unlock(&queue->lock);
+#endif
+    return 1;
+}
+
+static int detection_async_slot_queue_try_pop(DetectionAsyncSlotQueue *queue, DetectionAsyncSlot **slot) {
+    int result = 0;
+    if (!queue || !slot) {
+        return -1;
+    }
+    *slot = NULL;
+#ifdef _WIN32
+    EnterCriticalSection(&queue->lock);
+    if (queue->count > 0u) {
+        *slot = queue->items[queue->head];
+        queue->items[queue->head] = NULL;
+        queue->head = (queue->head + 1u) % queue->capacity;
+        queue->count--;
+        WakeConditionVariable(&queue->not_full);
+        result = 1;
+    } else if (queue->closed) {
+        result = 0;
+    } else {
+        result = 2;
+    }
+    LeaveCriticalSection(&queue->lock);
+#else
+    pthread_mutex_lock(&queue->lock);
+    if (queue->count > 0u) {
+        *slot = queue->items[queue->head];
+        queue->items[queue->head] = NULL;
+        queue->head = (queue->head + 1u) % queue->capacity;
+        queue->count--;
+        pthread_cond_signal(&queue->not_full);
+        result = 1;
+    } else if (queue->closed) {
+        result = 0;
+    } else {
+        result = 2;
+    }
+    pthread_mutex_unlock(&queue->lock);
+#endif
+    return result;
+}
+
+static int detection_async_metadata_queue_init(DetectionAsyncMetadataQueue *queue, size_t capacity) {
+    if (!queue || capacity == 0u) {
+        return -1;
+    }
+    memset(queue, 0, sizeof(*queue));
+    queue->items = (DetectionAsyncMetadataRecord **)calloc(capacity, sizeof(*queue->items));
+    if (!queue->items) {
+        return -1;
+    }
+    queue->capacity = capacity;
+#ifdef _WIN32
+    InitializeCriticalSection(&queue->lock);
+    InitializeConditionVariable(&queue->not_empty);
+    InitializeConditionVariable(&queue->not_full);
+#else
+    pthread_mutex_init(&queue->lock, NULL);
+    pthread_cond_init(&queue->not_empty, NULL);
+    pthread_cond_init(&queue->not_full, NULL);
+#endif
+    return 0;
+}
+
+static void detection_async_metadata_queue_close(DetectionAsyncMetadataQueue *queue) {
+    if (!queue || !queue->items) {
+        return;
+    }
+#ifdef _WIN32
+    EnterCriticalSection(&queue->lock);
+    queue->closed = 1;
+    WakeAllConditionVariable(&queue->not_empty);
+    WakeAllConditionVariable(&queue->not_full);
+    LeaveCriticalSection(&queue->lock);
+#else
+    pthread_mutex_lock(&queue->lock);
+    queue->closed = 1;
+    pthread_cond_broadcast(&queue->not_empty);
+    pthread_cond_broadcast(&queue->not_full);
+    pthread_mutex_unlock(&queue->lock);
+#endif
+}
+
+static void detection_async_metadata_queue_destroy(DetectionAsyncMetadataQueue *queue) {
+    if (!queue || !queue->items) {
+        return;
+    }
+    detection_async_metadata_queue_close(queue);
+    free(queue->items);
+    queue->items = NULL;
+    queue->capacity = 0u;
+    queue->count = 0u;
+#ifdef _WIN32
+    DeleteCriticalSection(&queue->lock);
+#else
+    pthread_cond_destroy(&queue->not_empty);
+    pthread_cond_destroy(&queue->not_full);
+    pthread_mutex_destroy(&queue->lock);
+#endif
+}
+
+static int detection_async_metadata_queue_push(DetectionAsyncMetadataQueue *queue, DetectionAsyncMetadataRecord *record) {
+    if (!queue || !record) {
+        return -1;
+    }
+#ifdef _WIN32
+    EnterCriticalSection(&queue->lock);
+    while (!queue->closed && queue->count == queue->capacity) {
+        SleepConditionVariableCS(&queue->not_full, &queue->lock, INFINITE);
+    }
+    if (queue->closed) {
+        LeaveCriticalSection(&queue->lock);
+        return 0;
+    }
+    queue->items[queue->tail] = record;
+    queue->tail = (queue->tail + 1u) % queue->capacity;
+    queue->count++;
+    WakeConditionVariable(&queue->not_empty);
+    LeaveCriticalSection(&queue->lock);
+#else
+    pthread_mutex_lock(&queue->lock);
+    while (!queue->closed && queue->count == queue->capacity) {
+        pthread_cond_wait(&queue->not_full, &queue->lock);
+    }
+    if (queue->closed) {
+        pthread_mutex_unlock(&queue->lock);
+        return 0;
+    }
+    queue->items[queue->tail] = record;
+    queue->tail = (queue->tail + 1u) % queue->capacity;
+    queue->count++;
+    pthread_cond_signal(&queue->not_empty);
+    pthread_mutex_unlock(&queue->lock);
+#endif
+    return 1;
+}
+
+static int detection_async_metadata_queue_pop(DetectionAsyncMetadataQueue *queue, DetectionAsyncMetadataRecord **record) {
+    if (!queue || !record) {
+        return -1;
+    }
+    *record = NULL;
+#ifdef _WIN32
+    EnterCriticalSection(&queue->lock);
+    while (!queue->closed && queue->count == 0u) {
+        SleepConditionVariableCS(&queue->not_empty, &queue->lock, INFINITE);
+    }
+    if (queue->count == 0u && queue->closed) {
+        LeaveCriticalSection(&queue->lock);
+        return 0;
+    }
+    *record = queue->items[queue->head];
+    queue->items[queue->head] = NULL;
+    queue->head = (queue->head + 1u) % queue->capacity;
+    queue->count--;
+    WakeConditionVariable(&queue->not_full);
+    LeaveCriticalSection(&queue->lock);
+#else
+    pthread_mutex_lock(&queue->lock);
+    while (!queue->closed && queue->count == 0u) {
+        pthread_cond_wait(&queue->not_empty, &queue->lock);
+    }
+    if (queue->count == 0u && queue->closed) {
+        pthread_mutex_unlock(&queue->lock);
+        return 0;
+    }
+    *record = queue->items[queue->head];
+    queue->items[queue->head] = NULL;
+    queue->head = (queue->head + 1u) % queue->capacity;
+    queue->count--;
+    pthread_cond_signal(&queue->not_full);
+    pthread_mutex_unlock(&queue->lock);
+#endif
+    return 1;
+}
+
+static int detection_async_is_failed(DetectionAsyncContext *ctx) {
+    int failed = 0;
+    if (!ctx) {
+        return 1;
+    }
+#ifdef _WIN32
+    EnterCriticalSection(&ctx->state_lock);
+    failed = ctx->failed;
+    LeaveCriticalSection(&ctx->state_lock);
+#else
+    pthread_mutex_lock(&ctx->state_lock);
+    failed = ctx->failed;
+    pthread_mutex_unlock(&ctx->state_lock);
+#endif
+    return failed;
+}
+
+static void detection_async_fail(DetectionAsyncContext *ctx) {
+    if (!ctx) {
+        return;
+    }
+#ifdef _WIN32
+    EnterCriticalSection(&ctx->state_lock);
+    ctx->failed = 1;
+    LeaveCriticalSection(&ctx->state_lock);
+#else
+    pthread_mutex_lock(&ctx->state_lock);
+    ctx->failed = 1;
+    pthread_mutex_unlock(&ctx->state_lock);
+#endif
+    detection_async_slot_queue_close(&ctx->free_slots);
+    detection_async_slot_queue_close(&ctx->decoded_slots);
+    detection_async_slot_queue_close(&ctx->completed_slots);
+    detection_async_slot_queue_close(&ctx->encode_slots);
+    detection_async_metadata_queue_close(&ctx->free_metadata);
+    detection_async_metadata_queue_close(&ctx->metadata_records);
+}
+
+static void detection_async_slot_clear(DetectionAsyncSlot *slot) {
+    if (!slot) {
+        return;
+    }
+    cuda_nv12_frame_clear(&slot->frame);
+    detection_result_clear(&slot->detections);
+    memset(&slot->timing, 0, sizeof(slot->timing));
+    slot->frame_id = -1;
+    slot->lane = -1;
+    slot->decode_done_wall_ms = 0.0;
+    slot->inference_queued_wall_ms = 0.0;
+    slot->inference_done_wall_ms = 0.0;
+}
+
+static void detection_async_release_and_recycle_slot(DetectionAsyncContext *ctx, DetectionAsyncSlot *slot) {
+    if (!ctx || !slot) {
+        return;
+    }
+    if (slot->frame.av_frame) {
+        video_hw_reader_release_frame(ctx->reader, &slot->frame);
+    }
+    detection_async_slot_clear(slot);
+    if (!detection_async_is_failed(ctx)) {
+        detection_async_slot_queue_push(&ctx->free_slots, slot);
+    }
+}
+
+static int detection_async_copy_result(DetectionResult *dst, const DetectionResult *src) {
+    if (!dst || !src || src->count > dst->capacity) {
+        return -1;
+    }
+    detection_result_clear(dst);
+    for (size_t i = 0; i < src->count; ++i) {
+        if (detection_result_add(dst, &src->items[i]) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void detection_async_finalize_timing(DetectionAsyncContext *ctx, DetectionAsyncSlot *slot) {
+    FrameTiming *timing = &slot->timing;
+    timing->process_ms = timing->upload_ms + timing->preprocess_ms + timing->inference_ms + timing->download_ms + timing->postprocess_ms + timing->overlay_ms;
+    timing->stage_sum_ms = timing->decode_ms + timing->process_ms + timing->encode_ms + timing->mux_write_ms;
+    timing->total_ms = timing->stage_sum_ms;
+    timing->end_to_end_latency_ms = slot->decode_done_wall_ms > 0.0 && ctx->wall_timer
+                                        ? timer_stop_ms(ctx->wall_timer) - (slot->decode_done_wall_ms - timing->decode_ms)
+                                        : timing->total_ms;
+    apply_execution_plan_to_timing(ctx->plan, timing);
+    apply_detection_metadata_to_timing(ctx->config, ctx->info, &slot->detections, 0, 0, timing);
+}
+
+static int detection_async_enqueue_metadata(DetectionAsyncContext *ctx,
+                                            const DetectionResult *detections,
+                                            const FrameTiming *timing,
+                                            int write_detections,
+                                            int write_benchmark) {
+    DetectionAsyncMetadataRecord *record = NULL;
+    int pop_result = 0;
+    if (!ctx || !timing || (!write_detections && !write_benchmark)) {
+        return -1;
+    }
+    pop_result = detection_async_metadata_queue_pop(&ctx->free_metadata, &record);
+    if (pop_result <= 0 || !record) {
+        return -1;
+    }
+    detection_result_clear(&record->detections);
+    if (write_detections && detection_async_copy_result(&record->detections, detections) != 0) {
+        detection_async_metadata_queue_push(&ctx->free_metadata, record);
+        return -1;
+    }
+    record->timing = *timing;
+    record->write_detections = write_detections;
+    record->write_benchmark = write_benchmark;
+    return detection_async_metadata_queue_push(&ctx->metadata_records, record) <= 0 ? -1 : 0;
+}
+
+static int detection_async_pending_insert(PendingAsyncSlotNode **head, DetectionAsyncSlot *slot) {
+    PendingAsyncSlotNode *node = NULL;
+    if (!head || !slot || slot->frame_id < 0) {
+        return -1;
+    }
+    node = (PendingAsyncSlotNode *)calloc(1, sizeof(*node));
+    if (!node) {
+        return -1;
+    }
+    node->slot = slot;
+    node->frame_id = slot->frame_id;
+    if (!*head || node->frame_id < (*head)->frame_id) {
+        node->next = *head;
+        *head = node;
+        return 0;
+    }
+    PendingAsyncSlotNode *cur = *head;
+    while (cur->next && cur->next->frame_id < node->frame_id) {
+        cur = cur->next;
+    }
+    node->next = cur->next;
+    cur->next = node;
+    return 0;
+}
+
+static DetectionAsyncSlot *detection_async_pending_take(PendingAsyncSlotNode **head, int frame_id) {
+    PendingAsyncSlotNode *cur = NULL;
+    PendingAsyncSlotNode *prev = NULL;
+    if (!head) {
+        return NULL;
+    }
+    cur = *head;
+    while (cur) {
+        if (cur->frame_id == frame_id) {
+            DetectionAsyncSlot *slot = cur->slot;
+            if (prev) {
+                prev->next = cur->next;
+            } else {
+                *head = cur->next;
+            }
+            free(cur);
+            return slot;
+        }
+        prev = cur;
+        cur = cur->next;
+    }
+    return NULL;
+}
+
+static void detection_async_pending_release_all(DetectionAsyncContext *ctx, PendingAsyncSlotNode *head) {
+    while (head) {
+        PendingAsyncSlotNode *next = head->next;
+        detection_async_release_and_recycle_slot(ctx, head->slot);
+        free(head);
+        head = next;
+    }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI detection_async_decoder_thread_main(LPVOID arg)
+#else
+static void *detection_async_decoder_thread_main(void *arg)
+#endif
+{
+    DetectionAsyncContext *ctx = (DetectionAsyncContext *)arg;
+    int frame_id = 0;
+    for (;;) {
+        DetectionAsyncSlot *slot = NULL;
+        Timer decode_timer;
+        int read_result = 0;
+        if (!ctx || detection_async_is_failed(ctx) ||
+            (ctx->config->max_frames > 0 && frame_id >= ctx->config->max_frames)) {
+            break;
+        }
+        const int pop_result = detection_async_slot_queue_pop(&ctx->free_slots, &slot);
+        if (pop_result == 0) {
+            break;
+        }
+        if (pop_result < 0 || !slot) {
+            detection_async_fail(ctx);
+            break;
+        }
+        detection_async_slot_clear(slot);
+        timer_start(&decode_timer);
+        read_result = video_hw_reader_read_cuda_nv12(ctx->reader, &slot->frame);
+        slot->timing.decode_ms = timer_stop_ms(&decode_timer);
+        if (read_result == 0) {
+            detection_async_slot_queue_push(&ctx->free_slots, slot);
+            break;
+        }
+        if (read_result < 0) {
+            log_error("failed to decode CUDA/NV12 frame %d: %s", frame_id, video_hw_reader_last_error());
+            detection_async_release_and_recycle_slot(ctx, slot);
+            detection_async_fail(ctx);
+            break;
+        }
+        slot->frame.index = frame_id;
+        slot->frame_id = frame_id;
+        slot->timing.frame_index = frame_id;
+        slot->decode_done_wall_ms = ctx->wall_timer ? timer_stop_ms(ctx->wall_timer) : 0.0;
+        if (detection_async_slot_queue_push(&ctx->decoded_slots, slot) <= 0) {
+            detection_async_release_and_recycle_slot(ctx, slot);
+            break;
+        }
+        frame_id++;
+    }
+    detection_async_slot_queue_close(&ctx->decoded_slots);
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+#ifdef _WIN32
+static DWORD WINAPI detection_async_inference_thread_main(LPVOID arg)
+#else
+static void *detection_async_inference_thread_main(void *arg)
+#endif
+{
+    DetectionAsyncContext *ctx = (DetectionAsyncContext *)arg;
+    DetectionAsyncSlot **lane_slots = NULL;
+    int active_lanes = 0;
+    int decoded_closed = 0;
+    if (!ctx || ctx->lane_count <= 0) {
+        return 0;
+    }
+    lane_slots = (DetectionAsyncSlot **)calloc((size_t)ctx->lane_count, sizeof(*lane_slots));
+    if (!lane_slots) {
+        detection_async_fail(ctx);
+        goto done;
+    }
+
+    for (;;) {
+        int made_progress = 0;
+        if (detection_async_is_failed(ctx)) {
+            break;
+        }
+
+        for (int lane = 0; lane < ctx->lane_count; ++lane) {
+            int ready = 0;
+            DetectionAsyncSlot *slot = lane_slots[lane];
+            if (!slot) {
+                continue;
+            }
+            if (inference_engine_is_lane_ready(ctx->engine, lane, &ready) != 0) {
+                log_error("failed to query async inference lane %d: %s", lane, inference_engine_last_error());
+                detection_async_fail(ctx);
+                goto done;
+            }
+            if (!ready) {
+                continue;
+            }
+            if (inference_engine_finish_lane(ctx->engine, lane, &slot->detections, &slot->timing) != 0) {
+                log_error("failed to finish async inference for frame %d on lane %d: %s",
+                          slot->frame_id,
+                          lane,
+                          inference_engine_last_error());
+                detection_async_fail(ctx);
+                goto done;
+            }
+            slot->inference_done_wall_ms = ctx->wall_timer ? timer_stop_ms(ctx->wall_timer) : 0.0;
+            lane_slots[lane] = NULL;
+            active_lanes--;
+            if (detection_async_slot_queue_push(&ctx->completed_slots, slot) <= 0) {
+                detection_async_release_and_recycle_slot(ctx, slot);
+                detection_async_fail(ctx);
+                goto done;
+            }
+            made_progress = 1;
+        }
+
+        for (int lane = 0; lane < ctx->lane_count && !decoded_closed; ++lane) {
+            DetectionAsyncSlot *slot = NULL;
+            int pop_result = 0;
+            if (lane_slots[lane]) {
+                continue;
+            }
+            pop_result = active_lanes == 0
+                             ? detection_async_slot_queue_pop(&ctx->decoded_slots, &slot)
+                             : detection_async_slot_queue_try_pop(&ctx->decoded_slots, &slot);
+            if (pop_result == 0) {
+                decoded_closed = 1;
+                break;
+            }
+            if (pop_result == 2) {
+                break;
+            }
+            if (pop_result < 0 || !slot) {
+                detection_async_fail(ctx);
+                goto done;
+            }
+            slot->lane = lane;
+            slot->inference_queued_wall_ms = ctx->wall_timer ? timer_stop_ms(ctx->wall_timer) : 0.0;
+            slot->timing.inference_queue_wait_ms = slot->decode_done_wall_ms > 0.0
+                                                       ? slot->inference_queued_wall_ms - slot->decode_done_wall_ms
+                                                       : 0.0;
+            if (inference_engine_submit_cuda_nv12_async(ctx->engine, lane, &slot->frame, &slot->timing) != 0) {
+                log_error("failed to submit async inference for frame %d on lane %d: %s",
+                          slot->frame_id,
+                          lane,
+                          inference_engine_last_error());
+                detection_async_release_and_recycle_slot(ctx, slot);
+                detection_async_fail(ctx);
+                goto done;
+            }
+            lane_slots[lane] = slot;
+            active_lanes++;
+            made_progress = 1;
+        }
+
+        if (decoded_closed && active_lanes == 0) {
+            break;
+        }
+        if (!made_progress) {
+            detection_sleep_millis(1);
+        }
+    }
+
+done:
+    if (lane_slots) {
+        for (int lane = 0; lane < ctx->lane_count; ++lane) {
+            if (lane_slots[lane]) {
+                detection_async_release_and_recycle_slot(ctx, lane_slots[lane]);
+            }
+        }
+    }
+    free(lane_slots);
+    detection_async_slot_queue_close(&ctx->completed_slots);
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+#ifdef _WIN32
+static DWORD WINAPI detection_async_metadata_thread_main(LPVOID arg)
+#else
+static void *detection_async_metadata_thread_main(void *arg)
+#endif
+{
+    DetectionAsyncContext *ctx = (DetectionAsyncContext *)arg;
+    for (;;) {
+        DetectionAsyncMetadataRecord *record = NULL;
+        const int pop_result = detection_async_metadata_queue_pop(&ctx->metadata_records, &record);
+        if (pop_result == 0) {
+            break;
+        }
+        if (pop_result < 0 || !record) {
+            detection_async_fail(ctx);
+            break;
+        }
+        if (record->write_detections && detection_writer_write_frame(ctx->detections, &record->detections) != 0) {
+            log_error("failed to write detections for frame %d", record->timing.frame_index);
+            detection_async_fail(ctx);
+        }
+        if (!detection_async_is_failed(ctx) &&
+            record->write_benchmark &&
+            ctx->config->enable_benchmark &&
+            benchmark_add_frame_result(ctx->benchmark, &record->timing) != 0) {
+            log_error("failed to write benchmark timing for frame %d", record->timing.frame_index);
+            detection_async_fail(ctx);
+        }
+        detection_result_clear(&record->detections);
+        record->write_detections = 0;
+        record->write_benchmark = 0;
+        detection_async_metadata_queue_push(&ctx->free_metadata, record);
+        if (detection_async_is_failed(ctx)) {
+            break;
+        }
+    }
+#ifdef _WIN32
+    EnterCriticalSection(&ctx->state_lock);
+    ctx->metadata_thread_done = 1;
+    LeaveCriticalSection(&ctx->state_lock);
+    return 0;
+#else
+    pthread_mutex_lock(&ctx->state_lock);
+    ctx->metadata_thread_done = 1;
+    pthread_mutex_unlock(&ctx->state_lock);
+    return NULL;
+#endif
+}
+
+#ifdef _WIN32
+static DWORD WINAPI detection_async_encode_thread_main(LPVOID arg)
+#else
+static void *detection_async_encode_thread_main(void *arg)
+#endif
+{
+    DetectionAsyncContext *ctx = (DetectionAsyncContext *)arg;
+    CudaOverlayContext overlay;
+    cuda_overlay_context_init(&overlay);
+    if (ctx->config->draw_boxes &&
+        cuda_overlay_context_alloc(&overlay, (size_t)ctx->config->max_detections_per_frame) != 0) {
+        log_error("failed to allocate CUDA overlay context: %s", cuda_overlay_last_error());
+        detection_async_fail(ctx);
+    }
+    for (;;) {
+        DetectionAsyncSlot *slot = NULL;
+        const int pop_result = detection_async_slot_queue_pop(&ctx->encode_slots, &slot);
+        if (pop_result == 0) {
+            break;
+        }
+        if (pop_result < 0 || !slot) {
+            detection_async_fail(ctx);
+            break;
+        }
+        if (!detection_async_is_failed(ctx)) {
+            if (cuda_overlay_draw_nv12_boxes_with_context(&overlay,
+                                                          &slot->frame,
+                                                          &slot->detections,
+                                                          ctx->config->box_thickness,
+                                                          ctx->config->box_confidence,
+                                                          -1,
+                                                          slot->frame.cuda_stream,
+                                                          &slot->timing.overlay_ms) != 0) {
+                log_error("failed to draw detection boxes on frame %d: %s", slot->frame_id, cuda_overlay_last_error());
+                detection_async_fail(ctx);
+            }
+        }
+        if (!detection_async_is_failed(ctx) &&
+            video_hw_writer_write_cuda_nv12(ctx->writer, &slot->frame, &slot->timing) != 0) {
+            log_error("failed to encode annotated frame %d: %s", slot->frame_id, video_hw_writer_last_error());
+            detection_async_fail(ctx);
+        }
+        if (!detection_async_is_failed(ctx)) {
+            detection_async_finalize_timing(ctx, slot);
+            if (detection_async_enqueue_metadata(ctx, &slot->detections, &slot->timing, 0, ctx->config->enable_benchmark) != 0) {
+                log_error("failed to enqueue benchmark metadata for frame %d", slot->frame_id);
+                detection_async_fail(ctx);
+            }
+        }
+        detection_async_release_and_recycle_slot(ctx, slot);
+        if (detection_async_is_failed(ctx)) {
+            break;
+        }
+    }
+    cuda_overlay_context_free(&overlay);
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+static int detection_async_emit_ordered_slot(DetectionAsyncContext *ctx, DetectionAsyncSlot *slot) {
+    const int frame_id = slot->frame_id;
+    const double timestamp_ms = slot->frame.timestamp_ms > 0.0
+                                    ? slot->frame.timestamp_ms
+                                    : (ctx->info && ctx->info->fps > 0.0 ? (double)frame_id * 1000.0 / ctx->info->fps : 0.0);
+    for (size_t i = 0; i < slot->detections.count; ++i) {
+        slot->detections.items[i].timestamp_ms = timestamp_ms;
+    }
+    slot->timing.output_reorder_wait_ms = slot->inference_done_wall_ms > 0.0 && ctx->wall_timer
+                                              ? timer_stop_ms(ctx->wall_timer) - slot->inference_done_wall_ms
+                                              : 0.0;
+
+    if (detection_async_enqueue_metadata(ctx, &slot->detections, &slot->timing, 1, 0) != 0) {
+        log_error("failed to enqueue detection metadata for frame %d", frame_id);
+        detection_async_fail(ctx);
+        return -1;
+    }
+
+    if (ctx->config->draw_boxes) {
+        if (detection_async_slot_queue_push(&ctx->encode_slots, slot) <= 0) {
+            detection_async_release_and_recycle_slot(ctx, slot);
+            detection_async_fail(ctx);
+            return -1;
+        }
+    } else {
+        detection_async_finalize_timing(ctx, slot);
+        if (detection_async_enqueue_metadata(ctx, &slot->detections, &slot->timing, 0, ctx->config->enable_benchmark) != 0) {
+            log_error("failed to enqueue benchmark metadata for frame %d", frame_id);
+            detection_async_release_and_recycle_slot(ctx, slot);
+            detection_async_fail(ctx);
+            return -1;
+        }
+        detection_async_release_and_recycle_slot(ctx, slot);
+    }
+
+    if (ctx->config->progress_interval > 0 && (frame_id + 1) % ctx->config->progress_interval == 0) {
+        const double wall_ms = timer_stop_ms(ctx->wall_timer);
+        const double fps = wall_ms > 0.0 ? (double)(frame_id + 1) * 1000.0 / wall_ms : 0.0;
+        log_info("progress: completed %d async hardware detection frames, wall_clock_fps=%.3f", frame_id + 1, fps);
+    }
+    ctx->next_output_frame_id++;
+    return 0;
+}
+
+static int detection_async_output_slot_ordered(DetectionAsyncContext *ctx, PendingAsyncSlotNode **pending, DetectionAsyncSlot *slot) {
+    if (!ctx || !pending || !slot) {
+        return -1;
+    }
+    if (slot->frame_id == ctx->next_output_frame_id) {
+        if (detection_async_emit_ordered_slot(ctx, slot) != 0) {
+            return -1;
+        }
+        for (;;) {
+            DetectionAsyncSlot *ready = detection_async_pending_take(pending, ctx->next_output_frame_id);
+            if (!ready) {
+                break;
+            }
+            if (detection_async_emit_ordered_slot(ctx, ready) != 0) {
+                return -1;
+            }
+        }
+        return 0;
+    }
+    if (detection_async_pending_insert(pending, slot) != 0) {
+        detection_async_release_and_recycle_slot(ctx, slot);
+        detection_async_fail(ctx);
+        return -1;
+    }
+    return 0;
+}
+
 static double bytes_to_mib(size_t bytes) {
     return (double)bytes / (1024.0 * 1024.0);
 }
@@ -1503,10 +2448,7 @@ static size_t nv12_frame_bytes_for_info(const VideoInfo *info) {
 }
 
 static void timing_copy_string(char *dst, size_t dst_size, const char *src) {
-    if (!dst || dst_size == 0u) {
-        return;
-    }
-    snprintf(dst, dst_size, "%s", src ? src : "");
+    vcp_copy_string_truncated /* module: utils/c_runtime */ (dst, dst_size, src ? src : "");
 }
 
 static void apply_execution_plan_to_timing(const PipelineExecutionPlan *plan, FrameTiming *timing) {
@@ -2010,7 +2952,503 @@ cleanup:
     return result_code;
 }
 
+static int run_detection_pipeline_nvdec_cuda_async(const PipelineConfig *config) {
+    if (validate_detection_paths(config) != 0) {
+        return -1;
+    }
+
+    int result_code = -1;
+    int reader_opened = 0;
+    int benchmark_opened = 0;
+    int detections_opened = 0;
+    int writer_opened = 0;
+    int queues_initialized = 0;
+    int state_lock_initialized = 0;
+    int decoder_started = 0;
+    int inference_started = 0;
+    int metadata_started = 0;
+    int encode_started = 0;
+    int slots_allocated = 0;
+    int metadata_allocated = 0;
+    VideoHWReader reader;
+    VideoHWWriter writer;
+    Benchmark benchmark;
+    DetectionWriter detections;
+    InferenceEngine *engine = NULL;
+    DetectionAsyncSlot *slots = NULL;
+    DetectionAsyncMetadataRecord *metadata_records = NULL;
+#ifdef _WIN32
+    HANDLE decoder_thread = NULL;
+    HANDLE inference_thread = NULL;
+    HANDLE metadata_thread = NULL;
+    HANDLE encode_thread = NULL;
+#else
+    pthread_t decoder_thread;
+    pthread_t inference_thread;
+    pthread_t metadata_thread;
+    pthread_t encode_thread;
+#endif
+    HardwareProfile hardware;
+    PipelineExecutionPlan plan;
+    Timer wall_timer;
+    DetectionAsyncContext async_ctx;
+    PendingAsyncSlotNode *pending = NULL;
+    int active_batches = 1;
+    int schedule_batch_size = 1;
+    int active_frame_capacity = 1;
+    int lane_count = 1;
+    int max_async_lanes = 0;
+    int metadata_capacity = 0;
+    int encode_queue_capacity = 1;
+
+    memset(&reader, 0, sizeof(reader));
+    memset(&writer, 0, sizeof(writer));
+    memset(&async_ctx, 0, sizeof(async_ctx));
+    benchmark_init(&benchmark);
+    detection_writer_init(&detections);
+    hardware_profile_init(&hardware);
+    pipeline_execution_plan_init(&plan);
+
+    int effective_decoder_threads = config->decoder_threads;
+    if ((config->memory_profile == MEMORY_PROFILE_LOW || config->memory_profile == MEMORY_PROFILE_AUTO) &&
+        effective_decoder_threads > 2) {
+        effective_decoder_threads = 2;
+    }
+
+    if (video_set_ffmpeg_log_level(config->ffmpeg_log_level) != 0) {
+        log_error("invalid FFmpeg log level: %s", config->ffmpeg_log_level);
+        goto cleanup;
+    }
+    if (video_hw_reader_open(&reader, config->input_path, effective_decoder_threads) != 0) {
+        log_error("failed to open NVDEC reader: %s", video_hw_reader_last_error());
+        goto cleanup;
+    }
+    reader_opened = 1;
+
+    const VideoInfo *info = video_hw_reader_get_info(&reader);
+    if (!info) {
+        log_error("failed to read hardware input video info");
+        goto cleanup;
+    }
+
+    if (detection_writer_open(&detections, config->detections_path, config->labels_path) != 0) {
+        log_error("failed to open detections CSV: %s", config->detections_path);
+        goto cleanup;
+    }
+    detections_opened = 1;
+
+    if (config->enable_benchmark &&
+        benchmark_open_csv_with_schema(&benchmark, config->benchmark_path, BENCHMARK_SCHEMA_DETECTION) != 0) {
+        log_error("failed to open benchmark CSV: %s", config->benchmark_path);
+        goto cleanup;
+    }
+    benchmark_opened = config->enable_benchmark ? 1 : 0;
+
+    InferenceConfig inference_config;
+    fill_inference_config_from_pipeline(config, &inference_config);
+    detection_profile_hardware_before_engine(config, &hardware);
+    if (inference_engine_create(&engine, &inference_config) != 0) {
+        log_error("failed to create inference engine: %s", inference_engine_last_error());
+        goto cleanup;
+    }
+    detection_profile_hardware_after_engine(config, &hardware);
+
+    max_async_lanes = inference_engine_get_async_lane_count(engine);
+    if (max_async_lanes <= 0) {
+        log_warn("selected runtime does not expose async CUDA inference lanes; using blocking hardware pipeline");
+        result_code = -2;
+        goto cleanup;
+    }
+
+    if (detection_build_execution_plan(config, info, FRAME_FORMAT_NV12, 0, 0, &hardware, engine, &plan) != 0) {
+        goto cleanup;
+    }
+
+    schedule_batch_size = plan.schedule_batch_size > 0 ? plan.schedule_batch_size : plan.batch_size;
+    if (schedule_batch_size <= 0) {
+        schedule_batch_size = 1;
+    }
+    active_batches = plan.inflight_batches > 0 ? plan.inflight_batches : 1;
+    if (active_batches <= 0) {
+        active_batches = 1;
+    }
+    active_frame_capacity = schedule_batch_size * active_batches;
+    if (active_frame_capacity <= 0) {
+        active_frame_capacity = 1;
+    }
+    lane_count = plan.inference_lane_count > 0 ? plan.inference_lane_count : plan.inference_context_count;
+    if (lane_count <= 0) {
+        lane_count = 1;
+    }
+    if (lane_count > max_async_lanes) {
+        if (config->parallel_inference_mode == PIPELINE_FEATURE_ON) {
+            log_error("requested %d async inference lanes but backend exposes only %d", lane_count, max_async_lanes);
+            goto cleanup;
+        }
+        lane_count = max_async_lanes;
+    }
+    if (lane_count > active_frame_capacity) {
+        lane_count = active_frame_capacity;
+    }
+    if (lane_count <= 0) {
+        lane_count = 1;
+    }
+
+    plan.schedule_batch_size = schedule_batch_size;
+    plan.batch_size = schedule_batch_size;
+    plan.inflight_batches = active_batches;
+    plan.total_active_frames = active_frame_capacity;
+    plan.active_frame_capacity = active_frame_capacity;
+    plan.inference_context_count = lane_count;
+    plan.inference_lane_count = lane_count;
+    plan.parallel_inference_enabled = lane_count > 1 ? 1 : 0;
+    plan.inference_serialized = lane_count > 1 ? 0 : 1;
+    plan.execution_mode = lane_count > 1 ? 3 : (plan.pipeline_overlap_enabled ? 2 : plan.execution_mode);
+
+    if (config->enable_auto_tune || config->batch_size_mode == BATCH_SETTING_AUTO || config->batch_size > 1) {
+        hardware_profile_print(&hardware);
+        pipeline_execution_plan_print(&plan);
+    }
+
+    if (config->draw_boxes) {
+        if (video_hw_writer_open(&writer, config->output_path, info, config->encoder_name, config->lossless_output) != 0) {
+            log_error("failed to open NVENC writer: %s", video_hw_writer_last_error());
+            goto cleanup;
+        }
+        writer_opened = 1;
+    }
+
+    slots = (DetectionAsyncSlot *)calloc((size_t)active_frame_capacity, sizeof(*slots));
+    if (!slots) {
+        log_error("failed to allocate async frame slots");
+        goto cleanup;
+    }
+    for (int i = 0; i < active_frame_capacity; ++i) {
+        cuda_nv12_frame_init(&slots[i].frame);
+        detection_result_init(&slots[i].detections);
+        if (detection_result_alloc(&slots[i].detections, (size_t)config->max_detections_per_frame) != 0) {
+            log_error("failed to allocate async detection result slot");
+            goto cleanup;
+        }
+        slots[i].frame_id = -1;
+        slots[i].lane = -1;
+        slots_allocated++;
+    }
+
+    metadata_capacity = active_frame_capacity * (config->draw_boxes ? 2 : 2) + 4;
+    metadata_records = (DetectionAsyncMetadataRecord *)calloc((size_t)metadata_capacity, sizeof(*metadata_records));
+    if (!metadata_records) {
+        log_error("failed to allocate async metadata records");
+        goto cleanup;
+    }
+    for (int i = 0; i < metadata_capacity; ++i) {
+        detection_result_init(&metadata_records[i].detections);
+        if (detection_result_alloc(&metadata_records[i].detections, (size_t)config->max_detections_per_frame) != 0) {
+            log_error("failed to allocate async metadata detection result");
+            goto cleanup;
+        }
+        metadata_allocated++;
+    }
+
+    encode_queue_capacity = active_batches < 2 ? 1 : 2;
+    if (detection_async_slot_queue_init(&async_ctx.free_slots, (size_t)active_frame_capacity) != 0 ||
+        detection_async_slot_queue_init(&async_ctx.decoded_slots, (size_t)active_frame_capacity) != 0 ||
+        detection_async_slot_queue_init(&async_ctx.completed_slots, (size_t)active_frame_capacity) != 0 ||
+        detection_async_slot_queue_init(&async_ctx.encode_slots, (size_t)encode_queue_capacity) != 0 ||
+        detection_async_metadata_queue_init(&async_ctx.free_metadata, (size_t)metadata_capacity) != 0 ||
+        detection_async_metadata_queue_init(&async_ctx.metadata_records, (size_t)metadata_capacity) != 0) {
+        log_error("failed to initialize async detection queues");
+        goto cleanup;
+    }
+    queues_initialized = 1;
+
+    async_ctx.config = config;
+    async_ctx.reader = &reader;
+    async_ctx.info = info;
+    async_ctx.detections = &detections;
+    async_ctx.writer = &writer;
+    async_ctx.benchmark = &benchmark;
+    async_ctx.engine = engine;
+    async_ctx.plan = &plan;
+    async_ctx.writer_opened = writer_opened;
+    async_ctx.benchmark_opened = benchmark_opened;
+    async_ctx.next_output_frame_id = 0;
+    async_ctx.lane_count = lane_count;
+    async_ctx.wall_timer = &wall_timer;
+#ifdef _WIN32
+    InitializeCriticalSection(&async_ctx.state_lock);
+#else
+    pthread_mutex_init(&async_ctx.state_lock, NULL);
+#endif
+    state_lock_initialized = 1;
+
+    for (int i = 0; i < active_frame_capacity; ++i) {
+        if (detection_async_slot_queue_push(&async_ctx.free_slots, &slots[i]) <= 0) {
+            log_error("failed to seed async free slot queue");
+            goto cleanup;
+        }
+    }
+    for (int i = 0; i < metadata_capacity; ++i) {
+        if (detection_async_metadata_queue_push(&async_ctx.free_metadata, &metadata_records[i]) <= 0) {
+            log_error("failed to seed async metadata record queue");
+            goto cleanup;
+        }
+    }
+
+    log_info("async hardware detection pipeline: decoder=nvdec runtime=%s draw_boxes=%s encoder=%s active_slots=%d schedule_batch=%d inflight_batches=%d inference_lanes=%d metadata_queue=%d encode_queue=%d",
+             inference_runtime_to_string(config->runtime),
+             config->draw_boxes ? "true" : "false",
+             config->draw_boxes ? config->encoder_name : "none",
+             active_frame_capacity,
+             schedule_batch_size,
+             active_batches,
+             lane_count,
+             metadata_capacity,
+             config->draw_boxes ? encode_queue_capacity : 0);
+    timer_start(&wall_timer);
+
+#ifdef _WIN32
+    metadata_thread = CreateThread(NULL, 0, detection_async_metadata_thread_main, &async_ctx, 0, NULL);
+    if (!metadata_thread) {
+        log_error("failed to start async metadata writer thread");
+        detection_async_fail(&async_ctx);
+        goto cleanup;
+    }
+    metadata_started = 1;
+    if (config->draw_boxes) {
+        encode_thread = CreateThread(NULL, 0, detection_async_encode_thread_main, &async_ctx, 0, NULL);
+        if (!encode_thread) {
+            log_error("failed to start async encoder thread");
+            detection_async_fail(&async_ctx);
+            goto cleanup;
+        }
+        encode_started = 1;
+    }
+    decoder_thread = CreateThread(NULL, 0, detection_async_decoder_thread_main, &async_ctx, 0, NULL);
+    if (!decoder_thread) {
+        log_error("failed to start async decoder thread");
+        detection_async_fail(&async_ctx);
+        goto cleanup;
+    }
+    decoder_started = 1;
+    inference_thread = CreateThread(NULL, 0, detection_async_inference_thread_main, &async_ctx, 0, NULL);
+    if (!inference_thread) {
+        log_error("failed to start async inference scheduler thread");
+        detection_async_fail(&async_ctx);
+        goto cleanup;
+    }
+    inference_started = 1;
+#else
+    if (pthread_create(&metadata_thread, NULL, detection_async_metadata_thread_main, &async_ctx) != 0) {
+        log_error("failed to start async metadata writer thread");
+        detection_async_fail(&async_ctx);
+        goto cleanup;
+    }
+    metadata_started = 1;
+    if (config->draw_boxes) {
+        if (pthread_create(&encode_thread, NULL, detection_async_encode_thread_main, &async_ctx) != 0) {
+            log_error("failed to start async encoder thread");
+            detection_async_fail(&async_ctx);
+            goto cleanup;
+        }
+        encode_started = 1;
+    }
+    if (pthread_create(&decoder_thread, NULL, detection_async_decoder_thread_main, &async_ctx) != 0) {
+        log_error("failed to start async decoder thread");
+        detection_async_fail(&async_ctx);
+        goto cleanup;
+    }
+    decoder_started = 1;
+    if (pthread_create(&inference_thread, NULL, detection_async_inference_thread_main, &async_ctx) != 0) {
+        log_error("failed to start async inference scheduler thread");
+        detection_async_fail(&async_ctx);
+        goto cleanup;
+    }
+    inference_started = 1;
+#endif
+
+    for (;;) {
+        DetectionAsyncSlot *completed = NULL;
+        const int pop_result = detection_async_slot_queue_pop(&async_ctx.completed_slots, &completed);
+        if (pop_result == 0) {
+            break;
+        }
+        if (pop_result < 0 || !completed) {
+            detection_async_fail(&async_ctx);
+            break;
+        }
+        if (detection_async_output_slot_ordered(&async_ctx, &pending, completed) != 0) {
+            break;
+        }
+    }
+
+    if (pending) {
+        log_error("async detection output ended with out-of-order pending frames");
+        detection_async_fail(&async_ctx);
+    }
+
+    detection_async_slot_queue_close(&async_ctx.encode_slots);
+
+#ifdef _WIN32
+    if (decoder_started) {
+        WaitForSingleObject(decoder_thread, INFINITE);
+        CloseHandle(decoder_thread);
+        decoder_thread = NULL;
+        decoder_started = 0;
+    }
+    if (inference_started) {
+        WaitForSingleObject(inference_thread, INFINITE);
+        CloseHandle(inference_thread);
+        inference_thread = NULL;
+        inference_started = 0;
+    }
+    if (encode_started) {
+        WaitForSingleObject(encode_thread, INFINITE);
+        CloseHandle(encode_thread);
+        encode_thread = NULL;
+        encode_started = 0;
+    }
+#else
+    if (decoder_started) {
+        pthread_join(decoder_thread, NULL);
+        decoder_started = 0;
+    }
+    if (inference_started) {
+        pthread_join(inference_thread, NULL);
+        inference_started = 0;
+    }
+    if (encode_started) {
+        pthread_join(encode_thread, NULL);
+        encode_started = 0;
+    }
+#endif
+
+    detection_async_metadata_queue_close(&async_ctx.metadata_records);
+#ifdef _WIN32
+    if (metadata_started) {
+        WaitForSingleObject(metadata_thread, INFINITE);
+        CloseHandle(metadata_thread);
+        metadata_thread = NULL;
+        metadata_started = 0;
+    }
+#else
+    if (metadata_started) {
+        pthread_join(metadata_thread, NULL);
+        metadata_started = 0;
+    }
+#endif
+
+    if (detection_async_is_failed(&async_ctx)) {
+        goto cleanup;
+    }
+    if (writer_opened && video_hw_writer_flush(&writer) != 0) {
+        log_error("failed to flush NVENC writer: %s", video_hw_writer_last_error());
+        goto cleanup;
+    }
+    if (config->enable_benchmark) {
+        benchmark_set_wall_clock_ms(&benchmark, timer_stop_ms(&wall_timer));
+        if (benchmark_close_csv(&benchmark) != 0) {
+            log_error("failed to close benchmark CSV: %s", config->benchmark_path);
+            goto cleanup;
+        }
+        benchmark_opened = 0;
+        benchmark_print_detection_summary(&benchmark);
+    }
+    result_code = 0;
+
+cleanup:
+    if (result_code != -2 && state_lock_initialized) {
+        detection_async_fail(&async_ctx);
+    }
+#ifdef _WIN32
+    if (decoder_started && decoder_thread) {
+        WaitForSingleObject(decoder_thread, INFINITE);
+        CloseHandle(decoder_thread);
+    }
+    if (inference_started && inference_thread) {
+        WaitForSingleObject(inference_thread, INFINITE);
+        CloseHandle(inference_thread);
+    }
+    if (encode_started && encode_thread) {
+        WaitForSingleObject(encode_thread, INFINITE);
+        CloseHandle(encode_thread);
+    }
+    if (metadata_started && metadata_thread) {
+        WaitForSingleObject(metadata_thread, INFINITE);
+        CloseHandle(metadata_thread);
+    }
+#else
+    if (decoder_started) {
+        pthread_join(decoder_thread, NULL);
+    }
+    if (inference_started) {
+        pthread_join(inference_thread, NULL);
+    }
+    if (encode_started) {
+        pthread_join(encode_thread, NULL);
+    }
+    if (metadata_started) {
+        pthread_join(metadata_thread, NULL);
+    }
+#endif
+    detection_async_pending_release_all(&async_ctx, pending);
+    pending = NULL;
+    if (slots) {
+        for (int i = 0; i < slots_allocated; ++i) {
+            if (slots[i].frame.av_frame) {
+                video_hw_reader_release_frame(&reader, &slots[i].frame);
+            }
+            detection_result_free(&slots[i].detections);
+        }
+    }
+    if (metadata_records) {
+        for (int i = 0; i < metadata_allocated; ++i) {
+            detection_result_free(&metadata_records[i].detections);
+        }
+    }
+    if (queues_initialized) {
+        detection_async_slot_queue_destroy(&async_ctx.free_slots);
+        detection_async_slot_queue_destroy(&async_ctx.decoded_slots);
+        detection_async_slot_queue_destroy(&async_ctx.completed_slots);
+        detection_async_slot_queue_destroy(&async_ctx.encode_slots);
+        detection_async_metadata_queue_destroy(&async_ctx.free_metadata);
+        detection_async_metadata_queue_destroy(&async_ctx.metadata_records);
+    }
+    if (benchmark_opened) {
+        benchmark_close_csv(&benchmark);
+    }
+    if (detections_opened) {
+        detection_writer_close(&detections);
+    }
+    if (writer_opened) {
+        video_hw_writer_close(&writer);
+    }
+    if (state_lock_initialized) {
+#ifdef _WIN32
+        DeleteCriticalSection(&async_ctx.state_lock);
+#else
+        pthread_mutex_destroy(&async_ctx.state_lock);
+#endif
+    }
+    inference_engine_destroy(engine);
+    benchmark_free(&benchmark);
+    if (reader_opened) {
+        video_hw_reader_close(&reader);
+    }
+    free(slots);
+    free(metadata_records);
+    return result_code;
+}
+
 static int run_detection_pipeline_nvdec_cuda(const PipelineConfig *config) {
+    const int async_result = run_detection_pipeline_nvdec_cuda_async(config);
+    if (async_result == -2) {
+        return run_detection_pipeline_nvdec_cuda_blocking(config);
+    }
+    return async_result;
+}
+
+static int run_detection_pipeline_nvdec_cuda_blocking(const PipelineConfig *config) {
     if (validate_detection_paths /* module: pipeline/pipeline_runner */ (config) != 0) {
         return -1;
     }
@@ -2028,8 +3466,8 @@ static int run_detection_pipeline_nvdec_cuda(const PipelineConfig *config) {
     VideoHWWriter writer;
     Benchmark benchmark;
     DetectionWriter detections;
-    InferenceEngine *engine = NULL;
-    InferenceEngine **worker_engines = NULL;
+    InferenceEngine *engine = NULL;           //used to create and initialize each engine seperately
+    InferenceEngine **worker_engines = NULL;  // one single stograge location for each created engine
     FrameBatch *batches = NULL;
     DetectionInferenceWorkerArgs *worker_args = NULL;
 #ifdef _WIN32
@@ -2095,11 +3533,14 @@ static int run_detection_pipeline_nvdec_cuda(const PipelineConfig *config) {
 
     InferenceConfig inference_config;
     fill_inference_config_from_pipeline /* module: pipeline/pipeline_runner */ (config, &inference_config);
+
     detection_profile_hardware_before_engine /* module: pipeline/pipeline_runner */ (config, &hardware);
+
     if (inference_engine_create /* module: inference/inference_engine */ (&engine, &inference_config) != 0) {
         log_error /* module: utils/logger */ ("failed to create inference engine: %s", inference_engine_last_error /* module: inference/inference_engine */ ());
         goto cleanup;
     }
+
     detection_profile_hardware_after_engine /* module: pipeline/pipeline_runner */ (config, &hardware);
 
     if (detection_build_execution_plan /* module: pipeline/pipeline_runner */ (config,
@@ -2453,10 +3894,15 @@ static int run_detection_pipeline(const PipelineConfig *config) {
     }
 
     if (topology.inference_device == DETECTION_INFERENCE_CUDA) {
+
         const int nvdec_result = run_detection_pipeline_nvdec_cuda /* module: pipeline/pipeline_runner */ (config);
+
         if (nvdec_result == 0 || config->decoder_fallback == DECODER_FALLBACK_NONE) {
+            /*if nvdec-cuda path succeeds or decoder fallback is none return the result of run_detection_pipeline_nvdec_cuda(config)*/
+
             return nvdec_result;
         }
+        /*pipeline will only move ahead of this point if decoder fallback is allowed and nvdec-cuda pipeline fails*/
         if (config->draw_boxes) {
             log_error /* module: utils/logger */ ("NVDEC CUDA detection path failed and annotated output requires the GPU-resident path; rerun without --draw-boxes for CSV-only CPU fallback");
             return nvdec_result;
@@ -2464,7 +3910,7 @@ static int run_detection_pipeline(const PipelineConfig *config) {
         log_warn /* module: utils/logger */ ("NVDEC CUDA detection path failed; falling back to CPU decoder while keeping backend-device=cuda");
         return run_detection_pipeline_cpu_decoded /* module: pipeline/pipeline_runner */ (config);
     }
-
+    /*standalone C block for segregating code*/
     {
         const int nvdec_cpu_result = run_detection_pipeline_nvdec_cpu /* module: pipeline/pipeline_runner */ (config);
         if (nvdec_cpu_result == 0 || config->decoder_fallback == DECODER_FALLBACK_NONE) {

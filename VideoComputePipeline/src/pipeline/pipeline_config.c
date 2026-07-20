@@ -5,6 +5,7 @@
  */
 #include "pipeline/pipeline_config.h"
 #include "inference/backend_registry.h"
+#include "utils/c_runtime.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -26,13 +27,7 @@ static void set_parse_error(const char *fmt, ...) {
 }
 
 static int copy_path(char *dst, size_t dst_size, const char *src) {
-    /*basic wrapper for "strcpy" used for path copying */
-    if (!dst || !src || strlen(src) >= dst_size) {
-        return -1;
-    }
-
-    strcpy(dst, src);
-    return 0;
+    return vcp_copy_string /* module: utils/c_runtime */ (dst, dst_size, src);
 }
 
 static const char *mode_to_string(ProcessMode mode) {

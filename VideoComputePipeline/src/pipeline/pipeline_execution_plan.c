@@ -4,6 +4,7 @@
  * inference capability, and hardware profile data.
  */
 #include "pipeline/pipeline_execution_plan.h"
+#include "utils/c_runtime.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -31,7 +32,9 @@ void pipeline_execution_plan_init(PipelineExecutionPlan *plan) {
     plan->inference_context_count = 1;
     plan->inference_lane_count = 1;
     plan->inference_serialized = 1;
-    strcpy(plan->fallback_reason, "default single-frame execution");
+    vcp_copy_string /* module: utils/c_runtime */ (plan->fallback_reason,
+                                                   sizeof(plan->fallback_reason),
+                                                   "default single-frame execution");
 }
 
 static size_t estimate_per_frame_gpu_bytes(const VideoProfile *video, const InferenceBatchCapability *capability) {

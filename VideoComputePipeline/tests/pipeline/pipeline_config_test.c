@@ -1,4 +1,5 @@
 #include "pipeline/pipeline_config.h"
+#include "utils/c_runtime.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -378,7 +379,9 @@ static int pipeline_config_test_detect_summary(void) {
     config.class_filter_id_count = 1;
     config.class_filter_ids[0] = 0;
     config.class_filter_name_count = 1;
-    strcpy(config.class_filter_names[0], "car");
+    vcp_copy_string /* module: utils/c_runtime */ (config.class_filter_names[0],
+                                                   sizeof(config.class_filter_names[0]),
+                                                   "car");
 
     TEST_ASSERT(pipeline_config_format_summary /* module: pipeline/pipeline_config */ (&config, summary, sizeof(summary)) == 0);
     TEST_ASSERT(strstr(summary, "task: detect") != NULL);

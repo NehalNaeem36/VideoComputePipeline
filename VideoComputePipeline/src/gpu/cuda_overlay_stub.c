@@ -7,6 +7,39 @@
 
 static const char *g_last_error = "CUDA overlay backend was not built";
 
+void cuda_overlay_context_init(CudaOverlayContext *ctx) {
+    if (!ctx) {
+        return;
+    }
+    ctx->d_detections = NULL;
+    ctx->start_event = NULL;
+    ctx->stop_event = NULL;
+    ctx->capacity = 0u;
+}
+
+int cuda_overlay_context_alloc(CudaOverlayContext *ctx, size_t max_detections) {
+    (void)ctx;
+    (void)max_detections;
+    g_last_error = "CUDA overlay backend was not built";
+    return -1;
+}
+
+void cuda_overlay_context_free(CudaOverlayContext *ctx) {
+    cuda_overlay_context_init(ctx);
+}
+
+int cuda_overlay_draw_nv12_boxes_with_context(CudaOverlayContext *ctx,
+                                              CudaNV12Frame *frame,
+                                              const DetectionResult *detections,
+                                              int thickness,
+                                              float min_confidence,
+                                              int class_filter,
+                                              void *cuda_stream,
+                                              double *overlay_ms) {
+    (void)ctx;
+    return cuda_overlay_draw_nv12_boxes(frame, detections, thickness, min_confidence, class_filter, cuda_stream, overlay_ms);
+}
+
 int cuda_overlay_draw_nv12_boxes(CudaNV12Frame *frame,
                                  const DetectionResult *detections,
                                  int thickness,

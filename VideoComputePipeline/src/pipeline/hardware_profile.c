@@ -4,6 +4,7 @@
  * information to choose batch, in-flight, and inference-context settings.
  */
 #include "pipeline/hardware_profile.h"
+#include "utils/c_runtime.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -18,7 +19,9 @@ void hardware_profile_init(HardwareProfile *profile) {
     }
     memset(profile, 0, sizeof(*profile));
     profile->cuda_device_id = 0;
-    strcpy(profile->gpu_name, "unavailable");
+    vcp_copy_string /* module: utils/c_runtime */ (profile->gpu_name,
+                                                   sizeof(profile->gpu_name),
+                                                   "unavailable");
 }
 
 #ifdef VCP_ENABLE_CUDA_INFERENCE

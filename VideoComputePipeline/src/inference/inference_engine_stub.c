@@ -61,6 +61,39 @@ int inference_engine_set_parallel_contexts(InferenceEngine *engine, int context_
     return -1;
 }
 
+int inference_engine_get_async_lane_count(InferenceEngine *engine) {
+    (void)engine;
+    return 0;
+}
+
+int inference_engine_submit_cuda_nv12_async(InferenceEngine *engine, int lane, const CudaNV12Frame *frame, FrameTiming *timing) {
+    (void)engine;
+    (void)lane;
+    (void)frame;
+    (void)timing;
+    g_last_error = "CUDA/TensorRT inference backend was not built";
+    return -1;
+}
+
+int inference_engine_is_lane_ready(InferenceEngine *engine, int lane, int *ready) {
+    (void)engine;
+    (void)lane;
+    if (ready) {
+        *ready = 0;
+    }
+    g_last_error = "CUDA/TensorRT inference backend was not built";
+    return -1;
+}
+
+int inference_engine_finish_lane(InferenceEngine *engine, int lane, DetectionResult *result, FrameTiming *timing) {
+    (void)engine;
+    (void)lane;
+    (void)result;
+    (void)timing;
+    g_last_error = "CUDA/TensorRT inference backend was not built";
+    return -1;
+}
+
 int inference_engine_run_nv12(InferenceEngine *engine, const Frame *frame, DetectionResult *result, FrameTiming *timing) {
     (void)engine;
     (void)frame;

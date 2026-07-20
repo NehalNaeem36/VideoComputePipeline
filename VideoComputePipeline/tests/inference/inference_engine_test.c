@@ -1,4 +1,5 @@
 #include "inference/inference_engine.h"
+#include "utils/c_runtime.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +19,9 @@ int main(void) {
     config.use_fp16 = 1;
 
 #ifdef VCP_ENABLE_CUDA_INFERENCE
-    strcpy(config.model_path, "models/does_not_exist.engine");
+    vcp_copy_string /* module: utils/c_runtime */ (config.model_path,
+                                                   sizeof(config.model_path),
+                                                   "models/does_not_exist.engine");
     TEST_ASSERT(inference_engine_create /* module: inference/inference_engine */ (&engine, &config) != 0);
     TEST_ASSERT(engine == NULL);
 
@@ -26,7 +29,9 @@ int main(void) {
 #define VCP_TEST_TENSORRT_ENGINE ""
 #endif
     if (strlen(VCP_TEST_TENSORRT_ENGINE) > 0) {
-        strcpy(config.model_path, VCP_TEST_TENSORRT_ENGINE);
+        vcp_copy_string /* module: utils/c_runtime */ (config.model_path,
+                                                       sizeof(config.model_path),
+                                                       VCP_TEST_TENSORRT_ENGINE);
         if (inference_engine_create /* module: inference/inference_engine */ (&engine, &config) == 0) {
             Frame frame;
             DetectionResult result;
@@ -50,6 +55,14 @@ int main(void) {
     TEST_ASSERT(engine == NULL);
     TEST_ASSERT(inference_engine_get_batch_capability /* module: inference/inference_engine */ (engine, &capability) != 0);
     TEST_ASSERT(capability.max_batch_size == 1);
+    TEST_ASSERT(inference_engine_get_async_lane_count /* module: inference/inference_engine */ (engine) == 0);
+    TEST_ASSERT(inference_engine_submit_cuda_nv12_async /* module: inference/inference_engine */ (engine, 0, NULL, NULL) != 0);
+    {
+        int ready = 1;
+        TEST_ASSERT(inference_engine_is_lane_ready /* module: inference/inference_engine */ (engine, 0, &ready) != 0);
+        TEST_ASSERT(ready == 0);
+    }
+    TEST_ASSERT(inference_engine_finish_lane /* module: inference/inference_engine */ (engine, 0, NULL, NULL) != 0);
     TEST_ASSERT(strstr(inference_engine_last_error /* module: inference/inference_engine */ (), "CUDA/TensorRT") != NULL);
     inference_engine_destroy /* module: inference/inference_engine */ (engine);
 #endif

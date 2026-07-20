@@ -1,4 +1,5 @@
 #include "pipeline/pipeline_runner.h"
+#include "utils/c_runtime.h"
 #include "utils/file_utils.h"
 
 #include <stdio.h>
@@ -21,9 +22,15 @@ int main(void) {
 
     PipelineConfig config;
     pipeline_config_default /* module: pipeline/pipeline_config */ (&config);
-    strcpy(config.input_path, VCP_SOURCE_DIR "/data/input/15592600_3840_2160_60fps.mp4");
-    strcpy(config.output_path, VCP_SOURCE_DIR "/data/output/pipeline_runner_test.mp4");
-    strcpy(config.benchmark_path, VCP_SOURCE_DIR "/benchmarks/pipeline_runner_test.csv");
+    vcp_copy_string /* module: utils/c_runtime */ (config.input_path,
+                                                   sizeof(config.input_path),
+                                                   VCP_SOURCE_DIR "/data/input/15592600_3840_2160_60fps.mp4");
+    vcp_copy_string /* module: utils/c_runtime */ (config.output_path,
+                                                   sizeof(config.output_path),
+                                                   VCP_SOURCE_DIR "/data/output/pipeline_runner_test.mp4");
+    vcp_copy_string /* module: utils/c_runtime */ (config.benchmark_path,
+                                                   sizeof(config.benchmark_path),
+                                                   VCP_SOURCE_DIR "/benchmarks/pipeline_runner_test.csv");
     config.max_frames = 1;
     config.mode = PROCESS_CPU;
     config.filter = FILTER_GRAYSCALE;

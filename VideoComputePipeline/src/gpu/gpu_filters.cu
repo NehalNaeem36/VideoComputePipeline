@@ -4,6 +4,7 @@
  * Frame ownership remains with frame pools and video modules.
  */
 #include "gpu/gpu_filters.h"
+#include "utils/c_runtime.h"
 #include "utils/logger.h"
 
 #include <cuda_runtime.h>
@@ -162,8 +163,9 @@ extern "C" int gpu_filters_init(GPUFilterContext *gpu) {
 
     gpu->stream = (void *)stream;
     gpu->device_id = device_id;
-    strncpy(gpu->device_name, prop.name, sizeof(gpu->device_name) - 1u);
-    gpu->device_name[sizeof(gpu->device_name) - 1u] = '\0';
+    vcp_copy_string_truncated /* module: utils/c_runtime */ (gpu->device_name,
+                                                             sizeof(gpu->device_name),
+                                                             prop.name);
 
     if (create_event /* module: gpu/gpu_filters */ (&gpu->upload_start_event) != 0 ||
         create_event /* module: gpu/gpu_filters */ (&gpu->upload_stop_event) != 0 ||

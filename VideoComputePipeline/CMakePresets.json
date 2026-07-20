@@ -1,0 +1,112 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-msvc-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "FFMPEG_ROOT": "C:/vcpkg/installed/x64-windows",
+        "CMAKE_CUDA_ARCHITECTURES": "86"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "x64-Debug",
+      "displayName": "x64 Debug",
+      "description": "Visual Studio/MSVC debug build with FFmpeg from vcpkg and CUDA filters enabled.",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ENABLE_CUDA_FILTERS": "ON",
+        "ENABLE_CUDA_INFERENCE": "OFF",
+        "ENABLE_HW_VIDEO": "OFF",
+        "ENABLE_ONNXRUNTIME": "OFF",
+        "ENABLE_LIBTORCH": "OFF"
+      }
+    },
+    {
+      "name": "x64-Release",
+      "displayName": "x64 Release",
+      "description": "Visual Studio/MSVC release build with FFmpeg from vcpkg and CUDA filters enabled.",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_CUDA_FILTERS": "ON",
+        "ENABLE_CUDA_INFERENCE": "OFF",
+        "ENABLE_HW_VIDEO": "OFF",
+        "ENABLE_ONNXRUNTIME": "OFF",
+        "ENABLE_LIBTORCH": "OFF"
+      }
+    },
+    {
+      "name": "x64-AllBackends-Release",
+      "displayName": "x64 All Backends Release",
+      "description": "MSVC release build for CUDA filters, TensorRT/ONNX inference, and NVDEC/NVENC hardware video.",
+      "inherits": "windows-msvc-base",
+      "binaryDir": "${sourceDir}/build-all-backends-vs",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CUDAToolkit_ROOT": "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9",
+        "TENSORRT_ROOT": "D:/TensorRT/TensorRT-11.1.0.106",
+        "CUDNN_ROOT": "D:/cuDNN/cudnn-windows-x86_64-9.23.2.1_cuda12-archive",
+        "ONNXRUNTIME_ROOT": "E:/wAI/third_party/onnxruntime/Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0",
+        "ENABLE_CUDA_FILTERS": "ON",
+        "ENABLE_CUDA_INFERENCE": "ON",
+        "ENABLE_TENSORRT": "ON",
+        "ENABLE_HW_VIDEO": "ON",
+        "ENABLE_ONNXRUNTIME": "ON",
+        "ENABLE_LIBTORCH": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "x64-Debug",
+      "configurePreset": "x64-Debug"
+    },
+    {
+      "name": "x64-Release",
+      "configurePreset": "x64-Release"
+    },
+    {
+      "name": "x64-AllBackends-Release",
+      "configurePreset": "x64-AllBackends-Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "x64-Debug",
+      "configurePreset": "x64-Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "x64-Release",
+      "configurePreset": "x64-Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "x64-AllBackends-Release",
+      "configurePreset": "x64-AllBackends-Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

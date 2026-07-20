@@ -17,6 +17,14 @@ typedef struct {
     double postprocess_ms;
     double overlay_ms;
     double mux_write_ms;
+    double decode_queue_wait_ms;
+    double inference_queue_wait_ms;
+    double inference_lane_wait_ms;
+    double output_reorder_wait_ms;
+    double metadata_queue_wait_ms;
+    double encode_queue_wait_ms;
+    double end_to_end_latency_ms;
+    double stage_sum_ms;
     int batch_size;
     int schedule_batch_size;
     int backend_batch_size;

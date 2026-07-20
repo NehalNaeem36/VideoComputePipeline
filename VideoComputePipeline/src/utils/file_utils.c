@@ -4,6 +4,7 @@
  * handling details out of pipeline logic.
  */
 #include "utils/file_utils.h"
+#include "utils/c_runtime.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -33,7 +34,9 @@ int create_directory_if_missing(const char *path) {
         return -1;
     }
 
-    strcpy(buffer, path);
+    if (vcp_copy_string /* module: utils/c_runtime */ (buffer, sizeof(buffer), path) != 0) {
+        return -1;
+    }
     for (char *p = buffer; *p; ++p) {
         if (*p == '\\') {
             *p = '/';
@@ -66,7 +69,9 @@ int create_parent_directory_if_missing(const char *path) {
     if (strlen(path) >= sizeof(buffer)) {
         return -1;
     }
-    strcpy(buffer, path);
+    if (vcp_copy_string /* module: utils/c_runtime */ (buffer, sizeof(buffer), path) != 0) {
+        return -1;
+    }
 
     char *last_slash = strrchr(buffer, '/');
     char *last_backslash = strrchr(buffer, '\\');

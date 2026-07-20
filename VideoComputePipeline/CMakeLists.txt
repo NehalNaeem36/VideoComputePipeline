@@ -412,6 +412,7 @@ set(PROJECT_SOURCES
     src/inference/backend_registry.c
     src/inference/detection_result.c
     src/inference/detection_writer.c
+    src/utils/c_runtime.c
     src/utils/logger.c
     src/utils/file_utils.c
 )

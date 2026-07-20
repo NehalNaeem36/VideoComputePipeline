@@ -4,6 +4,7 @@
  * while report modules consume the CSV output for summaries.
  */
 #include "benchmark/benchmark.h"
+#include "utils/c_runtime.h"
 #include "utils/file_utils.h"
 
 #include <stdio.h>
@@ -62,11 +63,11 @@ static int write_filter_csv_row(FILE *file, const FrameTiming *t) {
 }
 
 static int write_detection_csv_header(FILE *file) {
-    return fprintf(file, "frame_index,decode_ms,raw_frame_upload_bytes,upload_ms,preprocess_ms,inference_ms,backend_inference_ms,metadata_download_bytes,download_ms,postprocess_ms,detections_count,overlay_ms,encode_ms,mux_write_ms,total_ms,runtime_backend,backend_device,precision,model_format,model_adapter,input_layout,input_dtype,output_device,video_width,video_height,video_fps,frame_bytes,raw_frame_download_bytes,schedule_batch_size,backend_batch_size,batch_size,inflight_batches,total_active_frames,active_frame_capacity,frames_per_upload_batch,frames_per_download_batch,execution_mode,inference_context_count,inference_lane_count,vram_budget_mb,estimated_batch_mb,unused_vram_budget_mb\n") < 0 ? -1 : 0;
+    return fprintf(file, "frame_index,decode_ms,raw_frame_upload_bytes,upload_ms,preprocess_ms,inference_ms,backend_inference_ms,metadata_download_bytes,download_ms,postprocess_ms,detections_count,overlay_ms,encode_ms,mux_write_ms,total_ms,runtime_backend,backend_device,precision,model_format,model_adapter,input_layout,input_dtype,output_device,video_width,video_height,video_fps,frame_bytes,raw_frame_download_bytes,schedule_batch_size,backend_batch_size,batch_size,inflight_batches,total_active_frames,active_frame_capacity,frames_per_upload_batch,frames_per_download_batch,execution_mode,inference_context_count,inference_lane_count,vram_budget_mb,estimated_batch_mb,unused_vram_budget_mb,decode_queue_wait_ms,inference_queue_wait_ms,inference_lane_wait_ms,output_reorder_wait_ms,metadata_queue_wait_ms,encode_queue_wait_ms,end_to_end_latency_ms,stage_sum_ms\n") < 0 ? -1 : 0;
 }
 
 static int write_detection_csv_row(FILE *file, const FrameTiming *t) {
-    return fprintf(file, "%d,%.6f,%zu,%.6f,%.6f,%.6f,%.6f,%zu,%.6f,%.6f,%zu,%.6f,%.6f,%.6f,%.6f,%s,%s,%s,%s,%s,%s,%s,%s,%d,%d,%.6f,%zu,%zu,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f\n",
+    return fprintf(file, "%d,%.6f,%zu,%.6f,%.6f,%.6f,%.6f,%zu,%.6f,%.6f,%zu,%.6f,%.6f,%.6f,%.6f,%s,%s,%s,%s,%s,%s,%s,%s,%d,%d,%.6f,%zu,%zu,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                    t->frame_index,
                    t->decode_ms,
                    t->raw_frame_upload_bytes,
@@ -108,7 +109,15 @@ static int write_detection_csv_row(FILE *file, const FrameTiming *t) {
                    t->inference_lane_count,
                    t->vram_budget_mb,
                    t->estimated_batch_mb,
-                   t->unused_vram_budget_mb) < 0 ? -1 : 0;
+                   t->unused_vram_budget_mb,
+                   t->decode_queue_wait_ms,
+                   t->inference_queue_wait_ms,
+                   t->inference_lane_wait_ms,
+                   t->output_reorder_wait_ms,
+                   t->metadata_queue_wait_ms,
+                   t->encode_queue_wait_ms,
+                   t->end_to_end_latency_ms,
+                   t->stage_sum_ms) < 0 ? -1 : 0;
 }
 
 static int write_csv_header(FILE *file, BenchmarkSchema schema) {
@@ -136,8 +145,8 @@ int benchmark_open_csv_with_schema(Benchmark *bench, const char *path, Benchmark
         return -1;
     }
 
-    FILE *file = fopen(path, "w");
-    if (!file) {
+    FILE *file = NULL;
+    if (vcp_fopen /* module: utils/c_runtime */ (&file, path, "w") != 0) {
         return -1;
     }
 
@@ -210,8 +219,8 @@ int benchmark_write_csv(const Benchmark *bench, const char *path) {
         return -1;
     }
 
-    FILE *file = fopen(path, "w");
-    if (!file) {
+    FILE *file = NULL;
+    if (vcp_fopen /* module: utils/c_runtime */ (&file, path, "w") != 0) {
         return -1;
     }
 
@@ -285,6 +294,7 @@ void benchmark_print_detection_summary(const Benchmark *bench) {
     printf("  avg_encode_ms: %.3f\n", bench->encode_ms / (double)bench->count);
     printf("  avg_mux_write_ms: %.3f\n", bench->mux_write_ms / (double)bench->count);
     printf("  avg_total_ms: %.3f\n", bench->total_ms / (double)bench->count);
+    printf("  avg_stage_sum_ms: %.3f\n", bench->total_ms / (double)bench->count);
     if (bench->total_ms > 0.0) {
         printf("  latency_equivalent_fps: %.3f\n", (double)bench->count * 1000.0 / bench->total_ms);
     }
