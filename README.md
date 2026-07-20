@@ -65,31 +65,31 @@ Verified local roots:
 
 ```text
 CUDA Toolkit:
-C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9
+\NVIDIA GPU Computing Toolkit\CUDA\v12.9
 
 cuDNN:
-D:\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive
+\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive
 
 TensorRT:
-D:\TensorRT\TensorRT-11.1.0.106
+\TensorRT\TensorRT-11.1.0.106
 
 ONNX Runtime GPU:
-E:\wAI\third_party\onnxruntime\Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0
+\onnxruntime\Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0
 ```
 
 Required runtime PATH entries when DLLs are not copied beside the executable:
 
 ```text
-C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\bin
-D:\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive\bin\x64
-D:\TensorRT\TensorRT-11.1.0.106\bin
-E:\wAI\third_party\onnxruntime\Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0\runtimes\win-x64\native
+\NVIDIA GPU Computing Toolkit\CUDA\v12.9\bin
+\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive\bin\x64
+\TensorRT\TensorRT-11.1.0.106\bin
+\onnxruntime\Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0\runtimes\win-x64\native
 ```
 
 Verify the stack:
 
 ```powershell
-cd E:\wAI\first_task\VideoComputePipeline
+cd \VideoComputePipeline
 .\scripts\verify_cuda12_stack.ps1
 
 where.exe nvcc
@@ -109,14 +109,14 @@ echo $env:ONNXRUNTIME_ROOT
 TensorRT-only CUDA 12 configure:
 
 ```powershell
-cd E:\wAI\first_task\VideoComputePipeline
+cd \VideoComputePipeline
 
 cmake -S . -B build-win-cuda12 `
   -G "Visual Studio 17 2022" `
   -A x64 `
-  -DCUDAToolkit_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9" `
-  -DTENSORRT_ROOT="D:\TensorRT\TensorRT-11.1.0.106" `
-  -DCUDNN_ROOT="D:\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive" `
+  -DCUDAToolkit_ROOT="\NVIDIA GPU Computing Toolkit\CUDA\v12.9" `
+  -DTENSORRT_ROOT="\TensorRT\TensorRT-11.1.0.106" `
+  -DCUDNN_ROOT="\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive" `
   -DENABLE_CUDA_INFERENCE=ON `
   -DENABLE_HW_VIDEO=ON `
   -DENABLE_ONNXRUNTIME=OFF `
@@ -131,10 +131,10 @@ ONNX Runtime-enabled CUDA 12 configure:
 cmake -S . -B build-win-cuda12-onnx `
   -G "Visual Studio 17 2022" `
   -A x64 `
-  -DCUDAToolkit_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9" `
-  -DTENSORRT_ROOT="D:\TensorRT\TensorRT-11.1.0.106" `
-  -DCUDNN_ROOT="D:\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive" `
-  -DONNXRUNTIME_ROOT="E:\wAI\third_party\onnxruntime\Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0" `
+  -DCUDAToolkit_ROOT="\NVIDIA GPU Computing Toolkit\CUDA\v12.9" `
+  -DTENSORRT_ROOT="\TensorRT\TensorRT-11.1.0.106" `
+  -DCUDNN_ROOT="\cuDNN\cudnn-windows-x86_64-9.23.2.1_cuda12-archive" `
+  -DONNXRUNTIME_ROOT="\onnxruntime\Microsoft.ML.OnnxRuntime.Gpu.Windows.1.26.0" `
   -DENABLE_CUDA_INFERENCE=ON `
   -DENABLE_HW_VIDEO=ON `
   -DENABLE_ONNXRUNTIME=ON `
@@ -192,7 +192,7 @@ Docker Desktop -> Settings -> Resources -> Advanced -> Disk image location
 For example:
 
 ```text
-E:\DockerDesktop
+\DockerDesktop
 ```
 
 Check Docker disk usage:
@@ -212,7 +212,7 @@ docker system prune -a --volumes
 CPU-only Linux build:
 
 ```powershell
-cd E:\wAI\first_task
+cd \
 docker build -t videocompute:cpu -f VideoComputePipeline\docker\Dockerfile.cpu .
 docker run --rm videocompute:cpu --help
 ```
@@ -220,7 +220,7 @@ docker run --rm videocompute:cpu --help
 CUDA image with ONNX Runtime and hardware-video support:
 
 ```powershell
-cd E:\wAI\first_task
+cd \
 
 docker build -t videocompute:cuda `
   -f VideoComputePipeline\docker\Dockerfile.cuda `
@@ -253,7 +253,7 @@ For NVDEC/NVENC, the container must receive NVIDIA video driver capabilities.
 Use:
 
 ```powershell
-cd E:\wAI\first_task
+cd \
 
 docker run --rm -it --gpus all `
   --entrypoint bash `
@@ -306,7 +306,7 @@ mkdir -p data/output benchmarks
 The output is visible on Windows at:
 
 ```text
-E:\wAI\first_task\VideoComputePipeline\data\output\docker_cuda_grayscale.mp4
+\VideoComputePipeline\data\output\docker_cuda_grayscale.mp4
 ```
 
 ### Docker ONNX CUDA Detection
@@ -388,7 +388,7 @@ LD_LIBRARY_PATH=/opt/onnxruntime-gpu/lib:${LD_LIBRARY_PATH} \
 The video appears on Windows at:
 
 ```text
-E:\wAI\first_task\VideoComputePipeline\data\output\annotated.mkv
+\VideoComputePipeline\data\output\annotated.mkv
 ```
 
 For model/label matching:
