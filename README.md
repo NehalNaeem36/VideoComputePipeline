@@ -39,7 +39,7 @@ Detection topology is controlled independently:
 From PowerShell:
 
 ```powershell
-cd E:\wAI\first_task\VideoComputePipeline
+\VideoComputePipeline
 cmake --build build-win -j 4
 ```
 
@@ -52,7 +52,7 @@ ctest --test-dir build-win --output-on-failure
 If configuring from scratch in MSYS2 UCRT64:
 
 ```bash
-cd /e/wAI/first_task/VideoComputePipeline
+cd /VideoComputePipeline
 cmake -S . -B build-win -G "MinGW Makefiles"
 cmake --build build-win -j 4
 ```
